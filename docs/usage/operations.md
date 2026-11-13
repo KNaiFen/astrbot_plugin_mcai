@@ -111,6 +111,25 @@ mcai tm -C "D:/MC/CTI_0.4.6"
 
 升级保留当前插件数据目录，规则文件和经验文档持续沿用。安装仅使用 `astrbot_plugin_mcai`，实例配置单独保存在 `instances.json`。
 
+### 安装依赖时拒绝访问
+
+Windows 上，AstrBot 插件页安装依赖时，pip 可能需要升级 AstrBot 已加载的 Python 扩展。例如 `trafilatura 2.3.1` 要求 `charset-normalizer>=3.5.2`，若环境中仍是 3.4.7，替换其 `__mypyc*.pyd` 时可能出现 `WinError 5：拒绝访问`，使插件安装中止。
+
+1. 完全退出 AstrBot，确认其 Python 进程已结束；仅禁用或重载插件无法保证释放扩展文件。若使用自动重启脚本，先停止该脚本。
+2. 将同次发行的 `astrbot_plugin_mcai.zip` 解压到临时目录，找到其中的 `requirements.txt`。
+3. 在 PowerShell 7 中，用 **AstrBot 实际使用的 Python** 安装这份依赖清单。以下示例中 AstrBot 位于 `D:\AstrBot`，插件解压到 `D:\MCAI-A`；按自己的目录替换：
+
+```powershell
+& 'D:\AstrBot\venv\Scripts\python.exe' -m pip install -r 'D:\MCAI-A\requirements.txt'
+& 'D:\AstrBot\venv\Scripts\python.exe' -c 'import trafilatura, charset_normalizer; print(trafilatura.__version__, charset_normalizer.__version__)'
+```
+
+使用镜像时，在安装命令末尾加 `-i 'https://mirrors.aliyun.com/pypi/simple/'`。不要换用 B 的 `.venv` 或系统 Python。若进程全部退出后仍拒绝访问，检查运行账号对日志所示文件的读写权限与文件占用。
+
+安装命令成功、导入检查打印版本号后，重新启动 AstrBot，在插件页重试安装 ZIP 或仓库。若上次 pip 卸载失败导致 `charset_normalizer` 导入损坏，在 AstrBot 仍退出时，用同一个 Python 执行 `-m pip install --force-reinstall 'charset-normalizer>=3.5.2,<4'`，然后重新安装插件依赖并检查导入。
+
+### 其他常见问题
+
 | 现象 | 处理 |
 |---|---|
 | 无法连接 B | 检查 B 是否运行、端口映射、防火墙和 A 的最终 `https://` 地址；详细错误看本地日志 |

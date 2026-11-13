@@ -11,6 +11,20 @@ from .mcai.client import HostClient
 from .mcai.storage import Store
 from .mcai.tasks import Tasks
 
+COMMANDS = {
+    "mcainew",
+    "mcaisay",
+    "mcaiapply",
+    "mcaistop",
+    "mcaidone",
+    "mcaistatus",
+    "mcaihelp",
+    "mcairesume",
+    "mcailist",
+    "mcaiplan",
+    "mcaipause",
+}
+
 
 class MCAI(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -66,57 +80,46 @@ class MCAI(Star):
         if result is False:
             raise RuntimeError("平台暂时无法发送消息")
 
+    @filter.command("mcaihelp", alias=COMMANDS - {"mcaihelp"}, priority=100)
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=100)
     async def commands(self, event: AstrMessageEvent):
         text = event.get_message_str().strip()
         command, _, tail = text.partition(" ")
-        commands = {
-            "/mcainew",
-            "/mcaisay",
-            "/mcaiapply",
-            "/mcaistop",
-            "/mcaidone",
-            "/mcaistatus",
-            "/mcaihelp",
-            "/mcairesume",
-            "/mcailist",
-            "/mcaiplan",
-            "/mcaipause",
-        }
-        if command not in commands:
+        command = command.removeprefix("/")
+        if command not in COMMANDS:
             return
-        event.stop_event()
         group = event.get_group_id()
         if self.config.get("group_ids") and group not in {
             str(item) for item in self.config["group_ids"]
         }:
+            event.stop_event()
             return
         sender = event.get_sender_id()
-        if command not in {
-            "/mcaisay",
-            "/mcaistatus",
-            "/mcaihelp",
-            "/mcailist",
-            "/mcaiplan",
-        }:
-            if not event.is_admin() and sender not in {
-                str(item) for item in self.config.get("admin_ids", [])
-            }:
-                yield event.plain_result("该指令仅管理员可用。")
-                return
         try:
-            if command == "/mcaihelp":
+            if command not in {
+                "mcaisay",
+                "mcaistatus",
+                "mcaihelp",
+                "mcailist",
+                "mcaiplan",
+            }:
+                if not event.is_admin() and sender not in {
+                    str(item) for item in self.config.get("admin_ids", [])
+                }:
+                    yield event.plain_result("该指令仅管理员可用。")
+                    return
+            if command == "mcaihelp":
                 yield event.plain_result(
                     "回复问题：/mcainew 任务名 [补充说明]\n补充：/mcaisay 任务名 内容\n查看：/mcailist、/mcaistatus、/mcaiplan\n管理员：/mcaiapply、/mcaipause、/mcairesume、/mcaistop、/mcaidone 任务名"
                 )
                 return
-            if command == "/mcailist":
+            if command == "mcailist":
                 yield event.plain_result(
                     self.tasks.list_tasks(group, int(tail.strip() or "1"))
                 )
                 return
             name, _, content = tail.strip().partition(" ")
-            if command == "/mcainew":
+            if command == "mcainew":
                 if not name:
                     raise ValueError("用法：回复问题消息后 /mcainew 任务名 [补充说明]")
                 quoted = [
@@ -137,21 +140,21 @@ class MCAI(Star):
                 )
                 return
             job = self.tasks.find(group, name)
-            if command == "/mcaisay":
+            if command == "mcaisay":
                 if not content.strip():
                     raise ValueError("请在任务名后填写补充信息")
                 self.tasks.feedback(job, sender, content.strip())
-            elif command == "/mcaiapply":
+            elif command == "mcaiapply":
                 self.tasks.approve(job)
-            elif command == "/mcaistop":
+            elif command == "mcaistop":
                 self.tasks.stop(job)
-            elif command == "/mcaidone":
+            elif command == "mcaidone":
                 self.tasks.stop(job, done=True)
-            elif command == "/mcairesume":
+            elif command == "mcairesume":
                 self.tasks.resume(job)
-            elif command == "/mcaipause":
+            elif command == "mcaipause":
                 self.tasks.pause_requested(job)
-            elif command == "/mcaiplan":
+            elif command == "mcaiplan":
                 yield event.plain_result(
                     f"「{name}」"
                     + (
@@ -172,6 +175,9 @@ class MCAI(Star):
                 )
         except ValueError as exc:
             yield event.plain_result(str(exc))
+        finally:
+            # yield 的回复先经过发送阶段，再终止后续处理。
+            event.stop_event()
 
     async def terminate(self):
         await self.settings.close()

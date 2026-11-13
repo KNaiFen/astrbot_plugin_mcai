@@ -29,7 +29,7 @@
 
 ## 安装前准备
 
-本文对应 **0.8.0**，从 [0.8.0 发行页](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.8.0)下载配套的 `mcai_windows_host.zip` 和 `astrbot_plugin_mcai.zip`。A、B 和托管窗口使用同次发行的配套程序；从旧版升级时先阅读[更新说明](#更新时保留什么)。自行构建的安装包位于 `dist/`。
+当前插件版本为 **0.8.1**，修复群指令触发与回复。A 通过[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)安装或更新；B 使用 [0.8.0 发行页](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.8.0)的 `mcai_windows_host.zip`。0.8.1 未更改通信协议，现有 0.8.0 的 B 和托管窗口可继续使用；首次安装 A 时，也可先安装该发行页的插件 ZIP，再通过仓库更新到 0.8.1。从旧版升级时先阅读[更新说明](#更新时保留什么)。自行构建的安装包位于 `dist/`。
 
 ### 软件与版本
 
@@ -269,7 +269,9 @@ Set-Location -LiteralPath 'D:\MCAI'
 
 在 AstrBot **插件管理页**使用 ZIP 安装入口，选择配套的 `astrbot_plugin_mcai.zip`，等待安装依赖并启用插件。找到显示名称为 **“MC 排障助手”**、插件标识为 `astrbot_plugin_mcai` 的插件，打开其**设置视图**，页面标题为“MCAI 设置”。
 
-也可以通过仓库地址安装：[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)。仓库提供最新发行版插件；先确认其版本与手上的 B 包匹配，需要固定 0.8.0 时使用对应发行页的配套 ZIP。发布附件见 [Releases](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/latest)。
+也可以通过仓库地址安装：[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)。仓库提供当前版本插件；0.8.1 可继续连接 0.8.0 的 B，需要固定旧版本时使用对应发行页的配套 ZIP。发布附件见 [Releases](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/latest)。
+
+若安装依赖时出现 `WinError 5`，并指向 `charset_normalizer` 或 `__mypyc*.pyd`，完全退出 AstrBot 后，按[安装依赖时拒绝访问](docs/usage/operations.md#安装依赖时拒绝访问)预装依赖，再启动 AstrBot 重试安装。
 
 ### 2. 填写并测试 B 连接
 
@@ -309,7 +311,7 @@ Set-Location -LiteralPath 'D:\MCAI'
 
 界面显示“无托管连接”时，回 B 检查 `tm`；显示“配置待生效”时，运行参数会等旧窗口关闭、操作结束后切换，单纯停止 MC 但保留窗口还不算空闲。PowerShell、存档 Java 和辅助内存额度在“下载与主机”区保存后，需重启 B 生效。
 
-最后到允许群发送 `/mcaihelp`，应收到命令帮助。若没有回复，先确认 Bot 收得到该群消息、群号填写正确，且插件已启用。
+最后到允许群发送 `/mcaihelp`，应收到命令帮助。本文指令按 AstrBot 默认唤醒前缀 `/` 书写；若改过前缀，使用对应前缀，例如 `!mcaihelp`，也可 @Bot 后输入 `mcaihelp`。若没有回复，先确认 Bot 收得到该群消息、唤醒前缀和群号填写正确，且插件已启用。
 
 ## 三、在群里完成一次排障
 
@@ -344,7 +346,7 @@ Bot 应回复“开始排查”。AI根据实例说明、引用和补充选择�
 /mcailist
 ```
 
-AI可查看日志、文件、存档和在线指标；诊断脚本与发送到控制台的诊断命令会经过独立 AI 审核。群里主要出现必要提问和关键结论，完整结果保存在本地；没有逐条播报工具进度是正常的。
+AI可查看日志、文件、存档和在线指标；诊断脚本与发送到控制台的诊断命令会经过独立 AI 审核。排障在后台继续，需要补充信息、批准方案或报告关键结论时，Bot 会主动发到原群，不必再次发送命令才能收到消息；回答追问仍用 `/mcaisay 任务名 内容`。完整结果保存在本地，没有逐条播报工具进度是正常的。
 
 ### 3. 查看方案，再决定是否批准
 
@@ -477,7 +479,7 @@ B 窗口按 Ctrl+C 正常退出会等待已接受修复，再结束辅助工作�
 
 ### 更新时保留什么
 
-先等待修复完成并暂停任务，备份 A 插件数据、B 的 `host.json`、`instances.json` 和整个 `data_dir`。退出 B 后替换发行文件并重新执行安装命令；保留原证书、令牌、备份、经验和用户规则。A、B 按同次发行包配套更新。
+先等待修复完成并暂停任务，备份 A 插件数据、B 的 `host.json`、`instances.json` 和整个 `data_dir`。退出 B 后替换发行文件并重新执行安装命令；保留原证书、令牌、备份、经验和用户规则。涉及通信协议变更时，A、B 按同次发行包配套更新；本次 0.8.1 只需更新 A 插件。
 
 若升级要求更新托管窗口或改变终端协议，先正常停服、关闭旧托管窗口，再用新程序打开并启动；单纯重启 B 不需要关闭服务端。更新结束后重新测试 A→B 连接，再续接任务。更多细节见[升级说明](docs/usage/operations.md#升级与常见问题)。
 
