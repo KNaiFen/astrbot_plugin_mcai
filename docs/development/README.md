@@ -5,6 +5,9 @@
 | 文档 | 内容 |
 |---|---|
 | [测试说明](testing.md) | 测试环境、命令、场景、当前基线和验证边界 |
+| [0.8.0 架构与行为审查](architecture-review-0.8.0.md) | 已复现问题、性能风险、测试债务与分批改进及验收条件 |
+| [0.8.0 整改与验证](architecture-remediation-0.8.0.md) | 对应R01—R21的当前行为、验收证据与保留边界 |
+| [固定验证环境](dependencies.md) | Windows/Python/AstrBot依赖版本、包哈希及空环境重建 |
 | [第三方组件与来源](third-party.md) | 设计参考、依赖许可、固定JAR和真实存档片段来源 |
 | [探针构建与验证](probe.md) | 四目标构建、真实服务端、测试负载、共存及性能结果 |
 
@@ -31,9 +34,11 @@ py -3.12 -m venv .venv
 | 范围 | 入口 |
 |---|---|
 | 插件命令、初始化与通知 | `main.py`、`_conf_schema.json` |
-| Agent循环、工具schema、模型重试与审核 | `mcai/astrbot_agent.py`、`agent_runtime.py`、`tool_schemas.py`、`review.py` |
+| Agent循环、上下文预算、工具schema、模型重试与审核 | `mcai/astrbot_agent.py`、`context_budget.py`、`agent_runtime.py`、`tool_schemas.py`、`review.py` |
 | A任务、发件箱、经验和网页 | `mcai/tasks.py`、`storage.py`、`knowledge.py`、`web.py` |
-| B接口、控制台、后台工作与下载 | `mcai/host.py`、`client.py`、`console.py`、`jobs.py`、`downloads.py` |
+| B接口、共用执行上下文、后台工作与下载 | `mcai/host.py`、`operation_context.py`、`client.py`、`jobs.py`、`downloads.py` |
+| 独立托管窗口与控制台缓冲 | `mcai/terminal.py`、`console.py`、`console_buffer.py`、`remote_terminal.py` |
+| 共享辅助进程与内存额度 | `mcai/execution.py`、`worker.py`、`memory_job.py` |
 | 查询、NBT与区域辅助程序 | `mcai/queries.py`、`world.py`、`world_tools.py`、`java/WorldTool.java` |
 | Windows入口、Java与HTTPS | `mcai/__main__.py`、`environment.py`、`tls.py` |
 | 配置热重载与设置页 | `mcai/configuration.py`、`settings.py`、`views/settings/` |
@@ -53,6 +58,10 @@ git diff --check
 ```
 
 测试场景与完整命令见[测试说明](testing.md)。实际模型、QQ和生产整合包的联调与模拟接口测试分开记录，不把行覆盖率当成所有MC版本兼容性证明。
+
+HTTPS夹具为每个实例另开独立终端，B使用实际辅助工作进程；多窗口、B重启、资源限制及真实CLI交互见`test_terminal_isolation.py`。网站响应、备份失败和扫描时序等故障注入用例通过测试侧`local_execution`保留当前进程的替身，产品没有跳过内存额度的执行选项。
+
+B生命周期使用HostRunner：在aiohttp的pre_shutdown停止WebSocket输入之前等待已接受操作。嵌入或测试create_app时同样使用该runner，避免在on_shutdown内等待仍需终端响应的修复。
 
 ## 构建与发行
 

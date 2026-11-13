@@ -17,7 +17,7 @@ class Tasks:
 
     def __init__(self, store, client, agent, notify):
         self.store, self.client, self.agent, self.notify = store, client, agent, notify
-        self.jobs = {job["id"]: job for job in store.all("task")}
+        self.jobs = {job["id"]: job for job in store.live_tasks()}
         self.knowledge = Knowledge(store.directory)
         self.web = WebPages(store)
         self.archive_workers = {}
@@ -152,12 +152,10 @@ class Tasks:
         delay = 1
         while True:
             failed = False
-            for item in self.store.all("outbox"):
-                if item["sent"]:
-                    continue
+            for item in self.store.pending_outbox():
                 if (
                     item.get("summary_task")
-                    and self.jobs[item["summary_task"]]["stop_requested"]
+                    and self.store.get("task", item["summary_task"])["stop_requested"]
                 ):
                     item.update(sent=True, discarded=True)
                     self.store.save("outbox", item["id"], item)
@@ -245,6 +243,10 @@ class Tasks:
         return entries
 
     async def select_instance(self, job, instance, reason):
+        async with self.create_lock:
+            return await self._select_instance(job, instance, reason)
+
+    async def _select_instance(self, job, instance, reason):
         entry = next(
             (item for item in await self.instances() if item["instance"] == instance),
             None,
@@ -262,12 +264,6 @@ class Tasks:
             raise ValueError(
                 "本任务已提交修复，不能更换服务端，请为其他服务端创建新任务"
             )
-        if old and old != directory:
-            await self.client.call(
-                job["instance"], "job", {"mode": "cancel_task"}, task_id=job["id"]
-            )
-            job["background"] = {}
-            job["plan"] = None
         if any(
             other["id"] != job["id"]
             and other.get("directory") == directory
@@ -275,6 +271,29 @@ class Tasks:
             for other in self.jobs.values()
         ):
             raise ValueError("该服务端已有进行中的排障任务，请向原任务补充反馈")
+        if old and old != directory:
+            cleanup = job.setdefault(
+                "selection_cleanup",
+                {
+                    "instance": job["instance"],
+                    "target": directory,
+                    "arguments": {"mode": "cancel_task", "expected_directory": old},
+                    "operation_id": uuid.uuid4().hex,
+                },
+            )
+            if cleanup["target"] != directory:
+                raise ValueError("上次目标切换尚未结算，请先继续原选择并核对清理结果")
+            self.save(job)
+            await self.client.call(
+                cleanup["instance"],
+                "job",
+                cleanup["arguments"],
+                operation_id=cleanup["operation_id"],
+                task_id=job["id"],
+            )
+            job.pop("selection_cleanup")
+            job["background"] = {}
+            job["plan"] = None
         job.update(instance=instance, directory=directory)
         if old != directory:
             self.log(
@@ -608,27 +627,49 @@ class Tasks:
             )
             self.pause(job, str(exc))
         finally:
-            if job["stop_requested"] and not self.closing:
-                if job["instance"] is not None:
-                    await self.client.call(
-                        job["instance"],
-                        "job",
-                        {"mode": "cancel_task"},
-                        task_id=job["id"],
-                    )
-                job["background"] = {}
-                job["cancel_pending"] = False
-                job["state"] = job.get("finish_as", "stopped")
-                if (
-                    job["state"] == "done"
-                    and job.get("directory")
-                    and hasattr(self.agent, "summarize")
-                ):
-                    job.setdefault("archive_state", "pending")
-                    self.save(job)
-                    self.archive_later(job)
-            self.save(job)
-            self.workers.pop(job["id"], None)
+            try:
+                if job["stop_requested"] and not self.closing:
+                    if job["instance"] is not None:
+                        request = job.setdefault(
+                            "cancel_request",
+                            {
+                                "instance": job["instance"],
+                                "operation_id": uuid.uuid4().hex,
+                                "arguments": {
+                                    "mode": "cancel_task",
+                                    **(
+                                        {"expected_directory": job["directory"]}
+                                        if job.get("directory")
+                                        else {}
+                                    ),
+                                },
+                            },
+                        )
+                        self.save(job)
+                        await self.client.call(
+                            request["instance"],
+                            "job",
+                            request["arguments"],
+                            operation_id=request["operation_id"],
+                            task_id=job["id"],
+                        )
+                    job["background"] = {}
+                    job["cancel_pending"] = False
+                    job.pop("cancel_error", None)
+                    job["state"] = job.get("finish_as", "stopped")
+                    if (
+                        job["state"] == "done"
+                        and job.get("directory")
+                        and hasattr(self.agent, "summarize")
+                    ):
+                        job.setdefault("archive_state", "pending")
+                        self.archive_later(job)
+            except RemoteError as exc:
+                job["cancel_error"] = f"{type(exc).__name__}: {exc}"
+                self.log(job, "task_cancel_failed", error=job["cancel_error"])
+            finally:
+                self.save(job)
+                self.workers.pop(job["id"], None)
 
     async def close(self):
         self.closing = True

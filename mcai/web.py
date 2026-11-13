@@ -24,7 +24,7 @@ class WebPages:
             async with aiohttp.ClientSession(
                 trust_env=True,
                 timeout=aiohttp.ClientTimeout(total=30),
-                headers={"User-Agent": "mcai/0.7.1"},
+                headers={"User-Agent": "mcai/0.8.0"},
             ) as session:
                 async with session.get(url) as response:
                     response.raise_for_status()

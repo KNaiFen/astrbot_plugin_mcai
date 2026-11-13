@@ -6,6 +6,8 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
+from .protocol import HEADERS, PROTOCOL
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,7 +45,7 @@ class HostClient:
     async def request(self, method, path, *, stopped=None, **kwargs):
         if self.session is None:
             self.session = aiohttp.ClientSession(
-                headers={"Authorization": f"Bearer {self.token}"},
+                headers={"Authorization": f"Bearer {self.token}", **HEADERS},
                 timeout=aiohttp.ClientTimeout(total=35),
                 connector=aiohttp.TCPConnector(ssl=self.ssl),
             )
@@ -69,6 +71,14 @@ class HostClient:
                             error = raw
                         raise RemoteError(f"HTTP {response.status}: {error}")
                     result = await response.json()
+                    if (
+                        path.split("?")[0] in ("/instances", "/configuration")
+                        or method == "POST"
+                        and path.startswith("/operations/")
+                    ) and response.headers.get("X-MCAI-Protocol") != PROTOCOL:
+                        raise RemoteError(
+                            "A/B 产品协议不匹配或 B 未提供协议标识，请配套更新后再执行"
+                        )
                     if delay > 0.5:
                         logger.info("与 MC 控制程序的连接已恢复")
                     return result
@@ -106,6 +116,7 @@ class HostClient:
         }
         cancel_sent = False
         try:
+            await self.request("GET", "/instances", stopped=stopped)
             operation = await self.request(
                 "POST", f"/operations/{operation_id}", json=body, stopped=stopped
             )

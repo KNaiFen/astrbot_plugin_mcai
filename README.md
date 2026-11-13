@@ -1,135 +1,506 @@
 # MC 群内排障助手
 
-在 QQ 群里排查 Minecraft Java 服务端问题：管理员引用玩家的反馈创建任务，AI 识别服务端、查看日志和存档、联网查资料并提出修复方案。管理员批准后执行，文件修改前备份；验收后自动记录经验，供下次排查使用。
+管理员在 QQ 群里引用玩家的问题创建任务，AI 根据线索选择 Minecraft Java 服务端，查看日志、配置、存档和在线现场，提出修复方案。管理员批准后执行；文件修改前停服、备份，管理员验收后归档经验。
 
-两端分别运行：**A：AstrBot 插件 → HTTPS → B：MC 控制程序 → 多个服务端**。A 无需公网入口，B 映射一个 TCP 端口。两端也可以放在同一台 Windows 机器上。
+本文按第一次部署的顺序说明。已有环境可直接跳到[群内排障示例](#三在群里完成一次排障)。
 
-## 安装
+[准备环境](#安装前准备) → [部署 B 与托管窗口](#一在-b-机器安装并连接服务端) → [配置 A 插件](#二在-a-机器安装并配置插件) → [群内排障](#三在群里完成一次排障) · [命令速查](#群命令速查) · [常见问题](#常见问题)
 
-准备以下环境：
+## 先分清 A、B 和服务端窗口
 
-| 位置 | 要求 |
+| 名称 | 放在哪里 | 你要做什么 |
+|---|---|---|
+| **A：AstrBot 插件** | 运行 QQ Bot 的 Windows 机器 | 安装插件、选择模型、填写 B 连接信息，在 QQ 群中使用指令 |
+| **B：MC 控制程序** | 运行 MC 服务端的 Windows 机器 | 安装主机程序、登记服务端目录，保持控制程序运行 |
+| **服务端托管窗口** | B 所在机器，每个 MC 服务端一个 | 运行 `mcai tm` 打开窗口，在里面执行原来的 `start.bat` |
+
+连接方向是 **QQ群 ↔ A → HTTPS → B → 各服务端托管窗口**。A 主动连接 B，A 不需要公网入口。A、B 可以在同一台机器上；分开部署时，A 必须能访问 B 的地址和端口。
+
+全文使用以下**示例路径**，请换成自己的实际目录：
+
+| 示例 | 含义 |
 |---|---|
-| A：QQ Bot | Windows、AstrBot v4.29.4、支持工具调用的模型 API；QQ 适配器支持引用消息和主动发消息 |
-| B：MC 主机 | Windows 10 1809+、Python 3.12+、PowerShell 7.3+；存档工具使用 Java 21+ |
+| `D:\MCAI` | B 安装包解压目录，里面有 `pyproject.toml` 和 `host.example.json` |
+| `D:\MC\CTI` | 已经可以正常启动的 MC 服务端目录，里面有 `start.bat`、配置和存档 |
+| `cti` | 给这个服务端起的配置 ID，用于本机命令；群内创建任务时由 AI 选择服务端 |
+| `主城卡顿` | 群内排障任务名，与配置 ID 分开 |
 
-各 MC 实例可使用不同 Java 版本。中间层、启动器和 Agent 脚本统一使用 PowerShell 7；模型能力可在插件设置页测试。
+下面的 PowerShell 命令都在 **B 机器**执行；QQ群指令发在 **Bot 所在的允许群**。命令框里的路径、IP、令牌示例需要替换，输入时不带 PowerShell 提示符。
 
-### 1. 配置 B
+## 安装前准备
 
-从 [Releases](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/latest) 下载并解压 `mcai_windows_host.zip`，在其目录打开 PowerShell：
+本文对应 **0.8.0**，从 [0.8.0 发行页](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.8.0)下载配套的 `mcai_windows_host.zip` 和 `astrbot_plugin_mcai.zip`。A、B 和托管窗口使用同次发行的配套程序；从旧版升级时先阅读[更新说明](#更新时保留什么)。自行构建的安装包位于 `dist/`。
+
+### 软件与版本
+
+| 位置 | 需要准备的环境 | 如何确认 |
+|---|---|---|
+| A | Windows 本机运行的 AstrBot，**最低 v4.29.4**；Python **3.12+** | 在 AstrBot 管理界面或启动日志查看版本；插件依赖安装到 AstrBot 自己使用的 Python 环境 |
+| A | 已连接 QQ 的消息适配器，支持引用消息和主动发消息 | 先确认 Bot 能收到群消息，并能在该群回复；创建任务要能取得被引用消息的文字 |
+| A | 支持工具调用的排障模型 API，以及支持 OpenAI 兼容 Chat／Responses 的审核模型 API | 在 AstrBot 模型页配置，之后用插件设置页测试；两者可使用同一提供商，但审核独立请求 |
+| B | Windows **10 1809 或更新版本／Windows 11**，建议 x64；Python **3.12+** | 在 Windows“设置 → 系统 → 关于”查看版本和系统类型，再执行下方 Python 检查 |
+| B | PowerShell **7.3+ 的 7.x** | 执行 `$PSVersionTable.PSVersion`；程序是 `pwsh.exe`，Windows 自带的 PowerShell 5.1 不符合要求 |
+| B | 存档辅助工具使用的 Java **21+** 运行环境 | 执行所选 `java.exe -version`；安装发行包只需运行 JAR，无需自行编译 |
+| 各 MC 服务端 | 原来能够正常启动的 **Minecraft Java 版服务端**、对应 Java 和 `start.bat` | Java 版本按该 MC／整合包要求，先人工启动并确认玩家可以进入 |
+
+AstrBot 的安装版本声明为 `>=4.29.4`，不设最高版本。本项目目前的集成验证基线为 v4.29.4；使用更新版时，安装后先完成下文的连接与模型能力测试，再创建一次任务确认。后续版本的验证结果会另行记录。
+
+A、B 可以共用一台 Windows 电脑，也可以分开。本文按 Windows 本机部署说明；B 的托管窗口依赖 Windows ConPTY，Linux、WSL 或 Linux Docker 容器不能运行该托管流程。A 只装插件时不需要安装 B 的 PowerShell、存档 Java 或服务端；B 不需要安装 AstrBot。若 A、B 同机，则在同一台机器准备两边的环境。
+
+**两套 Java 要分开理解：**`host.json` 的 `world_tools.java_path` 指向 Java 21+，供存档辅助工具使用；MC 仍使用原 `start.bat` 或实例配置指定的 Java。例如原整合包要求 Java 17，就保留它，同时另装 Java 21 给存档工具。配置时分别写完整路径，多套 Java 可以共存。
+
+### 内存、磁盘与运行账号
+
+- **内存：**按“MC 最大堆内存 + Windows／AstrBot 等程序 + 辅助操作余量”安排。B 默认让全部辅助操作共享最多 **8 GiB**，这是按需使用的上限，不是预先占用，也不是整台机器的最低内存。MC 的内存独立计算；整机余量不足时，先下调 `operations_memory_limit_mib`，大范围扫描也要相应缩小。
+- **磁盘：**除现有服务端和安装文件外，B 的数据目录需要容纳下载暂存、操作记录，以及每次修复中待修改文件／目录的完整备份。若方案涉及整个存档目录，就预留至少该目录一份副本的空间；多次操作的备份会累积，维护方法见[数据与备份](docs/usage/operations.md#数据与备份)。
+- **账号与权限：**运行 B 的 Windows 账号需要读写服务端目录、B 配置和数据目录，并能够启动所需 Java、PowerShell 与辅助进程。B 与各托管窗口使用同一 Windows 用户。A 的运行账号需要能写 AstrBot 插件数据目录。
+- **模型算力：**使用远程模型 API 时，A、B 无需为了本插件额外准备显卡。若自己在本机部署模型，其显存和内存另按模型服务要求准备；模型 API 通常按服务商规则计费。
+
+### 网络条件
+
+| 从哪里访问 | 必须能访问什么 | 什么时候使用 |
+|---|---|---|
+| A → QQ 适配器／平台、模型服务 | 正常的消息连接和已配置的模型 API | 收发群消息、排障和独立审核 |
+| A → B | B 的 HTTPS 地址和 TCP 端口，默认 `18765` | 控制程序和查询结果；跨网络时要配置可达地址与端口映射 |
+| A、B → Python 包源 | 安装所需依赖的包源或可用镜像 | 首次安装和更新依赖 |
+| A → 网页／独立搜索 API | 所查询的网页或已配置的搜索服务 | 启用相应查询功能时 |
+| B → Modrinth／CurseForge 及文件下载站 | 对应 API 和下载地址 | 搜索或暂存下载 MOD 时；CurseForge 还需配置 API Key |
+
+同机部署时 A 使用本机地址即可，不需要为了 A→B 连接配置公网入口；异机地址的具体填法见后面的[连接地址表](#5-启动-b保存连接信息)。模型托管搜索由模型服务商访问网络。需要代理时，A 的模型代理、A／B 的网页与下载代理分别按[代理说明](docs/usage/configuration.md#下载代理与-https)配置。
+
+### 安装并检查基础软件
+
+可从 [Python Windows 下载页](https://www.python.org/downloads/windows/)、[PowerShell Windows 安装说明](https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows)、[Temurin Java 下载页](https://adoptium.net/temurin/releases/?version=21)准备环境。
+
+在开始菜单打开 **PowerShell 7**，执行：
 
 ```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
-Copy-Item -LiteralPath host.example.json -Destination host.json
-Copy-Item -LiteralPath instances.example.json -Destination instances.json
+$PSVersionTable.PSVersion
+py -3.12 --version
+& 'C:\Program Files\Java\jdk-21\bin\java.exe' -version
 ```
 
-编辑 `host.json`，设置自己的共享令牌和存档工具 Java 路径：
+应分别看到 PowerShell 7.3 或更高的 7.x、Python 3.12 和 Java 21 或更高版本。Java 路径按实际安装位置修改。本文用 Python 3.12 演示安装；如果已经使用更高版本，将后文的 `py -3.12` 统一换成对应版本，例如 `py -3.13`。若提示找不到 `py` 或指定版本，安装 Python 时确认包含 Python 启动器，或用已安装的 `python.exe` 完整路径代替 `py -3.12`。
+
+A 的 Python 与 B 的 `.venv` 是各自的运行环境；在 B 安装依赖不会替 A 安装插件依赖。先完成上述检查，再继续解压和配置。
+
+## 一、在 B 机器安装并连接服务端
+
+### 1. 解压并安装主机程序
+
+将 `mcai_windows_host.zip` 解压到例如 `D:\MCAI`。确认 `D:\MCAI\pyproject.toml` 存在；如果 ZIP 被额外套了一层文件夹，进入实际包含该文件的目录。
+
+打开 PowerShell 7，依次执行：
+
+```powershell
+Set-Location -LiteralPath 'D:\MCAI'
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
+Copy-Item -LiteralPath '.\host.example.json' -Destination '.\host.json'
+Copy-Item -LiteralPath '.\instances.example.json' -Destination '.\instances.json'
+```
+
+前两条安装命令分别创建 Python 环境和安装 B。安装成功后，`D:\MCAI\.venv\Scripts\` 中应有 `python.exe` 和 `mcai.exe`。后两条只在**首次安装**时复制配置模板；升级时保留已经填写的配置。
+
+后文直接使用完整路径或 `.venv` 内的程序，不需要激活环境，也不要求把 `mcai` 加入 PATH。
+
+### 2. 填写 B 的基础配置
+
+用记事本打开 `D:\MCAI\host.json`。可在刚才的窗口执行：
+
+```powershell
+notepad .\host.json
+```
+
+按实际情况修改，例如：
 
 ```json
 {
   "listen": "0.0.0.0",
   "port": 18765,
   "tls": true,
-  "token": "替换成你自己的共享令牌",
+  "token": "这里换成你自己生成的一串令牌",
   "data_dir": "runtime/host",
   "instances_file": "instances.json",
-  "powershell_path": "",
-  "world_tools": {"java_path": "D:/Java/jdk-21/bin/java.exe"},
-  "curseforge_api_key": ""
+  "powershell_path": "C:/Program Files/PowerShell/7/pwsh.exe",
+  "world_tools": {
+    "java_path": "C:/Program Files/Java/jdk-21/bin/java.exe"
+  },
+  "curseforge_api_key": "",
+  "operations_memory_limit_mib": 8192
 }
 ```
 
-服务端单独填在 `instances.json`，只需要 BAT 完整路径和说明：
+| 字段 | 第一次应该怎样填 |
+|---|---|
+| `listen` | 使用示例的 `0.0.0.0`，让 B 接受本机及其他机器的连接 |
+| `port` | 默认 `18765`，是 A 连接 B 的端口，与 MC 游戏端口分开 |
+| `token` | 自己生成一串令牌，稍后原样填到 A 的“共享令牌”；它与模型 API Key 分开 |
+| `powershell_path` | PowerShell 7 的 `pwsh.exe` 完整路径；留空时自动查找 |
+| `world_tools.java_path` | Java 21+ 的 `java.exe` 完整路径；供存档工具使用 |
+| `data_dir` | 可保留示例；备份、证书、操作记录保存在这里，不要放进 MC 存档目录 |
+| `curseforge_api_key` | 首次可留空；需要 CurseForge 搜索／下载时再配置 |
+| `operations_memory_limit_mib` | 默认 `8192` MiB，即全部辅助操作共享 8 GiB，MC 服务端不计入该额度 |
+
+需要生成令牌时，在 B 安装目录执行下面这条命令，把输出保存到 `token`：
+
+```powershell
+.\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+JSON 路径推荐写 `/`；如果写反斜杠，需要写成 `D:\\MC\\CTI`。字段之间要有逗号，最后一项后面没有逗号，文件内不要添加注释。保存为 `host.json`，注意记事本不要另存成 `host.json.txt`。
+
+### 3. 登记 MC 服务端
+
+用记事本打开 `D:\MCAI\instances.json`，将示例目录换成自己的真实服务端目录：
 
 ```json
 {
-  "ncraft": {
-    "description": "NCraft，也叫自制服、奶粉自制服",
-    "command": "D:/MC/NCraft/start.bat"
+  "cti": {
+    "directory": "D:/MC/CTI",
+    "description": "CTI整合包服，群里也叫CTI服、匠魂服，主城在主世界"
   }
 }
 ```
 
-程序自动在 BAT 父目录执行 `./start.bat`。服务端列表可在运行时修改，也可稍后在 A 的图形界面增删。
+- `cti` 是配置 ID，只用字母、数字、下划线或短横线；本机 `status`、`stop` 等命令会使用它。
+- `directory` 指向包含 **`start.bat`** 的服务端根目录，不是 `world`、`mods` 或 B 安装目录。
+- `description` 给 AI 识别目标使用，填写整合包名、群内简称等真实信息。不同服务端要能区分。
 
-**保留 BAT 自动重启循环。** Java 应前台运行；每次退出后、重新启动前输出下面这行，并保留倒计时：
+有多个服务端时，在同一个 JSON 对象中增加配置项，每个配置指向不同目录；具体示例见[服务端配置](docs/usage/configuration.md#b服务端文件)。后续也能在 A 设置页添加，不需要提前填完所有服务端。
+
+### 4. 核对原来的 start.bat
+
+先确认这台 MC 服务端原本能正常运行。继续使用原有启动参数和对应 Java，保留整合包所需脚本与自动重启循环。
+
+若 BAT 有自动重启循环，在 **Java 退出之后、下一次启动之前**输出下面这行提示，并保留倒计时。下方是插入现有 BAT 的片段：
 
 ```bat
 echo Start server in 10 seconds. Press ctrl+c to stop right now.
 timeout /t 10 /nobreak
 ```
 
-主动停服先发送 MC 的 `stop`，收到本次退出提示后只发送一次 Ctrl+C，必要时确认终止批处理。之后重新启动仍保留自动重启。已有手动窗口需先正常停服，再用本程序启动。
+提示让托管窗口知道“本次 Java 已退出，可以中断自动重启”。Java 应在 BAT 中前台运行；不要用 `start` 把 Java 另开到脱离当前窗口的进程。原本没有循环、Java 结束后就退出的 BAT 可以继续使用。
 
-启动控制程序：
+主动停服由托管窗口处理：先发 MC 的 `stop`，等待这次退出提示，再发一次 Ctrl+C，必要时确认终止批处理，最后保留 PowerShell。超时没有确认停服时，文件修复不会继续。详细配置见[停服与启动参数](docs/usage/configuration.md#b服务端文件)。
+
+### 5. 启动 B，保存连接信息
+
+回到 B 的 PowerShell 7 窗口：
 
 ```powershell
+Set-Location -LiteralPath 'D:\MCAI'
 .\.venv\Scripts\python.exe -m mcai host
 ```
 
-首次启动生成并保存 HTTPS 证书，复制界面显示的 **SHA-256 指纹**。将 B 的 TCP `18765` 放行并映射到公网端口，控制程序窗口保持运行。
-
-### 2. 配置 A
-
-在 AstrBot 的插件管理页选择通过链接安装，填写：
+首次启动会生成证书，并显示类似：
 
 ```text
-https://github.com/KNaiFen/astrbot_plugin_mcai
+HTTPS 监听：0.0.0.0:18765
+证书 SHA-256 指纹：一串64位十六进制字符
 ```
 
-安装并启用后，打开插件的 **设置视图**。后续在插件管理页更新；也可从 [Releases](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/latest) 下载插件 ZIP 手动安装。
+看到这两行且没有后续启动报错，窗口持续运行，说明可以继续连接检查。**这个窗口保持打开，专门运行 B。** 将证书指纹复制保存，稍后填写到 A；B 的连接地址、`token` 和指纹是三项不同信息。B 的配置界面位于 A 插件内，不需要在浏览器打开这个 HTTPS 地址找管理网页。
 
-- 填写 B 的 `https://公网IP:映射端口`、共享令牌和证书指纹，点击测试连接。
-- 先在 AstrBot 模型页配置 API，再选择排障模型与审核模型，可分别设置思考强度。
-- 填写管理员 QQ（支持多人）及允许群号，保存。
-- 点击“保存并测试、自动配置”，验证对话、工具、两种搜索和摘要；也可手动切换功能。
-- 服务端列表、CurseForge 密钥及主机路径同样在此管理。
+根据 A 和 B 的位置选择地址：
 
-审核模型必须选择，支持 OpenAI 兼容 Chat／Responses，可与主模型相同。同机地址填 `https://127.0.0.1:18765`，仍填写指纹。详细选项见[配置说明](docs/usage/configuration.md)。
+| 部署方式 | A 的“B 地址”示例 | 网络上需要做什么 |
+|---|---|---|
+| 同一台 Windows 机器 | `https://127.0.0.1:18765` | 使用本机地址，仍填写指纹 |
+| 同一个局域网 | `https://192.168.1.20:18765` | 换成 B 的局域网 IP，让 B 防火墙允许该 TCP 端口 |
+| 不同网络，通过公网连接 | `https://你的公网IP:28765` | 例如将外部 TCP `28765` 映射到 B 的 TCP `18765`，A 填外部端口 |
 
-## 群内使用
+`0.0.0.0` 是 B 的监听设置，A 地址填写实际可访问的 IP 或域名。公网映射填写 B 的端口；只开放 MC 游戏端口 `25565` 不能让 A 连上 B。使用云主机时，还要在云平台的入站规则中允许所选 B 端口。详细网络选项见[HTTPS 配置](docs/usage/configuration.md#下载代理与-https)。
 
-可选安装 **MCAI Probe**：从 B 包 `probe/` 选取对应 MC 版本和加载器的 JAR 放入服务端 `mods/`，正常重启。支持 1.20.1、1.21.1 的 Forge／Fabric，提供玩家位置、维度耗时和实体热点；客户端无需安装。详见[探针使用](docs/usage/probe.md)。
+### 6. 为每个服务端打开独立托管窗口
 
-管理员**回复一条玩家的问题消息**，输入 `/mcainew 主城卡顿`。AI 根据引用、服务端目录和反馈识别目标，不确定时会追问。之后使用：
-
-| 指令 | 用途 |
-|---|---|
-| `/mcaisay 主城卡顿 是CTI服，靠近基地就卡` | 补充线索，玩家也可使用 |
-| `/mcaistatus 主城卡顿` | 查看任务状态 |
-| `/mcailist` | 查看本群活动任务，支持页码 |
-| `/mcaiplan 主城卡顿` | 查看当前待批准方案 |
-| `/mcaiapply 主城卡顿` | 管理员批准当前修复方案 |
-| `/mcairesume 主城卡顿` | 管理员续接已暂停任务 |
-| `/mcaipause 主城卡顿` | 管理员保存进度并暂停 |
-| `/mcaistop 主城卡顿` | 管理员中止任务 |
-| `/mcaidone 主城卡顿` | 管理员验收并结束，后台归档经验 |
-| `/mcaihelp` | 查看帮助 |
-
-任务名不带空格；一个任务处理一个服务端，同一服务端只允许一个活动任务。普通闲聊不会进入上下文。
-
-- 诊断命令、诊断脚本和修复方案先经独立 AI 审核；修复方案还需要管理员批准。文件修改先停服和备份，在线控制台修复无法备份时会在确认消息里说明。
-- MOD 和其他文件先下载到 B 的暂存目录，安装再批准。CurseForge 需在 B 配置 `curseforge_api_key`，Modrinth 公开下载无需令牌。
-- 模型服务连续失败会保存并暂停，`/mcaisay` 仍能补充信息，使用 `/mcairesume` 继续。修复失败后 AI 检查现场，有新方案就再次请求批准，无方向则暂停。
-- 两端断网时 B 上的服务端和后台工作继续运行。停止任务会取消所属诊断与下载，文件修复在当前安全步骤结束后停止。
-
-首次启用会在 `AstrBot/data/plugin_data/astrbot_plugin_mcai/AGENTS.md` 生成可编辑的生产操作规则。通用脚本以 B 的运行账号权限执行，AI 审核不能代替系统文件权限。
-
-## 本机管理与资料
-
-在 B 另开 PWSH 窗口：
+在 B 机器**再开一个 PowerShell 7 窗口**，与 B 使用同一 Windows 用户，执行：
 
 ```powershell
-.\.venv\Scripts\python.exe -m mcai list
-.\.venv\Scripts\python.exe -m mcai start ncraft
-.\.venv\Scripts\python.exe -m mcai attach ncraft
+& 'D:\MCAI\.venv\Scripts\mcai.exe' tm -C 'D:\MC\CTI'
 ```
 
-`attach` 后可直接输入 MC 命令，`/detach` 只断开控制台。其他实例分别开窗口管理。启停、备份恢复、故障处理和升级方法见[运行维护](docs/usage/operations.md)。
+这里使用完整路径，即使系统提示“找不到 mcai 命令”也能运行。`-C` 后面是刚登记的服务端目录。
 
-[文档总索引](docs/README.md) · [配置](docs/usage/configuration.md) · [运行维护](docs/usage/operations.md) · [开发](docs/development/README.md)
+应看到：
 
-本仓库为 AstrBot 插件安装与更新入口；B 程序、Probe 和完整源码见 Releases。插件与主机代码采用 [MIT](LICENSE)，Probe 及第三方组件保留各自许可，见[来源说明](docs/development/third-party.md)。
+```text
+MCAI 托管窗口：cti · D:\MC\CTI
+请执行 .\start.bat；关闭窗口只影响本实例。
+```
+
+等待托管 PowerShell 的输入提示符出现，再在**这个窗口里面**执行：
+
+```powershell
+.\start.bat
+```
+
+等待 MC 原本的启动完成提示，确认玩家可以正常进入。这时该窗口就是这台 MC 的交互控制台；第二个服务端另开一个窗口，换成它的目录。
+
+如果 MC 已经在原来的普通窗口里运行，先正常停服，再按上述方式从托管窗口启动。创建 `tm` 窗口不会接管已经在其他窗口运行的进程。
+
+还没有登记的目录会提示输入项目 ID 和介绍，并由 B 保存；首次登记需要 B 在线。已经登记的目录在 B 暂时离线时也能打开，窗口会持续重连。只运行 `tm` 会打开托管环境，MC 是否启动取决于里面是否执行了 `start.bat`。
+
+**窗口关系：**B 退出或重启时，托管窗口和 MC 继续运行；关闭某个托管窗口会影响该服务端。需要日常查看时保留这些窗口，不要通过关闭窗口来代替正常停服。
+
+### 7. 在本机检查一次
+
+再开一个用于检查的 PowerShell 7，执行：
+
+```powershell
+Set-Location -LiteralPath 'D:\MCAI'
+.\.venv\Scripts\mcai.exe list
+.\.venv\Scripts\mcai.exe status cti
+```
+
+`list` 应包含 `cti`，`status` 中主要看：
+
+| 字段 | 正常情况下的含义 |
+|---|---|
+| `window_online: true` | 托管窗口已连到 B |
+| `running: true` | 已识别正在运行的 BAT 启动链；最终就绪仍以 MC 日志和玩家进入为准 |
+| `state_unknown: false` | 当前状态能明确判断 |
+
+若托管窗口已打开但 MC 还没启动，`running: false` 可以是正常状态。若 `window_online: false`，先核对 B、托管窗口和它们使用的配置，再配置 A。
+
+## 二、在 A 机器安装并配置插件
+
+### 1. 安装插件并找到设置页
+
+在 AstrBot **插件管理页**使用 ZIP 安装入口，选择配套的 `astrbot_plugin_mcai.zip`，等待安装依赖并启用插件。找到显示名称为 **“MC 排障助手”**、插件标识为 `astrbot_plugin_mcai` 的插件，打开其**设置视图**，页面标题为“MCAI 设置”。
+
+也可以通过仓库地址安装：[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)。仓库提供最新发行版插件；先确认其版本与手上的 B 包匹配，需要固定 0.8.0 时使用对应发行页的配套 ZIP。发布附件见 [Releases](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/latest)。
+
+### 2. 填写并测试 B 连接
+
+在“**连接 MC 主机**”区填写：
+
+| 界面字段 | 对应内容 |
+|---|---|
+| B 地址 | 前面选定的完整 `https://IP或域名:端口`，例如同机 `https://127.0.0.1:18765` |
+| 共享令牌 | B 的 `host.json` 中 `token` 的值，不包括 JSON 引号 |
+| 证书 SHA-256 指纹 | B 启动时显示的指纹；可包含冒号或空格，不填写整段提示文字 |
+
+点击“**测试连接**”。出现“连接成功，B 配置了 N 个服务端”后，点击“**保存 A 设置**”。连接测试证明 A 能访问 B；服务端是否已启动，要看“服务端”区和 B 的窗口。
+
+连接失败时先按文末[常见问题](#常见问题)处理。B 地址使用 `https://`，填写最终地址，避免使用需要跳转的网页地址。
+
+### 3. 选择排障模型与审核模型
+
+先在 **AstrBot 的模型提供商页**填好 API 地址、API Key 和模型名称。回到“MCAI 设置”的“**模型与能力**”区：
+
+1. 在“排障模型”中选择已配置的提供商；首次建议明确选择，方便一键测试。
+2. 在“审核模型”中选择一个 OpenAI 兼容 Chat／Responses 提供商。审核模型必须设置，可以与排障模型使用同一个提供商，但审核会独立请求。
+3. 思考强度不确定时先留空，继承提供商设置；只填写该模型支持的值。
+4. 在 AstrBot 提供商设置中按模型实际容量配置 `max_context_tokens`。插件按这个值控制历史输入，未配置时按 32768 token 估算，长任务会压缩已结算历史。详细行为见[上下文与群消息范围](docs/usage/configuration.md#上下文与群消息范围)。
+5. 点击“**保存并测试、自动配置**”，等待结果区结束，查看“普通对话”“工具调用与续接”“审核模型与 JSON”等结果。
+
+能力测试只发测试模型／搜索请求，会产生少量 API 费用；不会操作 MC，也不会发送群消息。普通对话、工具调用或审核失败时，先核对对应提供商的错误。搜索和摘要是可选能力：服务商不支持时可关闭对应开关，未观察到摘要也不等于排障功能不可用。API 托管搜索和 `alpha/search` 独立搜索的区别见[模型与搜索说明](docs/usage/configuration.md#模型搜索与能力测试)。
+
+### 4. 配置管理员和允许群
+
+在“**群与管理员**”区：
+
+- “管理员 QQ”每行填一个可以创建、批准、暂停和结束任务的 QQ 号。AstrBot 自身识别的管理员也可管理任务。
+- “允许群号”每行填一个使用本插件的 QQ 群号；留空允许所有群。
+- 点击“**保存 A 设置**”。多个管理员权限相同，可以接续处理同一个任务。
+
+再到“**服务端**”区点击“**刷新 B 配置**”，应能看到 `cti` 和填写的说明。需要新增实例时，点击“添加服务端”，填写配置名、说明和 **B 机器上的目录**，再点击“保存服务端列表”；新实例仍需在 B 手工打开独立托管窗口。
+
+界面显示“无托管连接”时，回 B 检查 `tm`；显示“配置待生效”时，运行参数会等旧窗口关闭、操作结束后切换，单纯停止 MC 但保留窗口还不算空闲。PowerShell、存档 Java 和辅助内存额度在“下载与主机”区保存后，需重启 B 生效。
+
+最后到允许群发送 `/mcaihelp`，应收到命令帮助。若没有回复，先确认 Bot 收得到该群消息、群号填写正确，且插件已启用。
+
+## 三、在群里完成一次排障
+
+以下以任务名“主城卡顿”、目标为 CTI 服为例。任务名由你取，**不带空格，最多 40 字**；同一群内不要重复使用正在进行中的任务名。
+
+### 1. 回复玩家的问题，创建任务并补充背景
+
+在 QQ 中对玩家的问题消息选择“回复”（手机通常长按消息后选择），然后在回复框输入：
+
+```text
+/mcainew 主城卡顿 是CTI服，昨天更新模组后开始卡，玩家Steve在主城附近复现
+```
+
+创建需要管理员权限。`主城卡顿` 是任务名，后面的文本全部是可选补充；引用原文和补充一起进入首次排查。只输入 `/mcainew 主城卡顿` 也可以，但仍需要引用一条有文字的问题消息。
+
+Bot 应回复“开始排查”。AI根据实例说明、引用和补充选择服务端；不明确时会追问。一个任务只处理一个服务端，同一服务端只允许一个活动任务，已暂停的任务继续占用它。其他服的问题请另建任务。
+
+### 2. 回答追问、补充线索
+
+普通玩家也可以补充，消息里带上任务名：
+
+```text
+/mcaisay 主城卡顿 我的游戏名是Steve，主世界坐标120 65 -300，大约20:10开始卡
+```
+
+有价值的信息包括：哪台服、游戏名、时间、维度、坐标、怎样复现、最近改过什么，以及已经人工做过的处理。Bot 没有独立的图片或语音解析入口，关键内容请写成文字。
+
+**普通群聊不会自动进入任务。**后续补充使用 `/mcaisay`；插件也不会自动翻最近 N 条群历史。查看当前进度：
+
+```text
+/mcaistatus 主城卡顿
+/mcailist
+```
+
+AI可查看日志、文件、存档和在线指标；诊断脚本与发送到控制台的诊断命令会经过独立 AI 审核。群里主要出现必要提问和关键结论，完整结果保存在本地；没有逐条播报工具进度是正常的。
+
+### 3. 查看方案，再决定是否批准
+
+AI有修复方向时，会发简短方案并提示批准。如果需要重新查看：
+
+```text
+/mcaiplan 主城卡顿
+```
+
+确认操作对象、修改内容和预期影响后，由管理员发送：
+
+```text
+/mcaiapply 主城卡顿
+```
+
+这条命令批准**当前方案**。文件修复会先结束该任务所属诊断、停服、备份，然后修改；成功后原先运行的服务端通常会重新启动，方案中明确的启停步骤优先。在线命令可能没有可恢复备份，确认消息会说明。
+
+如果暂时不同意，先不要批准，用 `/mcaisay` 说明需要调整的地方。新反馈会使尚未执行的方案失效，由 AI 重新判断；新方案仍需再次批准。下载 MOD 只进入 B 暂存区，安装也要走方案批准；CurseForge 凭据可在“下载与主机”区填写，Modrinth 公开下载无需令牌。
+
+### 4. 验证效果，再验收
+
+修复后先让玩家按原步骤复现，补充实际结果：
+
+```text
+/mcaisay 主城卡顿 已重新进入主城，观察10分钟未再出现掉TPS，其他玩家也恢复正常
+```
+
+AI可以继续核对日志与现场。确认问题已解决后，管理员再发：
+
+```text
+/mcaidone 主城卡顿
+```
+
+这会结束任务、释放服务端占用，并在后台归档已验收经验。先发验证反馈，再发验收命令，效果信息才能进入该任务。任务结束后不再接收 `/mcaisay`；再次出现问题可引用新反馈另建任务。
+
+### 5. 需要暂停、继续或中止时
+
+| 你遇到的情况 | 应该怎么做 |
+|---|---|
+| 暂时没空、需要等玩家复现 | 管理员 `/mcaipause 主城卡顿` 保存进度 |
+| 任务已暂停，想先补信息 | `/mcaisay 主城卡顿 内容`，只保存，不自动继续 |
+| 已补完信息或修正模型配置，准备继续 | 管理员 `/mcairesume 主城卡顿` |
+| 放弃本次排查 | 管理员 `/mcaistop 主城卡顿`，停止接收反馈并取消所属后台工作 |
+| 问题已解决，准备归档 | 管理员 `/mcaidone 主城卡顿` |
+
+暂停继续保留实例占用；中止收尾后释放任务占用，但不自动撤销已经发生的修改。文件修复进行中请求暂停，会等待原操作结束后暂停；请求中止，则在当前文件步骤结束后停止后续步骤。执行中的修复不能直接验收。
+
+如果模型或审核持续失败，任务会保存并暂停；修正设置、补充事实后再续接。修复失败时保留备份和现场，AI可继续检查，新方案重新审核和批准，不会默认回滚或重跑。网络中断使用原编号核对，通常不需要重复发送批准命令。
+
+## 群命令速查
+
+下表中的方括号表示可选内容，实际发送时不用带方括号。
+
+| 命令 | 谁可以用 | 用途 |
+|---|---|---|
+| `/mcainew 任务名 [补充说明]` | 管理员 | 回复一条问题消息后创建任务 |
+| `/mcaisay 任务名 内容` | 群成员 | 向指定任务补充文字 |
+| `/mcaistatus 任务名` | 群成员 | 查看状态 |
+| `/mcailist [页码]` | 群成员 | 查看本群活动任务，例如 `/mcailist 2` |
+| `/mcaiplan 任务名` | 群成员 | 重发当前待批准方案的简短说明 |
+| `/mcaiapply 任务名` | 管理员 | 批准当前修复方案 |
+| `/mcaipause 任务名` | 管理员 | 保存并暂停 |
+| `/mcairesume 任务名` | 管理员 | 从已保存状态续接 |
+| `/mcaistop 任务名` | 管理员 | 中止，不作为已解决案例归档 |
+| `/mcaidone 任务名` | 管理员 | 验收结束，后台归档经验 |
+| `/mcaihelp` | 群成员 | 查看帮助 |
+
+## 可选：安装服内诊断 Probe
+
+基础部署完成后，可安装 MCAI Probe 提供玩家位置、维度耗时、已加载对象普查和短时实体热点。客户端无需安装，不新增端口。
+
+1. 正常停服。
+2. 从 B 包 `probe/` 选择**一个**与 MC 版本、加载器匹配的文件，放进该服务端 `mods/`。
+3. 正常启动，确认日志出现 `MCAI Probe 0.1.0 ready`。
+4. 照常创建排障任务，在补充中提供游戏名或坐标，AI会使用可用的探针能力。
+
+| 服务端 | 选择的 JAR |
+|---|---|
+| Forge 1.20.1（47.x） | `mcai-probe-1.20.1-forge-0.1.0.jar` |
+| Fabric 1.20.1 | `mcai-probe-1.20.1-fabric-0.1.0.jar` |
+| Forge 1.21.1（52.x） | `mcai-probe-1.21.1-forge-0.1.0.jar` |
+| Fabric 1.21.1 | `mcai-probe-1.21.1-fabric-0.1.0.jar` |
+
+Fabric还需要对应 Fabric API 和 Loader 0.16.14+。不要选择 `sources` 文件；Forge JAR 不用于 NeoForge。其他 MC 版本或插件端可继续使用日志、存档和脚本诊断，探针支持范围见[完整安装说明](docs/usage/probe.md)。
+
+## 日常启停、规则与备份
+
+### 下次开机怎么启动
+
+不需要重做安装或复制配置。先在 B 的一个 PowerShell 7 窗口运行主机程序，再为每台 MC 打开独立托管窗口，分别启动：
+
+```powershell
+Set-Location -LiteralPath 'D:\MCAI'
+.\.venv\Scripts\python.exe -m mcai host
+```
+
+在另一个新窗口执行下面一条；出现托管提示后，再在里面执行 `start.bat`：
+
+```powershell
+& 'D:\MCAI\.venv\Scripts\mcai.exe' tm -C 'D:\MC\CTI'
+```
+
+A 端照常启动 AstrBot 和 QQ 适配器，插件会使用保存的配置。仅重启 B 时，已经存在的托管窗口继续运行并自动重连，不需要重新开服。
+
+### 本机正常停服与查看
+
+在 B 安装目录另开一个 PowerShell 7，用配置 ID 操作：
+
+```powershell
+Set-Location -LiteralPath 'D:\MCAI'
+.\.venv\Scripts\mcai.exe stop cti
+.\.venv\Scripts\mcai.exe status cti
+```
+
+`stop` 会处理 BAT 自动重启提示，完成后保留托管 PowerShell。需要再开服可执行 `.\.venv\Scripts\mcai.exe start cti`。`attach cti` 提供额外的远程控制台查看／输入入口，输入 `/detach` 只退出查看；人工命令直接执行，不走 AI 审核。任务正在修复时，先核对其状态再做本机操作。
+
+B 窗口按 Ctrl+C 正常退出会等待已接受修复，再结束辅助工作和断开连接，MC 托管窗口继续运行。如果修复仍在进行，等待它收尾；强制结束可能留下未完成修改，后续需要检查现场。
+
+### 调整 Agent 预设
+
+首次启用在 A 的 `AstrBot/data/plugin_data/astrbot_plugin_mcai/AGENTS.md` 生成规则，预设包含工作场景、证据判断、诊断与修复、断线恢复和验收要求。想增加自己服务器的运维约定，可先暂停任务，再编辑该文件，下一轮或续接会重新读取。
+
+升级保留已编辑的规则；需要采用新版预设时，将包内 `mcai/agent_rules.md` 与现有规则人工合并。规则变化会使原待执行方案需要重新审核。具体说明见[运行时规则](docs/usage/configuration.md#运行时规则)。通用脚本使用 B 的运行账号权限执行，AI 审核不能代替系统文件权限。
+
+### 备份在哪里，如何恢复
+
+按本文示例，B 的文件修复备份在 `D:\MCAI\runtime\host\backups\操作编号\`，包含清单 `manifest.json` 和原文件；脚本输出也在对应备份目录。A 的任务和经验保存在插件数据目录，经验文档位于其中的 `knowledge/`。
+
+需要恢复时，先确认任务记录中的备份操作编号和源服务端目录，再在 B 使用 `mcai restore 配置ID 备份操作编号`。恢复本身会停服并备份当前目标；失败时保留现场。不要仅凭配置名相同就套用其他目录的备份。完整步骤与数据维护见[运行维护](docs/usage/operations.md#数据与备份)。
+
+### 更新时保留什么
+
+先等待修复完成并暂停任务，备份 A 插件数据、B 的 `host.json`、`instances.json` 和整个 `data_dir`。退出 B 后替换发行文件并重新执行安装命令；保留原证书、令牌、备份、经验和用户规则。A、B 按同次发行包配套更新。
+
+若升级要求更新托管窗口或改变终端协议，先正常停服、关闭旧托管窗口，再用新程序打开并启动；单纯重启 B 不需要关闭服务端。更新结束后重新测试 A→B 连接，再续接任务。更多细节见[升级说明](docs/usage/operations.md#升级与常见问题)。
+
+## 常见问题
+
+| 现象 | 按什么顺序检查 |
+|---|---|
+| 找不到 `mcai` 命令 | 使用本文的 `.venv\Scripts\mcai.exe` 完整路径，确认之前的 `pip install -e .` 已成功 |
+| 提示 PowerShell 版本不对 | 打开 PowerShell 7，核对 `$PSVersionTable.PSVersion` 及 `host.json` 中的 `powershell_path` |
+| 启动时目录／配置文件不存在 | 核对解压层级、当前目录、文件扩展名及 JSON 路径；B从安装目录启动 |
+| 提示找不到 B 配置位置 | 先在同一 Windows 用户下成功启动一次 B，再打开托管窗口 |
+| A 测试连接超时 | 确认 B 窗口仍运行；先在 B 执行 `list`，再检查 A 的 IP、外部端口和 B 的端口放行／映射 |
+| 令牌或指纹错误 | `token` 与 A 的共享令牌一致；指纹复制 B 的启动输出，不填模型 Key 或证书文件内容 |
+| 提示产品协议不匹配 | 核对 A、B 及托管窗口版本，按同次发行配套更新，再测试连接 |
+| 有服务端配置但显示无托管连接 | 确认 `tm -C` 的目录正确、B地址和端口没变；原来普通窗口中的 MC 不会自动接管 |
+| MC开了但提示目标不明确 | 检查是否在托管窗口、实例根目录内启动 `start.bat`，Java是否前台运行，以及窗口是否改变了目录 |
+| `/mcainew` 提示必须引用 | 用 QQ 的“回复”功能引用有文字的问题，再输入命令；任务名后可继续写补充 |
+| AI没看到我刚发的解释 | 用 `/mcaisay 任务名 内容` 明确补充；普通群聊不进入任务，暂停状态还需管理员续接 |
+| 提示服务端已有任务占用 | 用 `/mcailist` 找到原任务，继续补充；原任务暂停也保留占用，结束后才能开新任务 |
+| 提示没有待批准方案 | 新反馈或规则变化可能使旧方案失效，等待 AI 重新提案后再批准 |
+| 修复停服超时 | 核对 MC 的停服命令、BAT退出提示和倒计时；确认停服前不会继续改文件，详细错误看本地记录 |
+| 辅助操作内存不足 | 查看本地错误和任务状态，缩小扫描／查询范围；设置页可调整共享额度，重启B生效 |
+
+[文档总索引](docs/README.md) · [配置字段与上下文](docs/usage/configuration.md) · [运行维护与备份](docs/usage/operations.md) · [Probe](docs/usage/probe.md) · [开发指南](docs/development/README.md)
+
+本仓库为 AstrBot 插件安装与更新入口；B 程序、Probe 和完整源码见发行附件。插件与主机代码采用 [MIT](LICENSE)，Probe 及第三方组件保留各自许可，见[来源说明](docs/development/third-party.md)。

@@ -305,8 +305,8 @@ TOOLS = [
     ),
     (
         "mc_status",
-        "实例状态、主机指标、实际进程与 Java 路径、世界/维度列表、探针能力与最近更新时间。world_path 用于存档查询；probe.stale 表示快照过时。",
-        contract({}),
+        "实例状态、主机指标、实际进程与 Java 路径、世界/维度列表、探针能力与最近更新时间。世界列表缓存60秒，refresh_worlds=true立即刷新；world_path用于存档查询，probe.stale表示快照过时。",
+        contract({"refresh_worlds": {"type": "boolean"}}),
     ),
     (
         "mc_files",
@@ -347,11 +347,15 @@ TOOLS = [
     ),
     (
         "mc_console",
-        "读取持久控制台或发送纯诊断命令。修改实体、强制保存、启停必须先 mc_propose；发送结果包含后续读取位置。",
+        "读取当前托管窗口最近9999行缓冲或发送纯诊断命令。缓冲有会话编号和淘汰提示，更早内容查MC日志。修改实体、强制保存、启停必须先 mc_propose。",
         variants(
             "mode",
             {
-                "read": ({**PAGE}, ()),
+                "read": ({**PAGE, "session_id": STRING}, ()),
+                "line": (
+                    {"session_id": STRING, "seq": INTEGER, "offset": INTEGER},
+                    ("session_id", "seq"),
+                ),
                 "command": (
                     {"command": STRING, "review": REVIEW},
                     ("command", "review"),
@@ -432,7 +436,15 @@ TOOLS = [
                     ("job_id", "reference"),
                 ),
                 "cancel": ({"job_id": STRING}, ("job_id",)),
-                "repair": ({"operation": STRING}, ("operation",)),
+                "repair": ({"operation": STRING, "offset": INTEGER}, ("operation",)),
+                "history": (
+                    {
+                        "entry": {"type": "integer", "minimum": 1},
+                        "offset": INTEGER,
+                        "after": INTEGER,
+                    },
+                    (),
+                ),
             },
         ),
     ),

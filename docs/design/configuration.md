@@ -4,15 +4,15 @@
 
 ## 终端与停服
 
-所有 Windows shell 入口共用启动时验证的 PowerShell 7.3+ 路径。实例只配置 BAT 文件，父目录决定身份与 cwd；固定生成的 PS1 负责代码页、Ctrl+C 状态和调用边界，模型不提供终端启动字符串。
+所有Windows shell入口使用PowerShell 7.3+。实例配置目录，用户通过 `mcai tm` 创建独立交互终端，在其中运行固定的start.bat。B通过本机WebSocket连接，进程所有权和共享资源详见[托管终端与辅助资源](terminal-and-resources.md)。
 
-Console 的一次性停服状态记录实例、PID、启动监听时间和阶段。发出 stop 前落盘，收到新输出才累积匹配；VT 控制序列只在匹配视图去除，原文继续存储。完整重启提示匹配后落盘，再发一次 Ctrl+C；中文／英文批处理确认单次回复 Y。已退出、取消和超时撤销监听，网络重试由原 operation 去重。文件修复等待启动器与已有子进程退出后才备份。超时不强杀，不执行文件变更。
+一次性停服状态保存在窗口：发出stop前落盘，监听之后的新输出；收到重启提示后保存阶段并发一次Ctrl+C，中英文批处理确认单次回复Y。退出、取消及超时撤销监听。文件修复必须确认BAT链和Java退出，PowerShell窗口保留。断线不取消已接受的控制，原编号返回原结果。
 
-启动器同时清除继承的 Ctrl+C 忽略标志并启用 processed console input；本地验证表明只往未初始化的 ConPTY 写 `\x03` 可能被忽略。未启用停服监听时，不处理重启提示，BAT 正常循环。
+固定初始化脚本设置初始代码页和Ctrl+C状态，提示符回报当前目录，ConPTY输出保留Unicode。B与窗口退出分开处理，不再由B清理所有服务端进程。
 
 ## 配置生命周期
 
-`host.json` 保存基础配置和密钥，`instances.json` 独立维护实例。加载边界校验 BAT、目录重复、Java、超时和编码；轮询比较内容哈希，校验成功才替换 desired 状态。活动实例维持旧启动配置，说明单独更新；空闲后切换或移除。operation 与 background_job 均纳入忙状态。目录变化由既有 expected_directory 检查拒绝旧任务的新操作。
+`host.json` 保存基础配置和密钥，`instances.json` 独立维护实例。加载边界校验目录、重复身份、Java、超时和编码；轮询比较内容哈希，校验成功才替换 desired 状态。活动实例维持旧启动配置，说明单独更新；托管窗口关闭且操作结束后切换或移除。operation 与 background_job 均纳入忙状态。目录变化由既有 expected_directory 检查拒绝旧任务的新操作。
 
 `GET/PUT /configuration` 复用现有 HTTPS、令牌与指纹；只返回密钥是否配置，不回传原值。实例保存携带 revision 防止覆盖其他编辑。`POST /configuration/reload` 立即重载；CurseForge 只读测试使用独立接口。主机路径配置保存后重启生效。无额外端口和传输层。
 

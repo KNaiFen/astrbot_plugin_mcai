@@ -27,6 +27,7 @@ from .agent_runtime import (
     summary_provider,
 )
 from .client import RemoteError
+from .context_budget import fit_history
 from .review import digest
 from .tool_schemas import TOOLS
 
@@ -43,6 +44,7 @@ review 仅用于独立审核，不进入后续对话；通过后仍执行原参�
 探针只看已加载内容；对象数量排行不是耗时证据，实体/方块实体计时不是整个区块耗时；维度共享全服TPS。磁盘扫描只代表已保存内容；历史经验仅是线索。探针未安装或主线程卡住时用 jcmd、已有 spark 和日志，不自动安装或重启。save-all flush 需 mc_propose。
 修改、恢复、启停用 mc_propose 提交具体步骤，结束本轮等管理员批准。command 可在线修复，无备份时说明。
 文件修复自动停服备份；脚本 backup_paths 必须覆盖所有修改；禁止脱离控制程序启动服务端。
+实例缺少托管窗口时请人工运行 mcai tm，不自行创建窗口。控制台只保留当前会话最近9999行，淘汰或会话变化需明确处理，更早内容查MC日志。辅助操作内存不足可缩小查询，后续修复仍重新审核批准。
 NBT 值和 expected 使用带类型 SNBT，路径是键/索引数组；x/z 是全局区块坐标，负坐标向下取整。
 修改前核实版本和实际字段，保留未知模组数据。诊断脚本可用 MCAI_JAVA 和实例 Java 环境。
 所有诊断和修复脚本使用 PowerShell 7.3+，不使用 Windows PowerShell 5.1。服务端启动方式由固定启动器提供，不自行拼启动命令，不删除 BAT 自动重启循环。
@@ -58,8 +60,8 @@ def clean_arguments(arguments):
     return {key: value for key, value in arguments.items() if key != "review"}
 
 
-def clean_history(messages):
-    result = copy.deepcopy(messages)
+def clean_history(messages, *, copy_messages=True):
+    result = copy.deepcopy(messages) if copy_messages else messages
     for message in result:
         for call in message.get("tool_calls") or []:
             function = call["function"]
@@ -299,6 +301,11 @@ class AstrBotAgent:
                             for step in arguments.get("steps", [])
                             if step["action"] == "install_download"
                         ],
+                        "backup_ids": [
+                            step["backup"]
+                            for step in arguments.get("steps", [])
+                            if step["action"] == "restore"
+                        ],
                         **(
                             {"expected_directory": job["directory"]}
                             if job.get("directory")
@@ -355,7 +362,9 @@ class AstrBotAgent:
                 mode = arguments.pop("mode")
                 return await remote(
                     record,
-                    "console_query" if mode == "read" else "diagnostic_command",
+                    "console_query"
+                    if mode in ("read", "line")
+                    else "diagnostic_command",
                     arguments,
                 )
             if name == "mc_region":
@@ -366,9 +375,29 @@ class AstrBotAgent:
                     arguments,
                 )
             if name == "mc_job":
+                if arguments["mode"] == "history":
+                    if "entry" not in arguments:
+                        return tasks.store.events(
+                            "context_index:" + job["id"], arguments.get("after", 0), 20
+                        )
+                    rows = tasks.store.events(
+                        "context:" + job["id"], arguments["entry"] - 1, 1
+                    )
+                    if not rows or rows[0]["seq"] != arguments["entry"]:
+                        raise ValueError("历史引用不属于当前任务")
+                    text = json.dumps(rows[0]["body"], ensure_ascii=False)
+                    offset = arguments.get("offset", 0)
+                    return {
+                        "text": text[offset : offset + 12000],
+                        "next_offset": offset + 12000
+                        if len(text) > offset + 12000
+                        else None,
+                    }
                 if arguments["mode"] == "repair":
                     return await remote(
-                        record, "repair_log", {"operation": arguments["operation"]}
+                        record,
+                        "repair_log",
+                        {k: v for k, v in arguments.items() if k != "mode"},
                     )
                 return await remote(record, "job", arguments)
             if name in (
@@ -522,6 +551,7 @@ class AstrBotAgent:
         if provider is None:
             raise ValueError(f"模型提供商不存在：{provider_id}")
         provider = effort_provider(provider, self.reasoning_effort)
+        budget_provider = provider
         job["provider_id"] = provider_id
         tasks.save(job)
         search_note = ""
@@ -553,6 +583,15 @@ class AstrBotAgent:
                 provider, lambda key, text: tasks.summary(job, key, text)
             )
         provider = MainProvider(provider, tasks, job, self.attempts, capture)
+        system = (
+            PROMPT
+            + f"\n当前任务：{job['name']}；实例：{job['instance']}。\n规则文件：\n"
+            + rules
+            + search_note
+        )
+        job["messages"] = await fit_history(
+            tasks, job, budget_provider, job["messages"], system, tools=TOOLS
+        )
         wrapper = AgentContextWrapper(
             context=AstrAgentContext(context=self.context, event=event),
             tool_call_timeout=86400,
@@ -564,10 +603,7 @@ class AstrBotAgent:
             request=ProviderRequest(
                 prompt=None,
                 contexts=job["messages"],
-                system_prompt=PROMPT
-                + f"\n当前任务：{job['name']}；实例：{job['instance']}。\n规则文件：\n"
-                + rules
-                + search_note,
+                system_prompt=system,
                 func_tool=tools,
             ),
             run_context=wrapper,
@@ -589,9 +625,29 @@ class AstrBotAgent:
                         item.model_dump(mode="json")
                         for item in wrapper.messages
                         if item.role != "system"
-                    ]
+                    ],
+                    copy_messages=False,
                 )
-                tasks.save(job)
+                if not job.get("open_step"):
+                    history = job["messages"]
+                    fitted = await fit_history(
+                        tasks,
+                        job,
+                        budget_provider,
+                        job["messages"],
+                        system,
+                        tools=TOOLS,
+                    )
+                    if fitted is not history:
+                        system_messages = [
+                            item for item in wrapper.messages if item.role == "system"
+                        ]
+                        wrapper.messages[:] = [
+                            *system_messages,
+                            *[Message.model_validate(item) for item in fitted],
+                        ]
+                else:
+                    tasks.save(job)
                 async for event in runner.step():
                     if event.type == "tool_call" and job.get("open_step"):
                         call_id = event.data["chain"].chain[0].data["id"]
@@ -610,7 +666,8 @@ class AstrBotAgent:
                         item.model_dump(mode="json")
                         for item in wrapper.messages
                         if item.role != "system"
-                    ]
+                    ],
+                    copy_messages=False,
                 )
                 job["messages"] = serialized
                 for item in wrapper.messages:
@@ -642,7 +699,12 @@ class AstrBotAgent:
                 tasks.message(job, response.completion_text)
         finally:
             self.runners.pop(job["id"], None)
-            tasks.log(job, "agent_context", messages=job["messages"])
+            tasks.log(
+                job,
+                "agent_context",
+                budget=job.get("context_budget"),
+                messages=len(job["messages"]),
+            )
 
     async def summarize(self, tasks, job):
         provider_id = (
@@ -653,7 +715,17 @@ class AstrBotAgent:
         provider = await self.context.provider_manager.get_provider_by_id(provider_id)
         if provider is None:
             raise ValueError(f"总结模型提供商不存在：{provider_id}")
-        messages = clean_history(job["messages"])
+        history = clean_history(job["messages"])
+        history.extend(
+            {
+                "role": "user",
+                "content": "补充事实：" + json.dumps(item, ensure_ascii=False),
+            }
+            for item in [*job["feedback"], *job.get("repairs", [])]
+        )
+        messages = await fit_history(
+            tasks, job, provider, history, self.rules(), archive=True
+        )
         for message in messages:
             if isinstance(message.get("content"), list):
                 message["content"] = [
@@ -663,9 +735,7 @@ class AstrBotAgent:
             "task": job["name"],
             "directory": job["directory"],
             "report": job["report"],
-            "feedback": job["feedback"],
             "messages": messages,
-            "repairs": job.get("repairs", []),
             "verification": "管理员已验收；具体效果以保存的反馈和工具事实为准",
         }
         response = await request_provider(provider).text_chat(

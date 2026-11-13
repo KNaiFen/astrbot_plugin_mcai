@@ -107,7 +107,7 @@ class MCAI(Star):
         try:
             if command == "/mcaihelp":
                 yield event.plain_result(
-                    "回复问题：/mcainew 任务名\n补充：/mcaisay 任务名 内容\n查看：/mcailist、/mcaistatus、/mcaiplan\n管理员：/mcaiapply、/mcaipause、/mcairesume、/mcaistop、/mcaidone 任务名"
+                    "回复问题：/mcainew 任务名 [补充说明]\n补充：/mcaisay 任务名 内容\n查看：/mcailist、/mcaistatus、/mcaiplan\n管理员：/mcaiapply、/mcaipause、/mcairesume、/mcaistop、/mcaidone 任务名"
                 )
                 return
             if command == "/mcailist":
@@ -117,21 +117,23 @@ class MCAI(Star):
                 return
             name, _, content = tail.strip().partition(" ")
             if command == "/mcainew":
-                instance, name = None, tail.strip()
                 if not name:
-                    raise ValueError("用法：回复问题消息后 /mcainew 任务名")
+                    raise ValueError("用法：回复问题消息后 /mcainew 任务名 [补充说明]")
                 quoted = [
                     part for part in event.get_messages() if isinstance(part, Reply)
                 ]
                 if not quoted or not quoted[0].message_str:
                     raise ValueError("请回复一条包含问题的消息来创建任务")
+                report = quoted[0].message_str
+                if content.strip():
+                    report += "\n\n创建者补充：\n" + content.strip()
                 await self.tasks.create(
                     group,
                     event.unified_msg_origin,
                     name,
-                    instance,
+                    None,
                     sender,
-                    quoted[0].message_str,
+                    report,
                 )
                 return
             job = self.tasks.find(group, name)
