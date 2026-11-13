@@ -1,0 +1,17 @@
+{
+  "host_url": {"description": "MC 控制程序 HTTPS 地址，如 https://公网IP:映射端口", "type": "string", "default": "https://127.0.0.1:18765"},
+  "host_token": {"description": "控制程序共享令牌", "type": "string", "secret": true},
+  "host_fingerprint": {"description": "B 启动时显示的证书 SHA-256 指纹", "type": "string", "default": ""},
+  "provider_id": {"description": "排障模型（API 地址和密钥先在 AstrBot 模型页配置）", "type": "string", "default": "", "_special": "select_provider"},
+  "reasoning_effort": {"description": "排障模型思考强度，留空继承提供商；支持自定义值", "type": "string", "default": ""},
+  "enable_alpha_search": {"description": "启用提供商 alpha/search 独立搜索，可在插件设置视图测试并自动配置", "type": "bool", "default": false},
+  "enable_web_search": {"description": "启用 Responses API 托管联网搜索，不另配本地搜索服务", "type": "bool", "default": true},
+  "web_search_tool_type": {"description": "托管搜索工具类型：web_search 或 web_search_preview", "type": "string", "default": "web_search"},
+  "review_provider_id": {"description": "独立审核模型（必须选择，支持 OpenAI Chat／Responses）", "type": "string", "default": "", "_special": "select_provider"},
+  "review_reasoning_effort": {"description": "审核模型思考程度，留空继承审核提供商配置，如 high；仅作用于审核请求", "type": "string", "default": ""},
+  "model_max_attempts": {"description": "同一模型步骤最多尝试次数（主模型与审核分别计数）", "type": "int", "default": 3},
+  "forward_reasoning_summary": {"description": "将主模型 Responses API 明确提供的摘要原文发送到群，审核内容不转发", "type": "bool", "default": true},
+  "admin_ids": {"description": "允许创建、批准、续接和结束任务的 QQ 号", "type": "list", "default": []},
+  "group_ids": {"description": "允许使用的群号（留空允许所有群）", "type": "list", "default": []},
+  "max_steps": {"description": "每轮最多模型步骤", "type": "int", "default": 40}
+}

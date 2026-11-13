@@ -1,0 +1,3 @@
+aiohttp>=3.10,<4
+jsonschema>=4,<5
+trafilatura>=2,<3
