@@ -450,7 +450,7 @@ TOOLS = [
     ),
     (
         "mc_propose",
-        "提出一组修复步骤等待管理员确认。文件修复自动停服备份；command 可在线执行，不填 backup_paths 时无恢复备份，summary 必须简短说明。脚本修改仍需声明备份路径。",
+        "提出一组运维或故障修复步骤等待管理员确认。文件修改自动停服备份；command 可在线执行，不填 backup_paths 时无恢复备份，summary 必须简短说明。脚本修改仍需声明备份路径。",
         contract(
             {
                 "summary": STRING,
