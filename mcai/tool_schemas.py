@@ -467,7 +467,7 @@ TOOLS = [
     ),
     (
         "mc_pause",
-        "没有可行方向或缺少必要信息时保存进度并暂停，等待管理员 /mcairesume 续接。",
+        "无可行方向且需管理员处理后才能继续时硬暂停，等待 /mcairesume。仅等待玩家补充时用 mc_say 提问并结束本轮，/mcaisay 会自动继续。",
         contract({"reason": {"type": "string", "minLength": 1}}, ("reason",)),
     ),
 ]

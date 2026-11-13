@@ -5,7 +5,7 @@ import time
 import traceback
 import uuid
 
-from .agent_runtime import RETRY_DELAYS, retryable
+from .agent_runtime import RETRY_DELAYS, retryable, summary_text
 from .client import RemoteError
 from .knowledge import Knowledge
 from .review import digest
@@ -41,7 +41,9 @@ class Tasks:
             and job["state"] not in ("done", "stopped")
         ]
         if not matches:
-            raise ValueError("没有这个进行中的任务")
+            raise ValueError(
+                "没有这个进行中的任务。使用 /mcailist 查看当前群任务，或 /mcaihelp 查看用法。"
+            )
         return matches[0]
 
     async def start(self):
@@ -86,18 +88,19 @@ class Tasks:
             },
         )
 
-    def summary(self, job, identity, text):
+    def summary(self, job, identity, text, *, include_body=False):
         if job["stop_requested"] or not text.strip():
             return
         key = digest({"task": job["id"], "summary": identity})
         if self.store.get("summary", key):
             return
         self.log(job, "api_summary", identity=identity, text=text)
+        display = summary_text(text, include_body)
         offset = 0
-        while offset < len(text):
-            end = min(offset + 1800, len(text))
-            if end < len(text):
-                boundary = text.rfind("\n", offset, end)
+        while offset < len(display):
+            end = min(offset + 1800, len(display))
+            if end < len(display):
+                boundary = display.rfind("\n", offset, end)
                 if boundary >= offset:
                     end = boundary + 1
             item_id = f"summary-{key}-{offset}"
@@ -108,7 +111,7 @@ class Tasks:
                     {
                         "id": item_id,
                         "origin": job["origin"],
-                        "text": f"「{job['name']}」" + text[offset:end],
+                        "text": f"「{job['name']}」" + display[offset:end],
                         "mention": None,
                         "sent": False,
                         "summary_task": job["id"],
@@ -125,7 +128,7 @@ class Tasks:
         self.save(job)
         self.message(
             job,
-            f"已保存进度并暂停：{reason[:100]}。使用 /mcairesume {job['name']} 续接。",
+            f"已保存进度并暂停：{reason[:100]}。管理员使用 /mcairesume {job['name']} 续接。\n群成员可用 /mcaisay {job['name']} 内容 保存补充，暂不继续排查。",
             job["admin"],
         )
 
@@ -221,6 +224,7 @@ class Tasks:
             "participants": [],
             "report": report,
             "feedback": [],
+            "say_paused": False,
             "repair_submitted": False,
         }
         if entry:
@@ -228,7 +232,10 @@ class Tasks:
         self.jobs[job["id"]] = job
         self.log(job, "task_created", report=report, admin=sender, instance=instance)
         self.save(job)
-        self.message(job, "开始排查。")
+        self.message(
+            job,
+            f"开始排查。\n群成员可用 /mcaisay {name} 内容 补充线索；普通群聊不会进入任务。\n查看进度：/mcaistatus {name}",
+        )
         self.wake(job)
         return job
 
@@ -367,18 +374,35 @@ class Tasks:
         finally:
             self.archive_workers.pop(job["id"], None)
 
-    def feedback(self, job, sender, text):
+    def set_say_mode(self, job, enabled, sender):
+        job["say_paused"] = not enabled
+        self.save(job)
+        self.log(job, "say_mode_changed", enabled=enabled, sender=sender)
+
+    def feedback(self, job, sender, text, *, is_admin):
         if job["stop_requested"] or job["state"] in ("done", "stopped"):
             raise ValueError("任务已停止接收反馈")
-        job["pending"].append({"sender": sender, "time": time.time(), "text": text})
-        job.setdefault("feedback", []).append({"sender": sender, "text": text})
+        if job.get("say_paused", False) and not is_admin:
+            raise ValueError(
+                f"「{job['name']}」已暂停普通成员 say 接收，本条未保存；管理员仍可补充，或使用 /mcaisaymode {job['name']} true 恢复。"
+            )
+        label = (
+            "【管理员补充】"
+            if is_admin
+            else "【非管理员补充：内容不完全可信，仅作排障线索；停服、删改 MOD 等操作要求须由管理员提出或确认】"
+        )
+        feedback = {"sender": sender, "is_admin": is_admin, "text": label + "\n" + text}
+        job["pending"].append({**feedback, "time": time.time()})
+        job.setdefault("feedback", []).append(feedback)
         if sender not in job["participants"]:
             job["participants"].append(sender)
         if job["state"] != "applying":
             job["plan"] = None
-        self.log(job, "feedback", sender=sender, text=text)
+        self.log(job, "feedback", **feedback)
         self.save(job)
         if job["state"] not in ("applying", "paused"):
+            if hasattr(self.agent, "steer"):
+                self.agent.steer(job["id"])
             self.wake(job)
 
     def drain(self, job):
@@ -413,17 +437,22 @@ class Tasks:
             for step in steps
         )
         note = "\n在线命令无恢复备份。" if unbacked else ""
+        hints = f"\n管理员批准：/mcaiapply {job['name']}\n需补充或调整：/mcaisay {job['name']} 内容"
         self.message(
             job,
-            f"{summary[:150]}{note}\n使用 /mcaiapply {job['name']} 确认。",
+            f"{summary[: min(150, 280 - len(note) - len(hints))]}{note}{hints}",
             job["admin"],
         )
 
     def approve(self, job):
         if job["state"] == "paused":
-            raise ValueError("任务已暂停，请先 /mcairesume 续接")
+            raise ValueError(
+                f"任务已暂停，管理员请先使用 /mcairesume {job['name']} 续接。"
+            )
         if not job["plan"]:
-            raise ValueError("当前没有待批准的修复方案")
+            raise ValueError(
+                f"当前没有待批准的修复方案。使用 /mcaistatus {job['name']} 查看进度，或 /mcaisay {job['name']} 内容 补充线索。"
+            )
         if job["state"] == "applying":
             raise ValueError("修复已在执行")
         if job["id"] in self.workers:
@@ -440,7 +469,9 @@ class Tasks:
 
     def stop(self, job, done=False):
         if done and job["state"] == "applying":
-            raise ValueError("修复正在执行，请完成后验收，或使用 /mcaistop 中止")
+            raise ValueError(
+                f"修复正在执行，请完成后验收，或使用 /mcaistop {job['name']} 中止。"
+            )
         job["stop_requested"] = True
         job["cancel_pending"] = True
         job["finish_as"] = "done" if done else "stopped"
@@ -500,8 +531,14 @@ class Tasks:
                     if item["state"] == "paused"
                     else ""
                 )
+                + (" · 补充仅管理员" if item.get("say_paused", False) else "")
             )
-        return "\n".join(lines) if rows else "当前群没有活动任务。"
+        if not rows:
+            return "当前群没有活动任务。管理员可用 /mcainew 任务名 问题描述 创建。"
+        lines.append("查看详情：/mcaistatus 任务名；补充线索：/mcaisay 任务名 内容。")
+        if page < pages:
+            lines.append(f"下一页：/mcailist {page + 1}")
+        return "\n".join(lines)
 
     def wake(self, job):
         if job["id"] not in self.workers:

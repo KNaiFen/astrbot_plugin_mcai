@@ -14,6 +14,7 @@ from .mcai.tasks import Tasks
 COMMANDS = {
     "mcainew",
     "mcaisay",
+    "mcaisaymode",
     "mcaiapply",
     "mcaistop",
     "mcaidone",
@@ -61,6 +62,10 @@ class MCAI(Star):
                 review_reasoning_effort=config.get("review_reasoning_effort", ""),
                 model_max_attempts=config.get("model_max_attempts", 3),
                 forward_reasoning_summary=config.get("forward_reasoning_summary", True),
+                forward_reasoning_summary_body=config.get(
+                    "forward_reasoning_summary_body", False
+                ),
+                reasoning_summary=config.get("reasoning_summary", "auto"),
                 enable_web_search=config.get("enable_web_search", True),
                 web_search_tool_type=config.get("web_search_tool_type", "web_search"),
                 reasoning_effort=config.get("reasoning_effort", ""),
@@ -95,6 +100,9 @@ class MCAI(Star):
             event.stop_event()
             return
         sender = event.get_sender_id()
+        is_admin = event.is_admin() or sender in {
+            str(item) for item in self.config.get("admin_ids", [])
+        }
         try:
             if command not in {
                 "mcaisay",
@@ -103,14 +111,18 @@ class MCAI(Star):
                 "mcailist",
                 "mcaiplan",
             }:
-                if not event.is_admin() and sender not in {
-                    str(item) for item in self.config.get("admin_ids", [])
-                }:
+                if not is_admin:
                     yield event.plain_result("该指令仅管理员可用。")
                     return
             if command == "mcaihelp":
                 yield event.plain_result(
-                    "回复问题：/mcainew 任务名 [补充说明]\n补充：/mcaisay 任务名 内容\n查看：/mcailist、/mcaistatus、/mcaiplan\n管理员：/mcaiapply、/mcaipause、/mcairesume、/mcaistop、/mcaidone 任务名"
+                    "管理员创建：/mcainew 任务名 问题描述（也可引用问题，附加补充说明）\n"
+                    "群成员补充：/mcaisay 任务名 内容\n"
+                    "管理员控制成员补充：/mcaisaymode 任务名 false（暂停）或 true（开启）；管理员仍可补充\n"
+                    "查看：/mcailist [页码]、/mcaistatus 任务名、/mcaiplan 任务名\n"
+                    "管理员批准：/mcaiapply 任务名\n"
+                    "管理员暂停／续接：/mcaipause 任务名、/mcairesume 任务名\n"
+                    "管理员中止／验收：/mcaistop 任务名、/mcaidone 任务名"
                 )
                 return
             if command == "mcailist":
@@ -121,15 +133,21 @@ class MCAI(Star):
             name, _, content = tail.strip().partition(" ")
             if command == "mcainew":
                 if not name:
-                    raise ValueError("用法：回复问题消息后 /mcainew 任务名 [补充说明]")
+                    raise ValueError(
+                        "用法：/mcainew 任务名 问题描述，或引用问题后 /mcainew 任务名 [补充说明]"
+                    )
                 quoted = [
                     part for part in event.get_messages() if isinstance(part, Reply)
                 ]
-                if not quoted or not quoted[0].message_str:
-                    raise ValueError("请回复一条包含问题的消息来创建任务")
-                report = quoted[0].message_str
-                if content.strip():
+                report = quoted[0].message_str if quoted else ""
+                if report and content.strip():
                     report += "\n\n创建者补充：\n" + content.strip()
+                elif not report:
+                    report = content.strip()
+                if not report.strip():
+                    raise ValueError(
+                        f"用法：/mcainew {name} 问题描述，或引用一条包含问题的消息后 /mcainew {name}"
+                    )
                 await self.tasks.create(
                     group,
                     event.unified_msg_origin,
@@ -139,11 +157,37 @@ class MCAI(Star):
                     report,
                 )
                 return
+            if not name:
+                usage = f"/{command} 任务名"
+                if command == "mcaisay":
+                    usage += " 内容"
+                elif command == "mcaisaymode":
+                    usage += " true|false"
+                raise ValueError(f"用法：{usage}；忘记任务名可用 /mcailist 查看。")
             job = self.tasks.find(group, name)
             if command == "mcaisay":
                 if not content.strip():
-                    raise ValueError("请在任务名后填写补充信息")
-                self.tasks.feedback(job, sender, content.strip())
+                    raise ValueError(f"用法：/mcaisay {name} 内容，请填写补充信息。")
+                self.tasks.feedback(job, sender, content.strip(), is_admin=is_admin)
+                if job["state"] == "paused":
+                    yield event.plain_result(
+                        f"「{name}」补充已保存；任务仍暂停，管理员使用 /mcairesume {name} 后会一起读取。"
+                    )
+            elif command == "mcaisaymode":
+                mode = content.strip()
+                if mode not in ("true", "false"):
+                    raise ValueError(
+                        f"用法：/mcaisaymode {name} true|false；true 开启、false 暂停普通成员补充，管理员仍可补充。"
+                    )
+                self.tasks.set_say_mode(job, mode == "true", sender)
+                yield event.plain_result(
+                    f"「{name}」"
+                    + (
+                        f"已开启普通成员 say 接收。暂停：/mcaisaymode {name} false"
+                        if mode == "true"
+                        else f"已暂停普通成员 say 接收，管理员仍可补充。恢复：/mcaisaymode {name} true"
+                    )
+                )
             elif command == "mcaiapply":
                 self.tasks.approve(job)
             elif command == "mcaistop":
@@ -158,20 +202,37 @@ class MCAI(Star):
                 yield event.plain_result(
                     f"「{name}」"
                     + (
-                        job["plan"]["summary"][:220] + f"\n批准：/mcaiapply {name}"
+                        job["plan"]["summary"][:220]
+                        + (
+                            f"\n任务已暂停，管理员续接：/mcairesume {name}"
+                            if job["state"] == "paused"
+                            else f"\n管理员批准：/mcaiapply {name}"
+                        )
+                        + f"\n需调整：/mcaisay {name} 内容"
                         if job["plan"]
-                        else "当前没有待批准方案。"
+                        else f"当前没有待批准方案。使用 /mcaistatus {name} 查看进度，或 /mcaisay {name} 内容 补充线索。"
                     )
                 )
             else:
+                say_paused = job.get("say_paused", False)
+                audience = "管理员" if say_paused else "群成员"
                 state = {
-                    "running": "排查中",
-                    "applying": "修复中",
-                    "waiting": "等待批准" if job["plan"] else "等待反馈",
-                    "paused": "已暂停，使用 /mcairesume 续接",
+                    "running": f"排查中。{audience}可用 /mcaisay {name} 内容 补充线索。",
+                    "applying": f"修复中。{audience}可用 /mcaisay {name} 内容 补充，执行结束后读取。",
+                    "waiting": (
+                        f"等待批准。\n查看方案：/mcaiplan {name}\n管理员批准：/mcaiapply {name}\n需调整：/mcaisay {name} 内容"
+                        if job["plan"]
+                        else f"等待反馈。{audience}使用 /mcaisay {name} 内容 继续；确认问题解决后，管理员使用 /mcaidone {name} 验收。"
+                    ),
+                    "paused": f"已暂停。{audience}可用 /mcaisay {name} 内容 保存补充；管理员使用 /mcairesume {name} 续接。",
                 }
                 yield event.plain_result(
                     f"「{name}」{state.get(job['state'], job['state'])}"
+                    + (
+                        f"\n普通成员 say：暂停，管理员仍可补充。恢复：/mcaisaymode {name} true"
+                        if say_paused
+                        else f"\n普通成员 say：开启。管理员暂停接收：/mcaisaymode {name} false"
+                    )
                 )
         except ValueError as exc:
             yield event.plain_result(str(exc))

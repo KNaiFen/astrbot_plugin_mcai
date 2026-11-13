@@ -203,7 +203,7 @@ async def test_capabilities(main, review, settings, progress):
             )
 
         async def summary():
-            reasoning = {"summary": "auto"}
+            reasoning = {"summary": settings.get("reasoning_summary") or "auto"}
             effort = (
                 settings.get("reasoning_effort")
                 or main.provider_config.get("custom_extra_body", {})
@@ -232,7 +232,13 @@ async def test_capabilities(main, review, settings, progress):
                         seen = True
             return seen
 
-        await check("reasoning_summary", summary)
+        if settings.get("reasoning_summary") == "none":
+            result["items"]["reasoning_summary"] = {
+                "status": "unobserved",
+                "message": "配置已关闭摘要",
+            }
+        else:
+            await check("reasoning_summary", summary)
     else:
         result["items"]["web_search"] = {
             "status": "unsupported",

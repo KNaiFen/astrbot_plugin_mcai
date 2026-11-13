@@ -5,7 +5,7 @@ import json
 from astrbot.core.agent.context.token_counter import EstimateTokenCounter
 from astrbot.core.agent.message import Message
 
-from .agent_runtime import model_request, request_provider
+from .agent_runtime import TASK_POLICY, model_request, request_provider
 
 
 def tokens(messages):
@@ -51,7 +51,8 @@ async def fit_history(
                 contexts=[],
                 func_tool=None,
                 request_max_retries=1,
-                system_prompt="压缩已结算的 Minecraft 排障对话。只保留已知事实、证据、失败尝试、明确结论和仍待验证的问题，保留目录、操作编号、后台编号、备份及引用。审核材料不属于主对话。不得推测或增加授权。用中文简明记录，最多1500字。",
+                system_prompt="压缩已结算的 Minecraft 排障对话。只保留已知事实、证据、失败尝试、明确结论和仍待验证的问题，保留目录、操作编号、后台编号、备份及引用。审核材料不属于主对话。不得推测或增加授权。用中文简明记录，最多1500字。\n"
+                + TASK_POLICY,
             )
 
         if archive:
