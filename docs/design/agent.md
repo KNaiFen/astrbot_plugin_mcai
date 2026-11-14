@@ -23,16 +23,23 @@
 | `mc_objects`、`mc_profile`、`mc_inspect` | 已加载对象普查、短时热点、按UUID／位置检查目标 |
 | `mc_files` | `find/read/tail/stat/search/preview_patch`；文件属性、SHA-256、检索与保留编码的补丁预览 |
 | `mc_logs` | 文件/glob、字面量/正则、时间、编码和上下文 |
-| `mc_console` | `read/command`；按序号读取或发送在线诊断命令 |
+| `mc_console_read`、`mc_console_line`、`mc_console_send` | 分别读取新输出、续读长行、批量发送受审诊断命令 |
 | `mc_exec` | PowerShell诊断脚本、实例内工作子目录与超时 |
 | `mc_nbt` | 文件、NBT路径、摘要/值、子项分页；修改值使用带类型SNBT |
-| `mc_region` | 区块NBT与对象批量预览、方块坐标／状态统计、检查／原始导出；世界与实体扫描 |
-| `mc_job` | 后台查询、有界等待、分页、长字段引用／检索、取消与修复记录 |
+| `mc_region_nbt`、`mc_region_blocks` | 前者read/select/preview_batch查询区块NBT；后者get/search读取或统计已保存方块 |
+| `mc_region_check`、`mc_region_export`、`mc_region_scan` | 区域／点检查、原始区块导出、世界数据扫描 |
+| `mc_job_read`、`mc_job_wait`、`mc_job_cancel` | 后台输出分页、有界等待、取消 |
+| `mc_artifact_read`、`mc_artifact_find` | 同一job_id内长字段字符续读与定位 |
+| `mc_operation_read`、`mc_context_history` | 原操作与脚本日志；当前任务压缩前原文，不是已验收经验 |
 | `mc_propose` | 简短方案、明确步骤及审核材料；等待管理员批准 |
 | `mc_say` | 关键提问或结论 |
 | `mc_pause` | 保存进度并暂停 |
 
-不同动作有明确参数结构，不暴露自由填写的泛化 `arguments`。工具调用通过当前 `tool_call` 和 `open_step` 记录持久化，断线后按原编号恢复结果。
+共38个工具。模型注册和执行端使用同一份完整schema，保留oneOf、分支必填及额外参数限制；重复复杂结构使用工具内部$defs/$ref，分支共享类型声明，保留每个分支允许的键。Chat／Responses工具显式strict:false，避免默认严格化改变可选参数；程序仍执行完整校验。工具调用通过`tool_call/open_step`持久化，断线沿原编号恢复。
+
+模型结果统一为`{ok, data, error?, next_call?}`。ok只表示本次调用处理成功；后台是否完成看data.status，输出读完看data.complete。后台原id在模型侧为job_id；原始返回仍用于内部跟踪并保存在result，实际模型格式保存在model_result，诊断导出包含两者。next_call为可直接采用的name/arguments，仅提供续读或原操作核对建议，不自动执行。
+
+错误code固定为invalid_arguments、review_denied、precondition_failed、operation_failed、remote_error、unknown_tool；另含message、可选path及execution_state。缺参path定位缺失字段，额外参数定位多余字段。参数、审核和前置条件明确拒绝为not_executed，B确认失败为failed，提交后无法核实为unknown。failed可能已有部分效果，unknown不能换编号重放。mc_say只确认queued，提案为awaiting_approval，暂停为paused；平台实际发送另由发件箱记录。任务恢复与正常调用共用同一模型结果构造，不重写历史调用或审核材料。
 
 未绑定目标时允许实例列表、选择、历史、网页和交流；实例状态、诊断、存档及下载工具要求已绑定目标。
 
@@ -48,7 +55,7 @@
 
 局部文本修改使用 `patch_text`：提供 `path`、原文件 `sha256`、`edits: [{old, new}]`，非UTF-8无BOM文本同时指定 `encoding`。先用 `mc_files stat` 获取哈希，再用 `preview_patch` 查看差异；预览不写入。原文必须唯一匹配，执行时文件哈希变化则失败。保留原BOM、编码、未修改部分及换行形式；仍走文件修复的停服和备份。`write_text`继续用于明确提交整份新内容。
 
-`mc_files search`限定文本glob，支持字面量／正则和`lines/files/count`；编码错误逐文件明确报告。`tail`读取末尾，`stat`返回大小、修改时间、BOM和SHA-256。`mc_job wait`沿原游标最多等25秒，出现输出或任务结束立即返回；`find`在指定产物中检索并返回字符偏移，可继续用`artifact`读取原文。等待和检索不创建新诊断进程。
+`mc_files search`限定文本glob，支持字面量／正则和`lines/files/count`；编码错误逐文件明确报告。`tail`读取末尾，`stat`返回大小、修改时间、BOM和SHA-256。`mc_job_wait`默认等10秒、最多25秒，出现输出或任务结束立即返回；`mc_artifact_find`返回字符偏移，`mc_artifact_read`读取原文。优先使用返回的next_call；等待和检索不创建新诊断进程。
 
 `mc_diagnostics`是固定只读查询：`process`记录实例托管树内目标的CPU／I/O增量、内存和线程数，`jvm`使用实际JVM同目录的`jcmd.exe`读取参数、堆概要并连续采集线程快照。默认3个样本、间隔1秒，最多5个、间隔最多10秒；采集进程受原辅助内存额度与取消机制约束，MC不在该Job内。Oracle javapath包装进程按父子关系识别，以叶子JVM作为目标；多个独立JVM不能自动选择。缺JDK工具或采集失败明确返回错误，原始输出保留。
 
@@ -65,16 +72,18 @@
 | 入口 | 通过 | 拒绝或失败 |
 |---|---|---|
 | `mc_exec` | 提交原诊断脚本 | 不执行 |
-| `mc_console command` | 发送原诊断命令 | 不发送 |
+| `mc_console_send` | 发送原诊断命令 | 不发送 |
 | `mc_propose` | 保存原步骤，向管理员请求一次批准 | 不形成可批准方案 |
 
 查询、分页、取消、交流和暂停不审核。管理员批准不能绕过被拒绝的提案；后续新方案需重新审核。
 
-每个受审调用声明 `review.purpose` 和 `review.script_files`，可指定外部脚本编码。A从B读取实际正文，审核输入包含原命令、内联脚本、外部脚本、工作与实例目录、步骤、备份范围；安装下载时还包含来源、文件哈希、版本与依赖。
+审核上下文由A从任务原文、带来源的补充和实际参数组装，模型无需填写`review`或逐次用途申报。仅引用外部脚本时填写顶层`script_files`和可选`script_encoding`，A从B读取实际正文。审核输入包含原命令、内联／外部脚本、工作与实例目录、步骤及备份范围；安装下载时还包含来源、文件哈希、版本与依赖。申报字段从后续主模型历史移除，正文和审核回复只留本地。
 
 实现检查常见字面量 BAT／PS1／Python 引用是否申报，不实现通用Shell解析器。材料缺失或超限不能静默截断后放行。审核决定绑定本次调用和参数，脚本内容哈希在B执行前复核；变化则重新审核和提案。待执行方案的参数或规则变化也不能沿用旧审核。
 
-审核使用单独提供商配置和思考程度，在无执行工具的独立对话中返回严格 JSON 的 `allow` 或 `deny`。理由、响应和API提供的推理信息只写本地记录。主对话清除 `review` 申报和审核对话，通过后保留原工具结果，拒绝仅返回未执行及简短原因。
+审核使用单独提供商配置和思考程度，在无执行工具的独立对话中返回严格 JSON 的 `allow` 或 `deny`。理由、响应和API提供的推理信息只写本地记录。主对话清除脚本申报字段和审核对话，通过后保留原工具结果，拒绝仅返回未执行及简短原因。
+
+审核只判断当前调用的实际目标、范围和效果，不要求一次调用完成整个任务，不额外发明数量上限、在线备份或重复批准。诊断命令使用`commands`数组，整批审核、按序发送；每条发送前保存稳定子编号及批次进度，发送失败保留已发送部分并停止余项。同一操作重连只查询原编号，不重放整批。返回会话、起始游标、逐条发送状态及已有新输出，实际效果由后续输出核实。参数校验错误包含字段路径，模型可依具体原因修正，沿用原步骤预算。
 
 默认模板 `mcai/agent_rules.md` 安装成A数据目录的 `AGENTS.md`，与内置工具提示一同提供给主模型（配置中的“排障模型”）和独立审核模型。预设说明QQ群远程运维与排障任务、Windows A/B、独立托管、消息可见范围、证据判断、操作与修复、原编号恢复、历史摘要及验收；核实删除、覆盖、递归、批量操作的目标与范围，留意空变量和过宽选择条件。每轮与续接重新读取，模板升级不覆盖用户编辑；已有安装按[运行时规则说明](../usage/configuration.md#运行时规则)人工合并。
 
@@ -90,6 +99,8 @@ say 入口按 AstrBot 管理员或配置的 `admin_ids` 计算 `is_admin`，作�
 
 普通消息用于必要提问、关键结论、批准与验收，完整文本保留本地，群消息做长度控制。工具分页、后台轮询和审核过程不单独播报。
 
-Responses 主模型按`reasoning_summary`请求`auto/concise/detailed`，`none`关闭；与思考强度独立。流式读取原始`response.reasoning_summary_text.delta/done`，完整原文保留本地。群内默认只发第一条非空标题（最多80字符）；开启`forward_reasoning_summary_body`后同时发送正文，清除空行及加粗、标题、代码标记。语言由服务商返回，不额外翻译。不能把AstrBot合并后的通用`reasoning_content`当成摘要。
+Responses主模型按`reasoning_summary`请求`auto/concise/detailed`，`none`关闭；与思考强度独立。群内转发默认关闭，本地采集独立进行，支持流式摘要事件及非流式reasoning条目的summary。开启转发后默认只发第一条非空标题（最多80字符），开启正文开关后同时发送正文。不能把AstrBot合并后的通用`reasoning_content`当成摘要。
 
 摘要按响应、条目与摘要索引去重，开启正文后长段按平台长度拆分，不添加定时或每分钟限额；停止任务后丢弃未发送摘要。审核模型内容不转发，摘要通知也不作为新群反馈。摘要是当前排查方向，解决结论仍需工具证据及管理员验收。
+
+插件私有客户端在实际Chat/Responses SDK调用边界保存请求、返回和流式片段，按任务写入`traces/`；其他提供商记录其规范化调用边界。审核、压缩、验收和能力测试同样留痕，不修改共享客户端。插件命令在权限和参数判断前记录，处理结果与回复沿事件编号关联；任务发件箱记录实际发送成功或失败。设置页可按时间和任务导出本地记录及状态快照，不依赖B在线。记录失败会明确写入AstrBot错误日志，不因此重发已完成的API请求。

@@ -13,6 +13,7 @@ from .agent_runtime import (
 )
 from .review import digest
 from .search import alpha_search
+from .tracing import traced_provider
 
 
 def provider_identity(provider, settings):
@@ -27,8 +28,19 @@ def provider_identity(provider, settings):
     )
 
 
-async def test_capabilities(main, review, settings, progress):
+async def test_capabilities(main, review, settings, progress, *, store=None):
     from astrbot.core.agent.tool import FunctionTool, ToolSet
+
+    main = request_provider(main)
+    if main.provider_config.get("type") in (
+        "openai_responses",
+        "openai_chat_completion",
+    ):
+        main.client = main.client.with_options(max_retries=0)
+    if store is not None:
+        main = traced_provider(main, store, None, "能力测试")
+        if review is not None:
+            review = traced_provider(review, store, None, "审核能力测试")
 
     result = {
         "created": time.time(),
@@ -187,7 +199,7 @@ async def test_capabilities(main, review, settings, progress):
     if main.provider_config.get("type") == "openai_responses":
 
         async def native_search(kind):
-            response = await main.client.with_options(max_retries=0).responses.create(
+            response = await main.client.responses.create(
                 model=main.get_model(),
                 input="搜索 Minecraft 官方网站，返回官网名称和一个来源链接。",
                 tools=[{"type": kind}],
@@ -215,7 +227,7 @@ async def test_capabilities(main, review, settings, progress):
             )
             if effort:
                 reasoning["effort"] = effort
-            stream = await main.client.with_options(max_retries=0).responses.create(
+            stream = await main.client.responses.create(
                 model=main.get_model(),
                 input="计算 17*23，并用一句话核对。",
                 reasoning=reasoning,
@@ -324,13 +336,11 @@ def detected_settings(result):
         )
     elif native == "unsupported" and preview in (None, "unsupported"):
         changes["enable_web_search"] = False
-    for item, option in (
-        ("reasoning_summary", "forward_reasoning_summary"),
-        ("alpha_search", "enable_alpha_search"),
-    ):
-        status = items.get(item, {}).get("status")
-        if status == "passed":
-            changes[option] = True
-        elif status == "unsupported":
-            changes[option] = False
+    if items.get("reasoning_summary", {}).get("status") == "unsupported":
+        changes["forward_reasoning_summary"] = False
+    status = items.get("alpha_search", {}).get("status")
+    if status == "passed":
+        changes["enable_alpha_search"] = True
+    elif status == "unsupported":
+        changes["enable_alpha_search"] = False
     return changes

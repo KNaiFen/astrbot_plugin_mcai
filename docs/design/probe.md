@@ -23,7 +23,7 @@ Agent → 现有 HTTPS operation → B background job
       → .mcai-probe/requests/<id>.json
       → 控制台 mcai_probe request <id>
       → MOD 主线程采集 → results/<id>.json
-      → B 持久化结果 → mc_job 分页／长字段引用
+      → B 持久化结果 → mc_job_read/wait 分页／mc_artifact_read 长字段
 ```
 
 MOD不监听网络。`mcai_probe`仅接受服务端控制台来源。请求文件异步读取，再交主线程；结果、能力文件通过临时文件原子替换。
@@ -38,6 +38,10 @@ B沿用operation id作为后台编号和MOD请求编号。同编号／参数只�
 
 ## 工具与批准
 
-`mc_players`、`mc_metrics`、`mc_objects`、`mc_profile`、`mc_inspect`为固定只读接口，不经过AI审核；后台查询、取消用 `mc_job`。其他脚本、普通控制台及提案保持原审核规则，MOD不提供修改入口。
+Probe 0.2.0可选接入spark公开API。四个目标仅编译依赖spark API，不打包spark/API类，也不要求安装spark。加载器报告spark存在后才访问独立适配类；不存在时不加载其API引用。能力文件的`integrations.spark`报告安装状态、版本、可用性及API错误，调用失败记录日志，不伪装成未安装。
+
+metrics结果在原Probe数据之外添加独立`spark`字段，包含采集时间、平均TPS、MSPT、CPU及GC。直接使用API提供的窗口和值，注明单位；未支持和未取得有效值的情况显式标注。原Probe的维度耗时、历史、对象和热点协议保持不变，不把不同来源或不同窗口的统计混合计算。
+
+`mc_players`、`mc_metrics`、`mc_objects`、`mc_profile`、`mc_inspect`为固定只读接口，不经过AI审核；后台用`mc_job_read`查询、`mc_job_wait`等待、`mc_job_cancel`取消。其他脚本、普通控制台及提案保持原审核规则，MOD不提供修改入口。
 
 目标检查按已加载UUID或方块坐标寻找，不存在时明确说明。NBT仅在指定 `nbt_path` 时读取，保留SNBT类型、子项offset/limit；大字段由现有artifact引用续读。

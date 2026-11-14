@@ -3,11 +3,12 @@
 import asyncio
 import json
 
-from astrbot.api.web import error_response, json_response, request
+from astrbot.api.web import error_response, file_response, json_response, request
 
 from .astrbot_agent import AstrBotAgent
 from .capabilities import detected_settings, provider_identity, test_capabilities
 from .client import HostClient, RemoteError
+from .tracing import export_diagnostics
 
 
 class Settings:
@@ -22,6 +23,7 @@ class Settings:
             ("host/curseforge/test", self.curseforge, ["POST"]),
             ("capabilities", self.capabilities, ["GET", "POST"]),
             ("capabilities/cancel", self.cancel_capabilities, ["POST"]),
+            ("diagnostics", self.diagnostics, ["GET", "POST"]),
         ):
             plugin.context.register_web_api(
                 "/astrbot_plugin_mcai/" + route,
@@ -29,6 +31,12 @@ class Settings:
                 methods,
                 "MCAI 设置与诊断",
             )
+        plugin.context.register_web_api(
+            "/astrbot_plugin_mcai/diagnostics/file",
+            self.diagnostic_file,
+            ["GET"],
+            "MCAI 诊断下载",
+        )
 
     def handler(self, callback):
         async def call():
@@ -58,6 +66,41 @@ class Settings:
         if provider is None:
             raise ValueError(f"模型提供商不存在：{identity}")
         return provider
+
+    async def diagnostics(self):
+        if request.method == "GET":
+            return {
+                "tasks": [
+                    {
+                        key: item[key]
+                        for key in ("id", "name", "group", "created", "state")
+                    }
+                    for item in self.plugin.store.all("task")
+                ]
+            }
+        body = await request.json()
+        result = export_diagnostics(
+            self.plugin.store,
+            start=float(body.get("start", 0)),
+            end=float(body["end"]) if body.get("end") is not None else None,
+            task_ids=body.get("task_ids"),
+        )
+        return result
+
+    async def diagnostic_file(self):
+        from pathlib import Path
+
+        filename = request.args.get("filename", "")
+        if (
+            Path(filename).name != filename
+            or not filename.startswith("mcai-diagnostics-")
+            or not filename.endswith(".zip")
+        ):
+            return error_response("诊断文件名无效")
+        path = self.plugin.store.directory / "exports" / filename
+        if not path.is_file():
+            return error_response("诊断文件不存在")
+        return file_response(path, filename=filename, content_type="application/zip")
 
     async def settings(self):
         plugin = self.plugin
@@ -114,7 +157,9 @@ class Settings:
                 review_reasoning_effort=config.get("review_reasoning_effort", ""),
                 reasoning_effort=config.get("reasoning_effort", ""),
                 model_max_attempts=config.get("model_max_attempts", 3),
-                forward_reasoning_summary=config.get("forward_reasoning_summary", True),
+                forward_reasoning_summary=config.get(
+                    "forward_reasoning_summary", False
+                ),
                 forward_reasoning_summary_body=config.get(
                     "forward_reasoning_summary_body", False
                 ),
@@ -241,7 +286,9 @@ class Settings:
 
         async def run():
             try:
-                result = await test_capabilities(main, review, settings, progress)
+                result = await test_capabilities(
+                    main, review, settings, progress, store=self.plugin.store
+                )
                 changes = detected_settings(result)
                 await self.plugin.config.save_config_async(changes)
                 agent = self.plugin.tasks.agent
@@ -255,7 +302,7 @@ class Settings:
                     "enable_alpha_search", False
                 )
                 agent.forward_summary = self.plugin.config.get(
-                    "forward_reasoning_summary", True
+                    "forward_reasoning_summary", False
                 )
                 result["applied"] = changes
                 progress(result)

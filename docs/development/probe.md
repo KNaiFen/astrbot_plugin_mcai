@@ -12,7 +12,9 @@
 
 脚本使用代理下载固定Temurin17.0.21+9（SHA-256校验），使用JDK21构建1.21.1；两个JDK可由 `--java17`、`--java21` 指定。默认代理 `http://127.0.0.1:7890`，可用 `--proxy` 或 `HTTPS_PROXY` 覆盖。Gradle固定8.8，Fabric Loom1.7.4，ForgeGradle6.0.36，MixinGradle0.7.38，MixinExtras0.4.1。Forge目标固定47.3.0／52.1.2，Fabric Loader0.16.14，API0.92.2／0.116.1。
 
-构建执行clean，排除测试负载，检查产物不得包含Fixture类。各目标编译Java17／21，独立生成JAR及sources，`dist/probe/`附完整源码ZIP、LICENSE、NOTICE。源码包保留构建脚本与协议文档；游戏二进制、测试世界和缓存不分发。
+构建执行clean，排除测试负载，检查产物不得包含Fixture类或spark／API类，并清理本次构建目标的旧版JAR与旧源码ZIP。各目标编译Java17／21，独立生成JAR及sources，`dist/probe/`附完整源码ZIP、LICENSE、NOTICE。源码包保留构建脚本与协议文档；游戏二进制、测试世界和缓存不分发。
+
+spark API仅作编译依赖。构建脚本通过同一代理下载官方仓库的固定快照`0.1-20260912.112908-2`，SHA-256为`e4856b0d2ba56db652ca340821a5b40ad0bdd192cf77707ba0f4557eeb5cb63d`，缓存在`runtime/probe-build/`并在每次构建校验；不把API JAR嵌入MOD。直接调用Gradle前先运行构建脚本准备依赖。来源和许可记录在Probe的NOTICE。
 
 Forge1.21.1使用官方运行时映射，关闭reobf并移除SRG refmap；开发环境让metadata与classes共用目录，固定jopt-simple5.0.4。MixinExtras common仅用于编译／注解处理，loader组件嵌入JAR，避免Java21重复模块。安装版验证实际映射和Jar-in-Jar；Forge52.0.28实测停服后仍遗留上游非daemon线程，本轮固定52.1.2完成正常退出验收。
 
@@ -38,6 +40,12 @@ npm install --prefix runtime/probe-client --proxy=http://127.0.0.1:7890 --no-aud
 Python的HTTPS、任务去重、取消／修复协作、会话错误、分页、大字段及真实AstrBot runner由 `tests/test_probe.py`、`tests/test_agent_edges.py`验证。完整基线见[测试说明](testing.md)。
 
 `python scripts/test_probe_host.py`在隔离Fabric1.20.1安装目录验证真实HTTPS→ConPTY→MOD，含重连去重、取消确认和停服备份修复。该脚本会修改测试实例文件，先完成安装版准备，不能指向生产实例。
+
+## 2026-11-14：Probe 0.2.0可选spark集成
+
+四个发行目标构建通过，分别在隔离Forge／Fabric的1.20.1及1.21.1服务端验证安装与未安装spark，共8种组合全部通过。安装版使用spark1.10.53（1.20.1）及1.10.109（1.21.1），验证平均指标、CPU比例、GC、窗口和采集时间；移除spark后验证Probe正常加载及原有玩家／对象／热点／取消等流程。测试没有安装强制spark依赖，也没有使用按TPS控制生成的专用场景。
+
+在隔离安装目录安装或暂时移开spark后，可运行`test_probe_servers.py --installed --expect-spark present`或`absent`重现相应组合；脚本不会自动修改spark安装。最初实测记录保存在`runtime/spark-present-results.json`、`runtime/spark-absent-results.json`及对应日志。消融审查将仅用于MSPT的一次性泛型序列化方法内联后，重新构建四目标并重跑全部8种安装版组合，全部通过；最终记录为`runtime/optimization-spark-final-present.json`、`runtime/optimization-spark-final-absent.json`和`runtime/optimization-spark-final.log`。测试移开的spark JAR已恢复，运行数据不进入发行包。
 
 ## 历史实测：Probe 0.1.0
 

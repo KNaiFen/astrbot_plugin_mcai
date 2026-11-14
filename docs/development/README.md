@@ -35,8 +35,9 @@ py -3.12 -m venv .venv
 | 范围 | 入口 |
 |---|---|
 | 插件命令、初始化与通知 | `main.py`、`_conf_schema.json` |
-| Agent循环、上下文预算、工具schema、模型重试与审核 | `mcai/astrbot_agent.py`、`context_budget.py`、`agent_runtime.py`、`tool_schemas.py`、`review.py` |
+| Agent循环、上下文预算、工具schema与结果、模型重试与审核 | `mcai/astrbot_agent.py`、`context_budget.py`、`agent_runtime.py`、`tool_schemas.py`、`tool_results.py`、`review.py` |
 | A任务、发件箱、经验和网页 | `mcai/tasks.py`、`storage.py`、`knowledge.py`、`web.py` |
+| 任务私有API及交互记录、诊断导出 | `mcai/tracing.py`、`settings.py` |
 | B接口、共用执行上下文、后台工作与下载 | `mcai/host.py`、`operation_context.py`、`client.py`、`jobs.py`、`downloads.py` |
 | 独立托管窗口与控制台缓冲 | `mcai/terminal.py`、`console.py`、`console_buffer.py`、`remote_terminal.py` |
 | 共享辅助进程与内存额度 | `mcai/execution.py`、`worker.py`、`memory_job.py` |

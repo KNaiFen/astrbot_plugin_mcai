@@ -25,7 +25,7 @@
 
 ## 方块坐标与状态
 
-`mc_region block`按`block_x/block_y/block_z`查询一个已存储方块及对应方块实体；`blocks`按全局区块`x/z`查询该区块的已存储section，可按注册名`name`或旧数字`legacy_id`过滤，分页列表或`by_state`计数。支持现代`sections.block_states`、旧`Level.Sections.Palette/BlockStates`、旧Anvil数字`Blocks/Data/Add`，以及只读MCR列式数组；缺少section明确返回未存储，不当作空气或在线状态。
+`mc_region_blocks`的`get`按`block_x/block_y/block_z`查询一个已存储方块及对应方块实体；`search`按全局区块`x/z`查询该区块的已存储section，可按注册名`name`或旧数字`legacy_id`过滤，分页列表或`by_state`计数。支持现代`sections.block_states`、旧`Level.Sections.Palette/BlockStates`、旧Anvil数字`Blocks/Data/Add`，以及只读MCR列式数组；缺少section明确返回未存储，不当作空气或在线状态。
 
 方案`block_set`提供文件、方块坐标、完整带类型SNBT的`expected/state`。调色板修改重编码索引，按DataVersion区分连续与padded布局，保留其他方块和未知字段；旧数字写入限定ID 0至255和Data 0至15，含扩展ID的区块拒绝推测。方块类型变化且有方块实体时，必须用`remove_block_entity`明确提交其完整旧SNBT；只删方块实体不重编码方块缓存。通过原编解码器校验候选，再停服备份替换，MCC沿用原机制。
 
@@ -33,9 +33,9 @@
 
 ## 区块检查、导出与点恢复
 
-`mc_region check`检查扇区头、负载长度、MCC存在性、重叠和可解码NBT；带全局区块`x/z`时只检查指定位置，并返回`fingerprint`。默认同时纳入同维度`region/entities/poi`的同一坐标，`include_related: false`可明确缩小到当前文件。缺少完整8192字节区域头时不能保证其他区块，点修复拒绝继续；可考虑已有完整备份恢复。
+`mc_region_check`检查扇区头、负载长度、MCC存在性、重叠和可解码NBT；带全局区块`x/z`时只检查指定位置，并返回`fingerprint`。默认同时纳入同维度`region/entities/poi`的同一坐标，`include_related: false`可明确缩小到当前文件。缺少完整8192字节区域头时不能保证其他区块，点修复拒绝继续；可考虑已有完整备份恢复。
 
-`mc_region export`把指定位置的原始压缩记录、外部MCC和来源清单保存到B的`jobs/<job_id>/chunk.zip`，不会安装或修改存档。可带`backup`从同规范目录的原备份提取，备份须实际覆盖所选关联文件；目录备份覆盖其子项。清单记录源目录、维度路径、坐标、DataVersion、来源备份和采集时间，归档计算SHA-256。损坏／采集中变化的导出仍留现场但`usable: false`，不能用于恢复；二进制ZIP供B本地保存或后续操作，`mc_job artifact/find`用于文本产物。
+`mc_region_export`把指定位置的原始压缩记录、外部MCC和来源清单保存到B的`jobs/<job_id>/chunk.zip`，不会安装或修改存档。可带`backup`从同规范目录的原备份提取，备份须实际覆盖所选关联文件；目录备份覆盖其子项。清单记录源目录、维度路径、坐标、DataVersion、来源备份和采集时间，归档计算SHA-256。损坏／采集中变化的导出仍留现场但`usable: false`，不能用于恢复；二进制ZIP供B本地保存或后续操作，`mc_artifact_read/find`用于文本产物。
 
 方案`region_restore`需提供`path/x/z/export_id/expected`，`expected`为当前点检查得到的关联指纹，且检查与导出使用相同关联范围。审核读取导出来源清单；执行前复核归档哈希、规范目录、维度路径和坐标，停服并备份全部实际区域／MCC目标。只追加导出记录并更新目标头项，保留未选择扇区的原始字节，能保留不可解码的邻居；候选先由原Java后端重新读取验证，之后才替换生产文件。源压缩方式和NBT结构保留，不迁移世界版本。
 

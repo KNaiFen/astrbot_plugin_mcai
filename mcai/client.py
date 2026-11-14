@@ -12,7 +12,9 @@ logger = logging.getLogger(__name__)
 
 
 class RemoteError(RuntimeError):
-    pass
+    def __init__(self, message, *, operation=None):
+        super().__init__(message)
+        self.operation = operation
 
 
 class SubmissionCancelled(Exception):
@@ -142,5 +144,5 @@ class HostClient:
                 )
                 cancel_sent = True
         if operation["status"] == "failed":
-            raise RemoteError(operation["error"])
+            raise RemoteError(operation["error"], operation=operation)
         return operation["result"]

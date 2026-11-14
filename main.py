@@ -1,3 +1,4 @@
+import uuid
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig
@@ -10,6 +11,7 @@ from .mcai.astrbot_agent import AstrBotAgent
 from .mcai.client import HostClient
 from .mcai.storage import Store
 from .mcai.tasks import Tasks
+from .mcai.tracing import trace_event
 
 COMMANDS = {
     "mcainew",
@@ -61,7 +63,9 @@ class MCAI(Star):
                 review_provider_id=config.get("review_provider_id", ""),
                 review_reasoning_effort=config.get("review_reasoning_effort", ""),
                 model_max_attempts=config.get("model_max_attempts", 3),
-                forward_reasoning_summary=config.get("forward_reasoning_summary", True),
+                forward_reasoning_summary=config.get(
+                    "forward_reasoning_summary", False
+                ),
                 forward_reasoning_summary_body=config.get(
                     "forward_reasoning_summary_body", False
                 ),
@@ -94,15 +98,68 @@ class MCAI(Star):
         if command not in COMMANDS:
             return
         group = event.get_group_id()
-        if self.config.get("group_ids") and group not in {
-            str(item) for item in self.config["group_ids"]
-        }:
-            event.stop_event()
-            return
         sender = event.get_sender_id()
         is_admin = event.is_admin() or sender in {
             str(item) for item in self.config.get("admin_ids", [])
         }
+        trace = {
+            "event_id": uuid.uuid4().hex,
+            "task": None,
+            "command": command,
+            "text": text,
+            "group": group,
+            "sender": sender,
+            "is_admin": is_admin,
+            "quoted": [
+                part.message_str
+                for part in event.get_messages()
+                if isinstance(part, Reply)
+            ],
+        }
+        trace_event(self.store, "plugin_command", **trace)
+        if self.config.get("group_ids") and group not in {
+            str(item) for item in self.config["group_ids"]
+        }:
+            trace_event(
+                self.store,
+                "command_result",
+                **trace,
+                status="rejected",
+                reason="群不在允许范围",
+            )
+            event.stop_event()
+            return
+        status = "handled"
+        send = event.send
+
+        async def traced_send(message):
+            try:
+                result = await send(message)
+            except Exception as exc:
+                trace_event(
+                    self.store,
+                    "command_reply_failed",
+                    **trace,
+                    reply=message.get_plain_text(),
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                raise
+            trace_event(
+                self.store,
+                "command_reply_sent",
+                **trace,
+                reply=message.get_plain_text(),
+            )
+            return result
+
+        event.send = traced_send
+
+        def reply(text):
+            trace_event(
+                self.store, "command_reply", **trace, reply=text, status="prepared"
+            )
+            return event.plain_result(text)
+
         try:
             if command not in {
                 "mcaisay",
@@ -112,10 +169,11 @@ class MCAI(Star):
                 "mcaiplan",
             }:
                 if not is_admin:
-                    yield event.plain_result("该指令仅管理员可用。")
+                    status = "rejected"
+                    yield reply("该指令仅管理员可用。")
                     return
             if command == "mcaihelp":
-                yield event.plain_result(
+                yield reply(
                     "管理员创建：/mcainew 任务名 问题描述（也可引用问题，附加补充说明）\n"
                     "群成员补充：/mcaisay 任务名 内容\n"
                     "管理员控制成员补充：/mcaisaymode 任务名 false（暂停）或 true（开启）；管理员仍可补充\n"
@@ -126,9 +184,7 @@ class MCAI(Star):
                 )
                 return
             if command == "mcailist":
-                yield event.plain_result(
-                    self.tasks.list_tasks(group, int(tail.strip() or "1"))
-                )
+                yield reply(self.tasks.list_tasks(group, int(tail.strip() or "1")))
                 return
             name, _, content = tail.strip().partition(" ")
             if command == "mcainew":
@@ -148,7 +204,7 @@ class MCAI(Star):
                     raise ValueError(
                         f"用法：/mcainew {name} 问题描述，或引用一条包含问题的消息后 /mcainew {name}"
                     )
-                await self.tasks.create(
+                job = await self.tasks.create(
                     group,
                     event.unified_msg_origin,
                     name,
@@ -156,6 +212,7 @@ class MCAI(Star):
                     sender,
                     report,
                 )
+                trace["task"] = job["id"]
                 return
             if not name:
                 usage = f"/{command} 任务名"
@@ -165,12 +222,13 @@ class MCAI(Star):
                     usage += " true|false"
                 raise ValueError(f"用法：{usage}；忘记任务名可用 /mcailist 查看。")
             job = self.tasks.find(group, name)
+            trace["task"] = job["id"]
             if command == "mcaisay":
                 if not content.strip():
                     raise ValueError(f"用法：/mcaisay {name} 内容，请填写补充信息。")
                 self.tasks.feedback(job, sender, content.strip(), is_admin=is_admin)
                 if job["state"] == "paused":
-                    yield event.plain_result(
+                    yield reply(
                         f"「{name}」补充已保存；任务仍暂停，管理员使用 /mcairesume {name} 后会一起读取。"
                     )
             elif command == "mcaisaymode":
@@ -180,7 +238,7 @@ class MCAI(Star):
                         f"用法：/mcaisaymode {name} true|false；true 开启、false 暂停普通成员补充，管理员仍可补充。"
                     )
                 self.tasks.set_say_mode(job, mode == "true", sender)
-                yield event.plain_result(
+                yield reply(
                     f"「{name}」"
                     + (
                         f"已开启普通成员 say 接收。暂停：/mcaisaymode {name} false"
@@ -199,7 +257,7 @@ class MCAI(Star):
             elif command == "mcaipause":
                 self.tasks.pause_requested(job)
             elif command == "mcaiplan":
-                yield event.plain_result(
+                yield reply(
                     f"「{name}」"
                     + (
                         job["plan"]["summary"][:220]
@@ -226,7 +284,7 @@ class MCAI(Star):
                     ),
                     "paused": f"已暂停。{audience}可用 /mcaisay {name} 内容 保存补充；管理员使用 /mcairesume {name} 续接。",
                 }
-                yield event.plain_result(
+                yield reply(
                     f"「{name}」{state.get(job['state'], job['state'])}"
                     + (
                         f"\n普通成员 say：暂停，管理员仍可补充。恢复：/mcaisaymode {name} true"
@@ -235,8 +293,14 @@ class MCAI(Star):
                     )
                 )
         except ValueError as exc:
-            yield event.plain_result(str(exc))
+            status = "rejected"
+            yield reply(str(exc))
+        except Exception as exc:
+            status = "failed"
+            trace["error"] = f"{type(exc).__name__}: {exc}"
+            raise
         finally:
+            trace_event(self.store, "command_result", **trace, status=status)
             # yield 的回复先经过发送阶段，再终止后续处理。
             event.stop_event()
 

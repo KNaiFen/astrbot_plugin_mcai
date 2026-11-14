@@ -90,4 +90,18 @@ async function readTest() {
 function startPolling() { if (!poll) poll = setInterval(() => readTest().catch(error => { clearInterval(poll); poll = null; show(error.message, true); }), 1000); }
 document.querySelector('#test-model').onclick = function () { action(this, async () => { await saveA(); await api('POST', 'capabilities'); show('正在测试模型能力，结果将逐项显示。'); startPolling(); }); };
 document.querySelector('#cancel-test').onclick = function () { action(this, async () => { await api('POST', 'capabilities/cancel'); await readTest(); show('能力测试已取消。'); }); };
-try { await loadA(); const test = await readTest(); if (test.running) startPolling(); await loadHost(); } catch (error) { show(`配置读取失败：${error.message}`, true); }
+async function loadDiagnostics() {
+  const data = await api('GET', 'diagnostics'), select = document.querySelector('#diagnostics-tasks');
+  select.replaceChildren();
+  for (const task of data.tasks) select.add(new Option(`${task.name} · 群 ${task.group} · ${task.state}`, task.id));
+}
+document.querySelector('#refresh-diagnostics').onclick = function () { action(this, loadDiagnostics); };
+document.querySelector('#export-diagnostics').onclick = function () {
+  action(this, async () => {
+    const start = document.querySelector('#diagnostics-start').value, end = document.querySelector('#diagnostics-end').value;
+    const result = await api('POST', 'diagnostics', { start: start ? new Date(start).getTime() / 1000 : 0, end: end ? new Date(end).getTime() / 1000 : null, task_ids: Array.from(document.querySelector('#diagnostics-tasks').selectedOptions, option => option.value) });
+    document.querySelector('#diagnostics-result').textContent = `已保存 ${result.entries} 条事件：${result.path}`;
+    await bridge.download('diagnostics/file', { filename: result.filename }, result.filename);
+  });
+};
+try { await loadA(); const test = await readTest(); if (test.running) startPolling(); await loadDiagnostics(); await loadHost(); } catch (error) { show(`读取失败：${error.message}`, true); }

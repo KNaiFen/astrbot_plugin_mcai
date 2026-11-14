@@ -10,6 +10,8 @@ import aiohttp
 import trafilatura
 from lxml import html
 
+from .protocol import PRODUCT_VERSION
+
 
 class WebPages:
     def __init__(self, store):
@@ -24,7 +26,7 @@ class WebPages:
             async with aiohttp.ClientSession(
                 trust_env=True,
                 timeout=aiohttp.ClientTimeout(total=30),
-                headers={"User-Agent": "mcai/0.9.0"},
+                headers={"User-Agent": f"mcai/{PRODUCT_VERSION}"},
             ) as session:
                 async with session.get(url) as response:
                     response.raise_for_status()

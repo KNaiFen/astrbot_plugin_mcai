@@ -6,6 +6,7 @@ from astrbot.core.agent.context.token_counter import EstimateTokenCounter
 from astrbot.core.agent.message import Message
 
 from .agent_runtime import TASK_POLICY, model_request, request_provider
+from .tracing import traced_provider
 
 
 def tokens(messages):
@@ -17,10 +18,19 @@ def tokens(messages):
 async def fit_history(
     tasks, job, provider, messages, system, *, tools=None, archive=False
 ):
-    limit = provider.provider_config.get("max_context_tokens", 0) or 32768
+    limit = provider.provider_config.get("max_context_tokens", 0) or 272000
     overhead = tokens([{"role": "system", "content": system}])
     if tools is not None:
-        overhead += len(json.dumps(tools, ensure_ascii=False)) // 2
+        overhead += tokens(
+            [
+                {
+                    "role": "system",
+                    "content": json.dumps(
+                        tools, ensure_ascii=False, separators=(",", ":")
+                    ),
+                }
+            ]
+        )
     budget = int(limit * 0.7) - overhead
     if budget < 2000:
         raise ValueError(
@@ -46,7 +56,9 @@ async def fit_history(
         prompt = json.dumps(original, ensure_ascii=False)
 
         async def summarize():
-            return await request_provider(provider).text_chat(
+            return await traced_provider(
+                request_provider(provider), tasks.store, job["id"], "上下文压缩"
+            ).text_chat(
                 prompt=prompt,
                 contexts=[],
                 func_tool=None,
@@ -70,7 +82,7 @@ async def fit_history(
         )
         checkpoint = {
             "role": "user",
-            "content": f"已结算历史摘要（原始证据可用 mc_job history entry={seq} 按字符续读）：\n{text}",
+            "content": f"已结算历史摘要（原始证据可用 mc_context_history entry={seq} 按字符续读）：\n{text}",
         }
         checkpoint["content"] += "\n持久任务事实：" + json.dumps(
             {

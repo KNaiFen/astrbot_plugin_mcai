@@ -10,16 +10,18 @@ MCAI Probe 只安装在服务端，让 AI 获取当前玩家位置、全服与�
 
 | Minecraft | 加载器 | 文件 | Java |
 |---|---|---|---|
-| 1.20.1 | Forge 47.x | `mcai-probe-1.20.1-forge-0.1.0.jar` | 17 |
-| 1.20.1 | Fabric | `mcai-probe-1.20.1-fabric-0.1.0.jar` | 17 |
-| 1.21.1 | Forge 52.x | `mcai-probe-1.21.1-forge-0.1.0.jar` | 21 |
-| 1.21.1 | Fabric | `mcai-probe-1.21.1-fabric-0.1.0.jar` | 21 |
+| 1.20.1 | Forge 47.x | `mcai-probe-1.20.1-forge-0.2.0.jar` | 17 |
+| 1.20.1 | Fabric | `mcai-probe-1.20.1-fabric-0.2.0.jar` | 17 |
+| 1.21.1 | Forge 52.x | `mcai-probe-1.21.1-forge-0.2.0.jar` | 21 |
+| 1.21.1 | Fabric | `mcai-probe-1.21.1-fabric-0.2.0.jar` | 21 |
 
 Fabric 需要对应版本的 Fabric API 和 Loader 0.16.14+。Forge 包内包含 MixinExtras；不要安装 `sources` 源码包。1.21.1 Forge JAR 不能用于 NeoForge。本轮未提供 1.16.5、1.7.10 或插件端版本。
 
-B 配置的实例目录应与 BAT 启动 Java 时的工作目录一致。MOD 在工作目录生成 `.mcai-probe/`，B 自动发现，无额外配置。启动日志显示 `MCAI Probe 0.1.0 ready` 后即可使用。
+B 配置的实例目录应与 BAT 启动 Java 时的工作目录一致。MOD 在工作目录生成 `.mcai-probe/`，B 自动发现，无额外配置。启动日志显示 `MCAI Probe 0.2.0 ready` 后即可使用。
 
 ## 使用
+
+安装spark后，Probe通过其公开API读取平均TPS、MSPT、进程／系统CPU及GC信息，`mc_metrics`结果中的独立`spark`字段保留原生统计窗口和单位。CPU是0到1的比例，GC时间为毫秒。spark是可选集成，未安装时Probe仍可正常使用；`mc_status.probe.integrations.spark`区分未安装、可用和API错误。缺少Probe但已有spark时，AI也可通过控制台运行`spark tps`、`spark health`取得诊断信息，不必为此安装Probe。
 
 群指令保持原样。反馈可写：
 

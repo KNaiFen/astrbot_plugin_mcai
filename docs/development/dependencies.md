@@ -24,4 +24,4 @@ aiocqhttp和jieba使用固定源码包；先安装固定build-tools，再禁用�
 .venv/Scripts/python.exe scripts/lock_environment.py --astrbot-archive runtime/astrbot-v4.29.4.zip --astrbot-root runtime/astrbot-4.29.4
 ```
 
-A/B产品协议为mcai-3，响应附带MCAI版本；插件、主机及托管窗口需配套更新。客户端在提交远程工作前读取实例接口核对协议，B在创建操作前校验请求协议。不匹配时给出中文错误，不维护旧接口迁移。
+A/B产品协议为mcai-4，响应附带MCAI版本；插件、主机及托管窗口需配套更新。客户端在提交远程工作前读取实例接口核对协议，B在创建操作前校验请求协议。不匹配时给出中文错误，不维护旧接口迁移。

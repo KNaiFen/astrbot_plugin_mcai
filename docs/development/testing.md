@@ -6,6 +6,26 @@
 
 ## 当前验证
 
+2026-11-14，0.11.0重整38个Agent工具：模型与执行端共用完整JSON Schema，保留分支约束及工具内引用，任务私有Chat／Responses工具显式strict:false；输出使用ok/data/error/next_call，原始结果与model_result分别持久化。控制台、后台、长字段、操作日志及压缩历史按职责拆分，历史调用不改写，运行时规则由用户人工合并。协议仍为mcai-4，Probe仍为0.2.0。
+
+按实际至少272K上下文的使用场景，未配置max_context_tokens时的估算基线改为272000，显式配置优先。以完整Chat函数包装序列化，38个工具为55258字符／68446 UTF-8字节，AstrBot估算18268 tokens（272K的6.72%）；内置提示、运行时模板及任务说明估算3521 tokens，70%输入预算内保留168611 tokens用于历史和用户输入。估算不替代服务商实际计费或容量。模板12个正确调用通过实际schema校验，另保留1个刻意缺参的纠错示例。证据见runtime/tool-contract-budget.json。
+
+新版A通过AstrBot v4.29.4原生runner连接独立进程中从0.10.0安装目录导入的B及托管窗口，真实HTTPS代表流程通过（17.67秒）：状态、文件、批量诊断与控制台续读、脚本、一次批准的双命令提案及原操作记录。核对导入路径、X-MCAI-Version=0.10.0及mcai-4响应头，两条修改命令均只执行一次；证据见runtime/tool-contract-compat.log和runtime/tool_contract_compat/。
+
+固定Windows／Python3.12.14／AstrBot v4.29.4环境完整执行431项，全部通过、零跳过（1371.38秒）。实际Chat／Responses请求、缺参纠正、长字段与控制台续读、失败／未知状态、导出及三个中断检查点另完成9项复核（43.91秒）；最终工具说明再经两种真实适配器捕获请求复核通过（11.01秒）。批次有重叠，不相加为独立用例数。完整结果见runtime/tool-contract-all-tests.log及同名XML，边界复核见tool-contract-final-boundary.log、tool-contract-descriptions.log。
+
+两端ZIP、四目标Probe及源码包构建通过；解压B包离线构建0.11.0 wheel并安装至独立目录，从空工作目录以解压A包运行158项原生runner、工具契约、审核、恢复、导出、设置和主流程集成测试，全部通过、零跳过（393.74秒）。确认mcai与worker从独立site导入，源码、模板、文档、许可和归档文件逐项一致；八个Probe JAR（含源码JAR）及world-helper.jar内部文件内容与0.10.0受测包一致。证据见runtime/tool-contract-installed-tests.log及runtime/tool-contract-release-0110/下的import-proof.json、regression.xml。Probe保持0.2.0，本轮未重跑八种真实MC组合。
+
+Ruff、88个Python文件格式、Git空白和126个本地文档链接／锚点检查通过。消融审查移除重复的MODEL_TOOLS别名，注册与校验直接共用TOOLS，正常调用与恢复只使用一个模型结果转换；保留原生runner、原始持久记录、操作编号、审核和一次批准。保留audioop、上游工具schema弃用及Gradle提示；真实计费模型、QQ和生产服仍未联调，不以受控回复证明实际体验。该开发验收阶段未推送或部署；后续公开main仅包含插件发行树，当前发布范围见README。
+
+2026-11-14，0.10.0本地发行验证：取消模型必填review，外部脚本改为script_files／script_encoding；诊断控制台使用commands数组整批审核和顺序发送，保留稳定子编号、部分发送进度及新输出游标。测试移除自动补参，真实AstrBot v4.29.4 runner、审核续接、客户端断线、工具边界及主流程等137项关键集成回归全部通过、零跳过（335.12秒）。版本为0.10.0／`mcai-4`，A、B和托管窗口需配套更新；已有用户运行时AGENTS.md保留并人工合并新版示例。
+
+固定Windows／Python3.12.14／AstrBot v4.29.4环境完整执行426项：425项通过、1项因下载模块仍使用0.9.0 User-Agent失败，零跳过（1342.87秒）。将下载和网页请求统一引用产品版本后，相关整个文件与日志导出共20项回归全部通过、零跳过（53.02秒）。摘要状态、实际发送成功／失败及真实模型适配等20项复核通过（86.45秒）。完整链路导出场景补入主模型原始批量调用、独立审核和工具结果后单项复核通过（11.81秒），确认关闭群摘要仍保存API返回的完整摘要；上述重叠批次不累加为独立用例数。证据见`runtime/optimization-all-tests.log`、`optimization-corrections.log`、`optimization-trace-final.log`及`optimization-complete-trace.log`。
+
+两端ZIP、四目标Probe及源码包构建通过，检查源码／模板／文档／许可一致性，并确认仅包含Probe0.2.0产物。解压B包离线构建wheel并安装到独立目录，从空工作目录以精简A包运行审核、批量、断线、设置、原生runner及主流程等153项，全部通过、零跳过（356.73秒）；增强后的完整交互导出另在该安装环境通过（10.36秒）。确认mcai和辅助worker均从安装目录导入。证据见`runtime/optimization-release-0100/import-proof.json`、`regression.xml`及`runtime/optimization-installed-tests.log`。本地测试虚拟环境不含setuptools，wheel使用已有uv缓存离线隔离构建，未修改产品依赖。
+
+Probe0.2.0四目标构建与有／无spark共8种隔离实服组合全部通过，最终JAR类文件与受测产物一致，详见[探针验证](probe.md)。Ruff、86个Python文件格式、设置页JS语法、7个工具示例的实际schema和112个本地文档路径检查通过。消融审查内联了一次性MSPT序列化方法，合并重复提示，复用既有审核、批准、任务、操作编号及发件箱；未引入TPS条件循环或专项适配。保留audioop、上游工具schema弃用警告及Gradle提示；未连接真实模型、QQ或生产服，未推送或部署。
+
 2026-11-14，0.9.0补齐B端八类维护能力。固定Windows／Python3.12.14／AstrBot v4.29.4环境中，全部30个测试文件分三批完整回归：190项（553.84秒）、118项（392.53秒）、116项（407.23秒），**合计424项全部通过、零跳过**，三批退出码均为0。最终收集清单与JUnit逐项比对，所有用例无遗漏、无重复。过程中的进程退出竞争、分页产物读取及旧工具数量断言已分别重现、修正并复测，详见[维护能力与验证](maintenance-capabilities.md)。
 
 解压B包构建0.9.0 wheel并安装到独立目标目录，再从精简A包运行原生Agent、所有新增维护工具与循环BAT等107项回归，全部通过、零跳过（384.57秒）；确认B主进程及辅助worker使用安装目录。源码B和已安装B分别通过真实隔离MC1.21.1的HTTPS／ConPTY停服备份、方块编辑、重启后命令确认及相邻方块保持。两端包、源码包及四目标Probe构建通过；发行文件、许可和文档保持分层。版本升级为0.9.0／`mcai-3`，插件、B和托管窗口需配套更新。
@@ -126,13 +146,14 @@ $env:PYTHONPATH = "$PWD/runtime/astrbot-4.29.4"
 | 存档修改和恢复 | 单独 NBT 的数组类型、子项分页、列表删除、gzip 保留、expected 不符、错误路径和 SNBT、四种区域压缩、MCR、真实存档、超大外部 MCC 保持与缩小、相邻 MCC、缺失 MCC、损坏邻居和错误坐标 | `test_workflows.py`、`test_diagnostics.py`、`test_query_edges.py`、`test_repair_edges.py` |
 | 修复故障 | 同一目标多次修改只备份原始内容、重叠目录/文件备份、恢复目录时移除新文件、备份失败、替换失败、修复脚本异常/超时保留现场、跳过后续步骤、失败后保持停服、显式停服不被自动重启覆盖、跨实例备份拒绝 | `test_workflows.py`、`test_repair_edges.py` |
 | 群任务状态 | 新反馈使旧方案失效、重复批准、执行修复期间保留反馈、后台等待时改变方向并取消工作、停止/验收后拒绝反馈、修复中止完成当前步骤、失败后补充消息继续、待取消状态重载续接、短群消息和完整本地记录、按任务暂停普通成员say与管理员豁免、来源标注及重载 | `test_workflows.py`、`test_task_interactions.py`、`test_say_mode.py` |
-| 真实 Agent 工具链 | 二十三个工具经实际 runner 调用，含五个探针入口、暂停续接、后台查询/长字段/取消/修复记录、单次模型回复内多个工具、未知工具后继续、错参拒绝、步数上限、模型配置错误后恢复、中止、已提交工具检查点恢复 | `test_astrbot_integration.py`、`test_agent_edges.py`、`test_review_resume.py` |
+| 真实 Agent 工具链 | 38个工具的模型契约及原生runner流程，含Chat／Responses实际请求、错参后正确调用、五个探针入口、暂停续接、后台等待／分页／长字段／取消、操作记录与上下文历史、单回复多工具、未知工具后继续、步数上限、配置错误后恢复、中止和原编号检查点恢复 | `test_tool_contracts.py`、`test_astrbot_integration.py`、`test_agent_edges.py`、`test_review_resume.py` |
 | 服内探针桥接 | HTTPS断线去重、结果身份核对、会话变化、超时状态不确定、晚到结果、已有结果导入、范围schema、分页及长字段、取消确认、修复协作、多实例隔离 | `test_probe.py` |
 | 工具参数 | 必填项、动作与字段不匹配、额外参数、错误类型、页大小/超时边界、负 NBT 索引、缺失的修复字段、空步骤与空脚本备份列表 | `test_agent_edges.py` |
 | 网络和持久化 | 502/503/504 重试、保留请求和操作编号、非 JSON/损坏 JSON、永久错误快速失败、POST/GET 响应丢失时中止、修复/诊断不重复执行、插件重载、B 的任务重建中断状态、PID 身份不匹配时保留新进程 | `test_workflows.py`、`test_diagnostics.py`、`test_client_recovery.py`、`test_job_interactions.py` |
 | HTTPS 直连 | 首次生成/重启复用证书、中文和空格路径、IP 地址直连、指纹格式和匹配、错误令牌、损坏或缺失的证书、本机 CLI、TLS 响应丢失/暂时断网、操作去重、后台任务续读与取消、插件重载 | `test_https.py` |
 | 独立审核和续接 | 三个入口分别放行/拒绝、配置与协议错误、审核重试、材料缺失/超限、脚本变更、主上下文隔离、规则重载、检查点中断恢复、修复部分失败后再次审批 | `test_review_resume.py`、`test_model_recovery_summary.py` |
 | 原生模型适配与 API 摘要 | 真实 Chat／Responses 适配器与模拟 HTTP API、独立思考程度、原始摘要事件、分片完成后发送、原始推理不转发、不支持摘要/流式时的兼容行为、原文分段、去重和停止后丢弃 | `test_provider_runtime.py`、`test_model_recovery_summary.py` |
+| 完整交互与诊断导出 | 拒绝命令原文、任务私有API请求／响应／摘要、独立审核、批量工具结果、消息发送成功／失败、关闭群摘要和ZIP回放 | `test_tracing.py`、`test_settings_search.py` |
 | Windows 运维入口 | CLI 列表/状态/启停/重启/恢复、attach 输入和 EOF/detach、断开不停止服务端、多行控制台命令拒绝、原进程仍存活时拒绝重复接管、相对配置路径、每实例独立 Java | `test_console_cli.py`、`test_diagnostics.py` |
 | 独立终端与共享额度 | tm/terminal、当前目录与-C、命名互斥、目录登记、真实补全/历史/中文/Ctrl+C、两个窗口与B强杀重连、会话和控制编号去重、9999行与字节上限、Job配置失败、共享额度耗尽和恢复、修复备份保留 | `test_terminal_isolation.py` |
 

@@ -42,7 +42,7 @@ def review_material(directory, args):
             path = resolve_file(directory, cwd / candidate)
             if path not in declared:
                 raise ValueError(
-                    f"未提供外部脚本审核材料：{candidate}；请填写 review.script_files"
+                    f"未提供外部脚本审核材料：{candidate}；请填写 script_files"
                 )
     return {
         "directory": str(directory),

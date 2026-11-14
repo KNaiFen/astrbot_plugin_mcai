@@ -81,6 +81,7 @@ class Tasks:
             key,
             {
                 "id": key,
+                "task": job["id"],
                 "origin": job["origin"],
                 "text": f"「{job['name']}」{text}",
                 "mention": mention,
@@ -88,13 +89,16 @@ class Tasks:
             },
         )
 
-    def summary(self, job, identity, text, *, include_body=False):
+    def summary(self, job, identity, text, *, include_body=False, forward=True):
         if job["stop_requested"] or not text.strip():
             return
         key = digest({"task": job["id"], "summary": identity})
         if self.store.get("summary", key):
             return
         self.log(job, "api_summary", identity=identity, text=text)
+        if not forward:
+            self.store.save("summary", key, {"id": key})
+            return
         display = summary_text(text, include_body)
         offset = 0
         while offset < len(display):
@@ -110,6 +114,7 @@ class Tasks:
                     item_id,
                     {
                         "id": item_id,
+                        "task": job["id"],
                         "origin": job["origin"],
                         "text": f"「{job['name']}」" + display[offset:end],
                         "mention": None,
@@ -167,12 +172,21 @@ class Tasks:
                     await self.notify(item["origin"], item["text"], item["mention"])
                 except Exception:
                     self.store.log(
-                        "message_delivery_error", traceback=traceback.format_exc()
+                        "message_delivery_error",
+                        task=item.get("task"),
+                        text=item["text"],
+                        traceback=traceback.format_exc(),
                     )
                     failed = True
                     break
                 item["sent"] = True
                 self.store.save("outbox", item["id"], item)
+                self.store.log(
+                    "group_message_sent",
+                    task=item.get("task"),
+                    text=item["text"],
+                    outbox=item["id"],
+                )
             delay = min(delay * 2, 15) if failed else 1
             await asyncio.sleep(delay)
 
