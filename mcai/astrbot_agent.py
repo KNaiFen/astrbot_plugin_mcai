@@ -30,7 +30,7 @@ from .agent_runtime import (
 from .client import RemoteError
 from .context_budget import fit_history
 from .review import digest
-from .tool_schemas import TOOLS
+from .tool_schemas import MODEL_TOOLS, TOOLS
 
 PROMPT = (
     """你是 Minecraft 服务端运维与排障助手，使用中文，处理当前实例和群内独立任务。
@@ -325,6 +325,11 @@ class AstrBotAgent:
                             for step in arguments.get("steps", [])
                             if step["action"] == "restore"
                         ],
+                        "export_ids": [
+                            step["export_id"]
+                            for step in arguments.get("steps", [])
+                            if step["action"] == "region_restore"
+                        ],
                         **(
                             {"expected_directory": job["directory"]}
                             if job.get("directory")
@@ -395,8 +400,12 @@ class AstrBotAgent:
                 mode = arguments.pop("mode")
                 return await remote(
                     record,
-                    "region_query" if mode == "read" else "region_scan",
-                    arguments,
+                    {"scan": "region_scan", "export": "region_export"}.get(
+                        mode, "region_query"
+                    ),
+                    arguments
+                    if mode in ("scan", "export")
+                    else {"mode": mode, **arguments},
                 )
             if name == "mc_job":
                 if arguments["mode"] == "history":
@@ -436,6 +445,9 @@ class AstrBotAgent:
                 record,
                 {
                     "mc_status": "metrics",
+                    "mc_diagnostics": "diagnostics",
+                    "mc_verify": "verify",
+                    "mc_inventory": "inventory",
                     "mc_files": "files_query",
                     "mc_logs": "logs",
                     "mc_exec": "exec",
@@ -549,7 +561,7 @@ class AstrBotAgent:
                     parameters=schema,
                     callback=dispatch,
                 )
-                for name, description, schema in TOOLS
+                for name, description, schema in MODEL_TOOLS
             ]
         )
         message = AstrBotMessage()
@@ -630,7 +642,7 @@ class AstrBotAgent:
             )
             tasks.save(job)
             fitted = await fit_history(
-                tasks, job, budget_provider, job["messages"], system, tools=TOOLS
+                tasks, job, budget_provider, job["messages"], system, tools=MODEL_TOOLS
             )
             wrapper.messages[:] = [
                 *[item for item in wrapper.messages if item.role == "system"],
@@ -648,7 +660,7 @@ class AstrBotAgent:
             + search_note
         )
         job["messages"] = await fit_history(
-            tasks, job, budget_provider, job["messages"], system, tools=TOOLS
+            tasks, job, budget_provider, job["messages"], system, tools=MODEL_TOOLS
         )
         wrapper = AgentContextWrapper(
             context=AstrAgentContext(context=self.context, event=event),
@@ -695,7 +707,7 @@ class AstrBotAgent:
                         budget_provider,
                         job["messages"],
                         system,
-                        tools=TOOLS,
+                        tools=MODEL_TOOLS,
                     )
                     if fitted is not history:
                         system_messages = [

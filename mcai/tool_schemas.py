@@ -5,6 +5,23 @@ INTEGER = {"type": "integer", "minimum": 0}
 NBT_PATH = {"type": "array", "items": {"anyOf": [STRING, INTEGER]}}
 PAGE = {"after": INTEGER, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}
 VIEW = {"type": "string", "enum": ["children", "value"]}
+SHA256 = {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"}
+TEXT_PATCH = {
+    "path": STRING,
+    "sha256": SHA256,
+    "encoding": STRING,
+    "format": {"enum": ["json", "toml", "yaml"]},
+    "edits": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+            "type": "object",
+            "properties": {"old": {"type": "string", "minLength": 1}, "new": STRING},
+            "required": ["old", "new"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 
 def contract(properties, required=()):
@@ -40,12 +57,144 @@ REVIEW = contract(
 )
 
 
+SELECTOR = variants(
+    "by",
+    {
+        "uuid": ({"uuid": STRING}, ("uuid",)),
+        "position": (
+            {key: {"type": "integer"} for key in ("x", "y", "z")},
+            ("x", "y", "z"),
+        ),
+        "slot": ({"slot": {"type": "integer"}}, ("slot",)),
+        "match": (
+            {
+                "fields": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": contract(
+                        {"nbt_path": NBT_PATH, "value": STRING}, ("nbt_path", "value")
+                    ),
+                }
+            },
+            ("fields",),
+        ),
+    },
+)
+CHANGE_FIELDS = {
+    "nbt_path": NBT_PATH,
+    "selector": SELECTOR,
+    "relative_path": NBT_PATH,
+    "expected": {"anyOf": [STRING, {"type": "null"}]},
+}
+CHANGE_MODES = {
+    "set": ({**CHANGE_FIELDS, "value": STRING}, ("nbt_path", "expected", "value")),
+    "delete": (CHANGE_FIELDS, ("nbt_path", "expected")),
+}
+CHANGES = {
+    "type": "array",
+    "minItems": 1,
+    "maxItems": 1000,
+    "items": variants("op", CHANGE_MODES),
+}
+REGION_CHANGES = {
+    **CHANGES,
+    "items": variants(
+        "op",
+        {
+            key: (
+                {**fields, "x": {"type": "integer"}, "z": {"type": "integer"}},
+                (*required, "x", "z"),
+            )
+            for key, (fields, required) in CHANGE_MODES.items()
+        },
+    ),
+}
+
+
+CHECKS = {
+    "type": "array",
+    "minItems": 1,
+    "maxItems": 20,
+    "items": variants(
+        "kind",
+        {
+            "file": (
+                {
+                    "path": STRING,
+                    "format": {"enum": ["json", "toml", "yaml", "nbt"]},
+                    "encoding": STRING,
+                },
+                ("path", "format"),
+            ),
+            "text": (
+                {
+                    "path": STRING,
+                    "query": STRING,
+                    "regex": {"type": "boolean"},
+                    "present": {"type": "boolean"},
+                    "encoding": STRING,
+                },
+                ("path", "query"),
+            ),
+            "nbt": (
+                {"path": STRING, "nbt_path": NBT_PATH, "expected": STRING},
+                ("path", "nbt_path", "expected"),
+            ),
+            "region": (
+                {
+                    "path": STRING,
+                    "x": {"type": "integer"},
+                    "z": {"type": "integer"},
+                    "nbt_path": NBT_PATH,
+                    "expected": STRING,
+                },
+                ("path", "x", "z", "nbt_path", "expected"),
+            ),
+            "ready": (
+                {
+                    "pattern": STRING,
+                    "forbid": STRING,
+                    "after": INTEGER,
+                    "session_id": STRING,
+                    "timeout": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "maximum": 300,
+                    },
+                    "stable_seconds": {"type": "number", "minimum": 0, "maximum": 60},
+                },
+                ("pattern",),
+            ),
+            "tcp": (
+                {
+                    "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+                    "timeout": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "maximum": 300,
+                    },
+                },
+                ("port",),
+            ),
+        },
+    ),
+}
+
+
 STEP_SCHEMA = variants(
     "action",
     {
         "start": ({}, ()),
         "stop": ({}, ()),
         "restart": ({}, ()),
+        "force_stop": (
+            {
+                "pid": {"type": "integer", "minimum": 1},
+                "process_created": {"type": "number"},
+                "session_id": STRING,
+            },
+            ("pid", "process_created", "session_id"),
+        ),
         "command": (
             {"command": STRING, "backup_paths": {"type": "array", "items": STRING}},
             ("command",),
@@ -53,6 +202,45 @@ STEP_SCHEMA = variants(
         "write_text": (
             {"path": STRING, "content": STRING, "encoding": STRING},
             ("path", "content"),
+        ),
+        "patch_text": (TEXT_PATCH, ("path", "sha256", "edits")),
+        "verify": ({"checks": CHECKS}, ("checks",)),
+        "nbt_batch": ({"path": STRING, "changes": CHANGES}, ("path", "changes")),
+        "block_set": (
+            {
+                "path": STRING,
+                "block_x": {"type": "integer"},
+                "block_y": {"type": "integer"},
+                "block_z": {"type": "integer"},
+                "expected": STRING,
+                "state": STRING,
+                "remove_block_entity": STRING,
+            },
+            ("path", "block_x", "block_y", "block_z", "expected", "state"),
+        ),
+        "region_remove": (
+            {
+                "path": STRING,
+                "x": {"type": "integer"},
+                "z": {"type": "integer"},
+                "expected": SHA256,
+                "include_related": {"type": "boolean"},
+            },
+            ("path", "x", "z", "expected"),
+        ),
+        "region_restore": (
+            {
+                "path": STRING,
+                "x": {"type": "integer"},
+                "z": {"type": "integer"},
+                "export_id": STRING,
+                "expected": SHA256,
+            },
+            ("path", "x", "z", "export_id", "expected"),
+        ),
+        "region_batch": (
+            {"path": STRING, "changes": REGION_CHANGES},
+            ("path", "changes"),
         ),
         "nbt_set": (
             {"path": STRING, "nbt_path": NBT_PATH, "value": STRING, "expected": STRING},
@@ -103,11 +291,27 @@ STEP_SCHEMA = variants(
     },
 )
 
+# Both step variants validate their own changes; this shared envelope accepts either shape.
+STEP_SCHEMA["properties"]["changes"] = {
+    **CHANGES,
+    "items": contract(
+        {
+            **CHANGES["items"]["properties"],
+            "x": {"type": "integer"},
+            "z": {"type": "integer"},
+        },
+        ("op", "nbt_path", "expected"),
+    ),
+}
+
+
 REGION_READ = {
     "path": STRING,
     "x": {"type": "integer"},
     "z": {"type": "integer"},
     "nbt_path": NBT_PATH,
+    "selector": SELECTOR,
+    "relative_path": NBT_PATH,
     "view": VIEW,
     "offset": INTEGER,
     "limit": {"type": "integer", "minimum": 1, "maximum": 100},
@@ -156,6 +360,29 @@ def probe_range(fields):
 
 
 TOOLS = [
+    (
+        "mc_inventory",
+        "读取本地MOD、插件和数据包真实元数据（含嵌套JAR），报告版本、依赖、重复ID和文件哈希；不按文件名猜身份。识别实际JVM参数/JDK/主JAR中可确认的运行版本，其余运行条件及不支持的版本约束明确未核实。baseline为本实例先前已完成的清单job_id，可比较新增、移除及内容变化。结果用mc_job。",
+        contract({"baseline": STRING}),
+    ),
+    (
+        "mc_verify",
+        "固定只读验证file格式、text文本、nbt/region旧值断言、ready控制台就绪与错误观察、tcp本机端口。ready按单行正则匹配，须提供after游标及当前session；方案verify步骤可复用前面start/restart的游标。端口接受连接不证明玩家登录。结果用mc_job。",
+        contract({"checks": CHECKS}, ("checks",)),
+    ),
+    (
+        "mc_diagnostics",
+        "固定只读取证：process采集实例进程CPU/I/O增量、内存和线程数；jvm用实际Java同目录jcmd采集JVM参数、堆概要和连续线程快照。pid省略时要求唯一Java。不会结束MC或安装工具，结果用mc_job等待、分页及读取原始产物。",
+        contract(
+            {
+                "mode": {"enum": ["process", "jvm"]},
+                "pid": {"type": "integer", "minimum": 1},
+                "samples": {"type": "integer", "minimum": 1, "maximum": 5},
+                "interval": {"type": "number", "minimum": 0.1, "maximum": 10},
+            },
+            ("mode",),
+        ),
+    ),
     (
         "mc_search",
         "通过模型提供商的独立 alpha/search 搜索、打开来源和页内查找；结果是外部资料而非操作授权。reference 使用返回的来源编号或明确 URL。",
@@ -310,11 +537,38 @@ TOOLS = [
     ),
     (
         "mc_files",
-        "查找实例内文件，或按行读取。返回任务编号、items 和 next_cursor；大字段有 reference。",
+        "查找、检索、读取或预览实例内文本补丁。stat 返回 SHA-256，preview_patch 不写入；实际 patch_text 通过提案批准。tail 读末尾。search 支持 lines/files/count，pattern 务必限定文本目录。结果用 mc_job 分页。",
         variants(
             "mode",
             {
                 "find": ({"pattern": STRING}, ("pattern",)),
+                "stat": ({"path": STRING}, ("path",)),
+                "preview_patch": (TEXT_PATCH, ("path", "sha256", "edits")),
+                "search": (
+                    {
+                        "pattern": STRING,
+                        "query": STRING,
+                        "regex": {"type": "boolean"},
+                        "case_sensitive": {"type": "boolean"},
+                        "encoding": STRING,
+                        "before": {"type": "integer", "minimum": 0, "maximum": 50},
+                        "after": {"type": "integer", "minimum": 0, "maximum": 50},
+                        "result": {"enum": ["lines", "files", "count"]},
+                    },
+                    ("pattern", "query"),
+                ),
+                "tail": (
+                    {
+                        "path": STRING,
+                        "line_count": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 1000,
+                        },
+                        "encoding": STRING,
+                    },
+                    ("path",),
+                ),
                 "read": (
                     {
                         "path": STRING,
@@ -378,10 +632,14 @@ TOOLS = [
     ),
     (
         "mc_nbt",
-        "读取独立 NBT：默认摘要子项；value 返回带类型 SNBT。next_offset 继续读取，大结果通过 mc_job artifact 续读。",
+        "独立NBT读取，select按UUID/方块实体位置/Slot/字段匹配返回实际路径和SNBT；relative_path选中对象内字段。preview_batch预览changes，不写入。实际nbt_batch须提案，各修改expected是带类型旧值，null仅用于确认新字段不存在。删除对象不依赖旧下标。结果可分页。",
         contract(
             {
                 "path": STRING,
+                "mode": {"enum": ["read", "select", "preview_batch"]},
+                "selector": SELECTOR,
+                "relative_path": NBT_PATH,
+                "changes": CHANGES,
                 "nbt_path": NBT_PATH,
                 "view": VIEW,
                 "offset": INTEGER,
@@ -392,11 +650,57 @@ TOOLS = [
     ),
     (
         "mc_region",
-        "查询磁盘已保存区块，不能据此断言活动区块实时状态。x/z 为全局区块坐标，bounds 为方块[minX,minY,minZ,maxX,maxY,maxZ]；实体按三维位置筛选，区块按水平范围相交筛选。scan 后台统计/分页用 mc_job；结果含 world_path、region、nbt_path、DataVersion。",
+        "查询已保存数据，不代表实时现场。read/select读NBT，preview_batch预览；region_batch每项需区块x/z和expected。block按方块坐标读状态／方块实体，blocks按区块统计／检索；block_set须提案并给expected/state完整SNBT，换类型须明确remove_block_entity旧SNBT。check检查区域或指定区块并给fingerprint，export导出原始记录（可从backup）；region_restore/remove须提案并用当前指纹。scan的bounds为方块[minX,minY,minZ,maxX,maxY,maxZ]，实体按三维、区块按水平相交筛选。后台分页用mc_job。",
         variants(
             "mode",
             {
                 "read": (REGION_READ, ("path", "x", "z")),
+                "block": (
+                    {
+                        "path": STRING,
+                        "block_x": {"type": "integer"},
+                        "block_y": {"type": "integer"},
+                        "block_z": {"type": "integer"},
+                    },
+                    ("path", "block_x", "block_y", "block_z"),
+                ),
+                "blocks": (
+                    {
+                        "path": STRING,
+                        "x": {"type": "integer"},
+                        "z": {"type": "integer"},
+                        "name": STRING,
+                        "legacy_id": {"type": "integer", "minimum": 0, "maximum": 4095},
+                        "result": {"enum": ["list", "by_state"]},
+                        "offset": INTEGER,
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    },
+                    ("path", "x", "z"),
+                ),
+                "check": (
+                    {
+                        "path": STRING,
+                        "x": {"type": "integer"},
+                        "z": {"type": "integer"},
+                        "include_related": {"type": "boolean"},
+                    },
+                    ("path",),
+                ),
+                "export": (
+                    {
+                        "path": STRING,
+                        "x": {"type": "integer"},
+                        "z": {"type": "integer"},
+                        "include_related": {"type": "boolean"},
+                        "backup": STRING,
+                    },
+                    ("path", "x", "z"),
+                ),
+                "select": (REGION_READ, ("path", "x", "z", "nbt_path", "selector")),
+                "preview_batch": (
+                    {"path": STRING, "changes": REGION_CHANGES},
+                    ("path", "changes"),
+                ),
                 "scan": (
                     {
                         "world": STRING,
@@ -431,6 +735,26 @@ TOOLS = [
             "mode",
             {
                 "read": ({"job_id": STRING, **PAGE}, ("job_id",)),
+                "wait": (
+                    {
+                        "job_id": STRING,
+                        **PAGE,
+                        "wait_seconds": {"type": "number", "minimum": 0, "maximum": 25},
+                    },
+                    ("job_id",),
+                ),
+                "find": (
+                    {
+                        "job_id": STRING,
+                        "reference": STRING,
+                        "query": {"type": "string", "minLength": 1},
+                        "regex": {"type": "boolean"},
+                        "case_sensitive": {"type": "boolean"},
+                        "offset": INTEGER,
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    },
+                    ("job_id", "reference", "query"),
+                ),
                 "artifact": (
                     {"job_id": STRING, "reference": STRING, "offset": INTEGER},
                     ("job_id", "reference"),
@@ -521,3 +845,19 @@ TOOLS.append(
         },
     )
 )
+
+
+def model_contract(value):
+    """The union properties describe all parameters; native validation keeps oneOf."""
+    if isinstance(value, dict):
+        return {
+            key: model_contract(item) for key, item in value.items() if key != "oneOf"
+        }
+    if isinstance(value, (list, tuple)):
+        return [model_contract(item) for item in value]
+    return value
+
+
+MODEL_TOOLS = [
+    (name, description, model_contract(schema)) for name, description, schema in TOOLS
+]

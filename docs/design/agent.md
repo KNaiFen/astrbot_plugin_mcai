@@ -14,17 +14,20 @@
 | `mc_web` | `open/read/find`；URL或持久引用、偏移与查找词 |
 | `mc_search` | `search/open/find`；提供商alpha/search、查询或来源引用、任务级搜索会话 |
 | `mc_mods` | 站点及 `search/project/versions/file/download`；项目、版本、加载器和文件 |
+| `mc_inventory` | 本地MOD／插件／数据包元数据、嵌套JAR、哈希、依赖与历史清单差异 |
 | `mc_download` | URL、可选文件名及SHA-256；下载到B暂存目录 |
 | `mc_status` | 实例状态、主机指标、进程树、实际Java与世界发现 |
+| `mc_diagnostics` | 实例内进程CPU／I/O增量与JVM参数、堆概要、连续线程快照 |
+| `mc_verify` | 固定只读的配置解析、文本／NBT断言、就绪观察与本机端口检查 |
 | `mc_players`、`mc_metrics` | 探针玩家与近期现场、全服及维度耗时 |
 | `mc_objects`、`mc_profile`、`mc_inspect` | 已加载对象普查、短时热点、按UUID／位置检查目标 |
-| `mc_files` | `find/read`；glob或相对路径与行范围 |
+| `mc_files` | `find/read/tail/stat/search/preview_patch`；文件属性、SHA-256、检索与保留编码的补丁预览 |
 | `mc_logs` | 文件/glob、字面量/正则、时间、编码和上下文 |
 | `mc_console` | `read/command`；按序号读取或发送在线诊断命令 |
 | `mc_exec` | PowerShell诊断脚本、实例内工作子目录与超时 |
 | `mc_nbt` | 文件、NBT路径、摘要/值、子项分页；修改值使用带类型SNBT |
-| `mc_region` | 区块读取或批量查询；世界、实体类型、UUID、坐标、NBT条件和统计 |
-| `mc_job` | 后台查询、分页、长字段引用、取消与修复记录 |
+| `mc_region` | 区块NBT与对象批量预览、方块坐标／状态统计、检查／原始导出；世界与实体扫描 |
+| `mc_job` | 后台查询、有界等待、分页、长字段引用／检索、取消与修复记录 |
 | `mc_propose` | 简短方案、明确步骤及审核材料；等待管理员批准 |
 | `mc_say` | 关键提问或结论 |
 | `mc_pause` | 保存进度并暂停 |
@@ -42,6 +45,18 @@
 | 文件修复 | `mc_propose`整组审核 → `/mcaiapply` → 停服、备份、修改、验证；失败保留现场 |
 
 修复步骤包括显式启停、`command`、`write_text`、NBT／区域修改、`script`、`restore`、`install_download`。脚本必须声明全部 `backup_paths`；下载安装明确目标文件及待移除旧文件。启动、重启、恢复和强制保存也属于待批准方案。
+
+局部文本修改使用 `patch_text`：提供 `path`、原文件 `sha256`、`edits: [{old, new}]`，非UTF-8无BOM文本同时指定 `encoding`。先用 `mc_files stat` 获取哈希，再用 `preview_patch` 查看差异；预览不写入。原文必须唯一匹配，执行时文件哈希变化则失败。保留原BOM、编码、未修改部分及换行形式；仍走文件修复的停服和备份。`write_text`继续用于明确提交整份新内容。
+
+`mc_files search`限定文本glob，支持字面量／正则和`lines/files/count`；编码错误逐文件明确报告。`tail`读取末尾，`stat`返回大小、修改时间、BOM和SHA-256。`mc_job wait`沿原游标最多等25秒，出现输出或任务结束立即返回；`find`在指定产物中检索并返回字符偏移，可继续用`artifact`读取原文。等待和检索不创建新诊断进程。
+
+`mc_diagnostics`是固定只读查询：`process`记录实例托管树内目标的CPU／I/O增量、内存和线程数，`jvm`使用实际JVM同目录的`jcmd.exe`读取参数、堆概要并连续采集线程快照。默认3个样本、间隔1秒，最多5个、间隔最多10秒；采集进程受原辅助内存额度与取消机制约束，MC不在该Job内。Oracle javapath包装进程按父子关系识别，以叶子JVM作为目标；多个独立JVM不能自动选择。缺JDK工具或采集失败明确返回错误，原始输出保留。
+
+卡死恢复使用方案第一步`force_stop`，必须提交`mc_status.java_processes`中的`pid/created`和窗口`session_id`（步骤字段为`process_created`）。同样整组审核、一次批准；执行前保存控制台和状态证据，窗口重新核对身份，先结束BAT重启链及Java包装进程，再结束所选JVM及其子进程，保留托管PowerShell。可以接同一方案的文件备份／修复。普通`stop`超时不自动强制结束；同编号仍只查询持久控制结果，新会话不重放。
+
+方案可插入`verify`步骤，`checks`支持`file`（json/toml/yaml/nbt解析）、`text`（文本存在／不存在）、`nbt/region`（带类型旧值断言）、`ready`和`tcp`。`patch_text`的可选`format`在替换前解析候选内容，失败不替换原文件。验证检查及已通过结果持久化到原操作；失败保留已发生修改、备份和当前服务端，不自动回滚或重新执行。查询工具`mc_verify`执行相同检查，不写生产文件。
+
+就绪检查必须在同方案显式`start/restart`之后执行，或提供先前读取的控制台`after/session_id`；启动前保存游标，旧的Done／READY不能作为新证据。`pattern/forbid`按单行正则匹配，可设`stable_seconds`观察后续错误；就绪超时最多300秒，观察最多60秒。会话变化、Java退出／更换或缓冲淘汰导致失败。`tcp`只证明127.0.0.1指定端口接受连接，不证明玩家登录或业务正常。推荐步骤顺序为修改→离线格式／数据断言→显式启动→就绪与错误观察。
 
 备份覆盖实际目标：已有文件记录原始内容，新增目标记录原先不存在；同一方案多次修改只备份初始状态。区域编辑关联外部 `.mcc` 文件也进入清单。脚本对清单外文件的效果依靠规则和审核约束，程序不能从任意脚本自动推断全部写入。
 

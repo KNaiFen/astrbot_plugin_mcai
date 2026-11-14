@@ -29,7 +29,7 @@
 
 ## 安装前准备
 
-当前版本为 **0.8.3**，完善群内日常运维与排障场景，按任务目标核实必要信息，并同步操作方案和验收归档的预设说明。A 通过[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)安装或更新；首次部署可从 [0.8.3 发行页](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.8.3)下载插件 ZIP 和 `mcai_windows_host.zip`。本次未更改通信协议，现有 0.8.0 的 B 和托管窗口可继续使用，只需更新 A 插件。从旧版升级时先阅读[更新说明](#更新时保留什么)。自行构建的安装包位于 `dist/`。
+当前版本为 **0.9.0**，增加精确文件补丁、JVM取证与卡死恢复、修复验证、本地组件清单、批量NBT、区块救援及方块坐标读写。部署使用同版本的 `astrbot_plugin_mcai.zip` 和 `mcai_windows_host.zip`，可从 [0.9.0发行页](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.9.0)下载；自行构建的安装包位于 `dist/`。本次协议升级为 `mcai-3`，A、B和托管窗口均需更新。从旧版升级先阅读[更新说明](#更新时保留什么)，能力与使用边界见[运维工具](docs/usage/operations.md#文件存档与故障取证)。
 
 ### 软件与版本
 
@@ -269,7 +269,7 @@ Set-Location -LiteralPath 'D:\MCAI'
 
 在 AstrBot **插件管理页**使用 ZIP 安装入口，选择配套的 `astrbot_plugin_mcai.zip`，等待安装依赖并启用插件。找到显示名称为 **“MC 排障助手”**、插件标识为 `astrbot_plugin_mcai` 的插件，打开其**设置视图**，页面标题为“MCAI 设置”。
 
-也可以通过仓库地址安装：[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)。仓库提供当前版本插件；0.8.3 可继续连接 0.8.0 的 B，需要固定旧版本时使用对应发行页的配套 ZIP。发布附件见 [Releases](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/latest)。
+也可以通过仓库地址安装：[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)。核对公开仓库实际版本与本机B版本；需要固定版本时使用对应发行页的配套 ZIP。发布附件见 [Releases](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/latest)。
 
 若安装依赖时出现 `WinError 5`，并指向 `charset_normalizer` 或 `__mypyc*.pyd`，完全退出 AstrBot 后，按[安装依赖时拒绝访问](docs/usage/operations.md#安装依赖时拒绝访问)预装依赖，再启动 AstrBot 重试安装。
 
@@ -495,7 +495,7 @@ B 窗口按 Ctrl+C 正常退出会等待已接受修复，再结束辅助工作�
 
 ### 更新时保留什么
 
-先等待修复完成并暂停任务，备份 A 插件数据、B 的 `host.json`、`instances.json` 和整个 `data_dir`。需要更新 B 时，退出 B 后替换发行文件并重新执行安装命令；保留原证书、令牌、备份、经验和用户规则。涉及通信协议变更时，A、B 按同次发行包配套更新；本次 0.8.3 只需更新 A 插件。已有运行时 `AGENTS.md` 保留原样，可将新版模板的工作场景、工作推进、来源边界与验收要求人工合并，内置运维场景、来源与任务范围规则随插件更新生效。
+先等待修复完成并暂停任务，备份 A 插件数据、B 的 `host.json`、`instances.json` 和整个 `data_dir`。本次0.9.0须正常停服、关闭旧托管窗口，退出B后替换发行文件并重新执行安装命令，再打开新托管窗口；A同时更新配套插件。保留原证书、令牌、备份、经验和用户规则。已有运行时 `AGENTS.md` 保留原样，可将新版模板的精确编辑、卡死恢复、存档与验证要求人工合并。
 
 若升级要求更新托管窗口或改变终端协议，先正常停服、关闭旧托管窗口，再用新程序打开并启动；单纯重启 B 不需要关闭服务端。更新结束后重新测试 A→B 连接，再续接任务。更多细节见[升级说明](docs/usage/operations.md#升级与常见问题)。
 

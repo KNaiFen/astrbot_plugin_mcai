@@ -6,6 +6,12 @@
 
 ## 当前验证
 
+2026-11-14，0.9.0补齐B端八类维护能力。固定Windows／Python3.12.14／AstrBot v4.29.4环境中，全部30个测试文件分三批完整回归：190项（553.84秒）、118项（392.53秒）、116项（407.23秒），**合计424项全部通过、零跳过**，三批退出码均为0。最终收集清单与JUnit逐项比对，所有用例无遗漏、无重复。过程中的进程退出竞争、分页产物读取及旧工具数量断言已分别重现、修正并复测，详见[维护能力与验证](maintenance-capabilities.md)。
+
+解压B包构建0.9.0 wheel并安装到独立目标目录，再从精简A包运行原生Agent、所有新增维护工具与循环BAT等107项回归，全部通过、零跳过（384.57秒）；确认B主进程及辅助worker使用安装目录。源码B和已安装B分别通过真实隔离MC1.21.1的HTTPS／ConPTY停服备份、方块编辑、重启后命令确认及相邻方块保持。两端包、源码包及四目标Probe构建通过；发行文件、许可和文档保持分层。版本升级为0.9.0／`mcai-3`，插件、B和托管窗口需配套更新。
+
+保留AstrBot的audioop和旧工具schema接口弃用警告及Gradle提示；未联调真实QQ、外部模型或生产整合包，没有据此宣称所有MC／模组语义兼容。后续0.8.x数字均为历史基线。
+
 2026-11-14，0.8.3发行验证：原样提交用户编辑的运行时模板工作场景说明，汇入日常运维与排障的预设、内置提示、工具说明及验收归档调整；同步metadata、Python包、产品版本头、HTTP User-Agent和README发行说明。A/B协议保持`mcai-2`，0.8.3客户端连接Git保留的0.8.0主机代码，真实HTTPS实例查询通过，本次只需更新A。
 
 固定Windows／Python3.12.14／AstrBot v4.29.4环境下，独立审核、日常公告、say来源与开关、原生完整流程、300轮历史压缩／验收及下载等58项相关回归全部通过、零跳过，203.26秒。由解压B包构建0.8.3 wheel并安装到独立目标目录，隔离导入确认使用已安装B，再从解压插件执行群命令、日常运维方案审核／批准、say与重载、后台追问和完整修复等25项集成用例，全部通过、零跳过，80.12秒。
@@ -94,6 +100,14 @@ $env:PYTHONPATH = "$PWD/runtime/astrbot-4.29.4"
 
 发行验证追加`--require-astrbot`，入口强制核对v4.29.4并在出现任何跳过时返回失败。整改后验证见[0.8.0整改记录](architecture-remediation-0.8.0.md)，上方数量保留为整改前基线。
 
+真实方块修复验证另行运行，使用本地原版MC **1.21.1 bundler JAR**和JDK21。脚本创建独立的`runtime/maintenance-real/<随机编号>/`，仅监听127.0.0.1，不使用生产世界；通过实际HTTPS／ConPTY执行停服、备份、修改、重启和MC命令确认，保留日志与`result.json`。它不随普通pytest自动启动：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/test_maintenance_server.py --server-jar 'D:/MC-Test/server-1.21.1.jar' --java 'C:/Program Files/Java/jdk-21/bin/java.exe'
+```
+
+若已按[探针验证](probe.md)准备隔离Fabric 1.21.1安装目录，可省略参数，使用其中的原版bundler。各批维护能力及失败修正证据见[维护能力与验证](maintenance-capabilities.md)。
+
 ## 场景清单
 
 | 范围 | 主要覆盖内容 | 测试文件 |
@@ -104,6 +118,7 @@ $env:PYTHONPATH = "$PWD/runtime/astrbot-4.29.4"
 | MOD与下载 | 两站项目/说明/版本/依赖/变更说明、版本和加载器筛选、CurseForge API/CDN凭据、无关重定向不带凭据、分发受限、哈希失败、大小限制、临时错误重试、网络等待取消、HTTPS响应丢失及工具检查点去重 | `test_web_downloads.py`、`test_mcai_workflow.py` |
 | 批准安装与经验 | 拒绝不安装、审核后暂存变化、旧文件备份/新增文件恢复、真实runner贯穿验收归档、归档失败重载重试、文档/索引中断去重、人工编辑保留、多案例并发、相关片段与不同目录隔离 | `test_mcai_workflow.py`、`test_web_downloads.py` |
 | 日志和文件查询 | 字面量/正则、大小写、空查询、无匹配、普通/gzip、损坏 gzip、UTF-8/UTF-16/GB18030、中文路径、重叠上下文去重、调用栈归属、跨日日期、时区转换、追加/轮转、空文件和缺失文件 | `test_diagnostics.py`、`test_query_edges.py` |
+| 维护工具与存档修复 | 哈希补丁／编码保留、后台等待／检索、JVM身份与卡死恢复、就绪观察、组件清单差异、身份批量NBT、坏邻居点恢复、方块打包／高度图与原生批准流程 | `test_host_maintenance.py`、`test_host_recovery.py`、`test_host_verification.py`、`test_host_inventory.py`、`test_host_nbt_batch.py`、`test_host_region_recovery.py`、`test_host_blocks.py` |
 | 大结果 | 行数和字符预算、全局事件序号不连续、重复读同一页、末页/空页、中文和 emoji 的长字段引用、按字符续读、首次大结果创建持久目录 | `test_diagnostics.py`、`test_query_edges.py`、`test_job_interactions.py` |
 | 在线诊断 | 开服期间执行、工作子目录、中文和空格路径、stdout/stderr、跨输出分块的多字节字符、非零退出码、脚本错误后停止后续语句、无效超时、正常超时、父子进程取消 | `test_diagnostics.py`、`test_job_interactions.py` |
 | 后台协作 | 多请求复用同一操作、并发重复取消、取消已完成/失败任务、同实例扫描串行和排队取消、其他实例并行、扫描期间读控制台、修复前结束所属诊断和扫描、保留其他任务工作 | `test_diagnostics.py`、`test_job_interactions.py` |
