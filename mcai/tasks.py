@@ -1,19 +1,30 @@
 import asyncio
 import json
-import re
 import time
 import traceback
 import uuid
 
-from .agent_runtime import RETRY_DELAYS, retryable, summary_text
+from .agent_runtime import RETRY_DELAYS, progress_text, retryable
 from .client import RemoteError
 from .knowledge import Knowledge
 from .review import digest
 from .web import WebPages
 
 
+def message_parts(text):
+    offset = 0
+    while offset < len(text):
+        end = min(offset + 1800, len(text))
+        if end < len(text):
+            boundary = text.rfind("\n", offset, end)
+            if boundary >= offset:
+                end = boundary + 1
+        yield offset, text[offset:end]
+        offset = end
+
+
 class Tasks:
-    """Durable group tasks with short notifications and one worker per task."""
+    """Durable group tasks with complete messages and one worker per task."""
 
     def __init__(self, store, client, agent, notify):
         self.store, self.client, self.agent, self.notify = store, client, agent, notify
@@ -69,45 +80,35 @@ class Tasks:
         text = text.strip()
         if not text:
             return
-        # Full text stays in the log even when the group-facing output is capped.
         self.log(job, "group_message", text=text)
-        if len(text) > 280:
-            urls = list(dict.fromkeys(re.findall(r"https?://[^\s<>]+", text)))[:3]
-            body = re.sub(r"https?://[^\s<>]+", "", text) if urls else text
-            text = body[:280] + "…" + ("\n" + "\n".join(urls) if urls else "")
-        key = uuid.uuid4().hex
-        self.store.save(
-            "outbox",
-            key,
-            {
-                "id": key,
-                "task": job["id"],
-                "origin": job["origin"],
-                "text": f"「{job['name']}」{text}",
-                "mention": mention,
-                "sent": False,
-            },
-        )
+        for offset, part in message_parts(text):
+            key = uuid.uuid4().hex
+            self.store.save(
+                "outbox",
+                key,
+                {
+                    "id": key,
+                    "task": job["id"],
+                    "origin": job["origin"],
+                    "text": f"「{job['name']}」{part}",
+                    "mention": mention if offset == 0 else None,
+                    "sent": False,
+                },
+            )
 
-    def summary(self, job, identity, text, *, include_body=False, forward=True):
+    def progress(self, job, identity, text, *, forward=False):
         if job["stop_requested"] or not text.strip():
             return
-        key = digest({"task": job["id"], "summary": identity})
-        if self.store.get("summary", key):
+        key = digest({"task": job["id"], "progress": identity})
+        if self.store.get("progress", key):
             return
-        self.log(job, "api_summary", identity=identity, text=text)
+        self.log(job, "agent_progress", identity=identity, text=text)
         if not forward:
-            self.store.save("summary", key, {"id": key})
+            self.store.save("progress", key, {"id": key})
             return
-        display = summary_text(text, include_body)
-        offset = 0
-        while offset < len(display):
-            end = min(offset + 1800, len(display))
-            if end < len(display):
-                boundary = display.rfind("\n", offset, end)
-                if boundary >= offset:
-                    end = boundary + 1
-            item_id = f"summary-{key}-{offset}"
+        display = progress_text(text)
+        for offset, part in message_parts(display):
+            item_id = f"progress-{key}-{offset}"
             if not self.store.get("outbox", item_id):
                 self.store.save(
                     "outbox",
@@ -116,14 +117,13 @@ class Tasks:
                         "id": item_id,
                         "task": job["id"],
                         "origin": job["origin"],
-                        "text": f"「{job['name']}」" + display[offset:end],
+                        "text": f"「{job['name']}」{part}",
                         "mention": None,
                         "sent": False,
-                        "summary_task": job["id"],
+                        "progress_task": job["id"],
                     },
                 )
-            offset = end
-        self.store.save("summary", key, {"id": key})
+        self.store.save("progress", key, {"id": key})
 
     def pause(self, job, reason):
         if job["stop_requested"] or job["state"] == "paused":
@@ -133,7 +133,7 @@ class Tasks:
         self.save(job)
         self.message(
             job,
-            f"已保存进度并暂停：{reason[:100]}。管理员使用 /mcairesume {job['name']} 续接。\n群成员可用 /mcaisay {job['name']} 内容 保存补充，暂不继续排查。",
+            f"已保存进度并暂停：{reason}。管理员使用 /mcairesume {job['name']} 续接。\n群成员可用 /mcaisay {job['name']} 内容 保存补充，暂不继续排查。",
             job["admin"],
         )
 
@@ -162,8 +162,8 @@ class Tasks:
             failed = False
             for item in self.store.pending_outbox():
                 if (
-                    item.get("summary_task")
-                    and self.store.get("task", item["summary_task"])["stop_requested"]
+                    item.get("progress_task")
+                    and self.store.get("task", item["progress_task"])["stop_requested"]
                 ):
                     item.update(sent=True, discarded=True)
                     self.store.save("outbox", item["id"], item)
@@ -454,7 +454,7 @@ class Tasks:
         hints = f"\n管理员批准：/mcaiapply {job['name']}\n需补充或调整：/mcaisay {job['name']} 内容"
         self.message(
             job,
-            f"{summary[: min(150, 280 - len(note) - len(hints))]}{note}{hints}",
+            f"{summary}{note}{hints}",
             job["admin"],
         )
 

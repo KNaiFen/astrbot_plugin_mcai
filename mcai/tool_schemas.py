@@ -881,7 +881,7 @@ TOOLS = [
     ),
     (
         "mc_say",
-        "把必要提问或关键结论加入群消息发件箱，返回status=queued；实际送达另由发件箱记录。等待补充时提示/mcaisay并结束本轮，不播报常规进度。",
+        "仅在确实缺少用户信息时，把合并后的必要提问加入群消息发件箱，返回status=queued；实际送达另由发件箱记录。提示/mcaisay并结束本轮等待补充。进度使用commentary，最终结论和验收请求使用final，不调用本工具代发。",
         contract(
             {"text": {"type": "string", "minLength": 1, "pattern": "\\S"}}, ("text",)
         ),
@@ -1045,7 +1045,7 @@ FIELD_HELP = {
     "instance": "mc_instances返回的实例名称，不是目录或QQ群名。",
     "reason": "本次目标选择依据，或确实需要管理员处理的具体暂停原因。",
     "directory": "经验索引返回的规范目录；省略使用当前绑定实例。",
-    "text": "面向群的一至三行必要提问或关键结果，不发常规工具进度。",
+    "text": "面向群的必要提问，说明缺少的信息及/mcaisay 任务名 内容用法；长消息自动分段，不省略必要内容。",
     "scope": "Probe取证范围；player/chunks/dimension分支需相应定位字段。",
     "player": "游戏名或UUID，不能使用QQ账号代替。",
     "radius_chunks": "玩家周围区块半径，省略采用Probe默认范围，上限32。",

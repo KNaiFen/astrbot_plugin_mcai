@@ -1,4 +1,4 @@
-"""Per-task model requests, separate review conversations and Responses summaries."""
+"""Per-task model requests, separate review conversations and progress updates."""
 
 import asyncio
 import copy
@@ -110,10 +110,9 @@ async def model_request(tasks, job, stage, call, attempts, *, pause_on_error=Tru
     raise ModelUnavailable(reason)
 
 
-class SummaryStream:
+class ProgressStream:
     def __init__(self, stream, emit):
         self.stream, self.emit = stream, emit
-        self.parts = {}
         self.response_id = None
 
     async def __aiter__(self):
@@ -131,15 +130,17 @@ class SummaryStream:
                         if isinstance(response, dict)
                         else response.id
                     )
-                key = (get("item_id"), get("output_index"), get("summary_index"))
                 kind = get("type")
-                if kind == "response.reasoning_summary_text.delta":
-                    self.parts[key] = self.parts.get(key, "") + get("delta", "")
-                elif kind == "response.reasoning_summary_text.done":
-                    text = get("text", self.parts.get(key, ""))
-                    if self.response_id and text:
-                        self.emit([self.response_id, *key], text)
-                    self.parts.pop(key, None)
+                if kind == "response.output_item.done":
+                    self.emit(self.response_id, get("item"))
+                elif kind == "response.completed":
+                    output = (
+                        response.get("output", [])
+                        if isinstance(response, dict)
+                        else response.output
+                    )
+                    for item in output:
+                        self.emit(self.response_id, item)
                 yield event
         finally:
             await self.close()
@@ -148,66 +149,69 @@ class SummaryStream:
         await self.stream.close()
 
 
-def summary_text(text, include_body=False):
+def progress_text(text):
     lines = []
     for line in text.splitlines():
         line = line.strip().lstrip("#").strip()
         if line and not line.startswith("<!--"):
-            heading = re.match(r"\*\*(.+?)\*\*", line)
-            if heading and not include_body:
-                line = heading[1]
             line = re.sub(r"\*\*|__|`", "", line)
-            if not include_body:
-                return line[:80]
             lines.append(line)
     return "\n".join(lines)
 
 
-def summary_provider(provider, emit, mode="auto"):
-    """Observe only explicitly typed Responses summary events on a private client view."""
+def progress_provider(provider, emit):
+    """Observe commentary and replay its native message boundaries on a private copy."""
     selected = request_provider(provider)
-    extra = selected.provider_config.setdefault("custom_extra_body", {})
-    reasoning = extra.setdefault("reasoning", {})
-    if "reasoning_effort" in extra:
-        reasoning.setdefault("effort", extra.pop("reasoning_effort"))
-    if mode == "none":
-        reasoning.pop("summary", None)
-        return selected
-    reasoning["summary"] = mode
     client = copy.copy(provider.client)
     create = provider.client.responses.create
-    summary_disabled = False
+    convert = provider._convert_chat_messages_to_response_input
 
-    async def create_with_summary(**kwargs):
-        nonlocal summary_disabled
-        if summary_disabled:
-            kwargs = copy.deepcopy(kwargs)
-            kwargs.get("extra_body", {}).get("reasoning", {}).pop("summary", None)
-        try:
-            stream = await create(**kwargs)
-        except Exception as exc:
-            if getattr(exc, "status_code", None) not in (400, 422) or not re.search(
-                r"summary.*(?:support|unknown|unrecognized)|(?:support|unknown|unrecognized).*summary",
-                str(exc),
-                re.I,
-            ):
-                raise
-            summary_disabled = True
-            kwargs = copy.deepcopy(kwargs)
-            kwargs.get("extra_body", {}).get("reasoning", {}).pop("summary", None)
-            stream = await create(**kwargs)
+    def convert_messages(self, messages):
+        result = []
+        for message in messages:
+            for item in convert([message]):
+                if item["type"] == "message" and message.get("response_messages"):
+                    result.extend(copy.deepcopy(message["response_messages"]))
+                else:
+                    result.append(item)
+        return result
+
+    def observe(response_id, item):
+        value = item if isinstance(item, dict) else item.model_dump(mode="json")
+        if value["type"] == "message" and value.get("phase") == "commentary":
+            text = "".join(
+                part["text"]
+                for part in value["content"]
+                if part["type"] == "output_text"
+            )
+            if text:
+                emit([response_id, value["id"]], text)
+
+    async def create_with_progress(**kwargs):
+        stream = await create(**kwargs)
         if kwargs.get("stream"):
-            return SummaryStream(stream, emit)
-        for index, item in enumerate(stream.output):
-            if item.type == "reasoning":
-                for summary_index, part in enumerate(item.summary):
-                    if part.text:
-                        emit([stream.id, item.id, index, summary_index], part.text)
+            return ProgressStream(stream, observe)
+        for item in stream.output:
+            observe(stream.id, item)
         return stream
 
-    client.responses = SimpleNamespace(create=create_with_summary)
+    client.responses = SimpleNamespace(create=create_with_progress)
     selected.client = client
+    selected._convert_chat_messages_to_response_input = MethodType(
+        convert_messages, selected
+    )
     return selected
+
+
+def response_messages(response):
+    raw = response.raw_completion
+    if raw is None or not hasattr(raw, "output"):
+        return []
+    return [
+        item.model_dump(mode="json", exclude_none=True)
+        for item in raw.output
+        if item.type == "message"
+    ]
 
 
 def search_provider(provider, tool_type, unavailable):
@@ -313,9 +317,20 @@ class MainProvider:
         return getattr(self.provider, name)
 
     def complete(self, result):
+        self.last_response = result
+        self.final_text = result.completion_text
         raw = result.raw_completion
         if raw is not None and hasattr(raw, "output"):
             calls, citations = [], []
+            messages = response_messages(result)
+            if messages:
+                self.final_text = "".join(
+                    part.get("text", part.get("refusal", ""))
+                    for item in messages
+                    if item.get("phase") != "commentary"
+                    for part in item["content"]
+                    if part["type"] in ("output_text", "refusal")
+                )
             for item in raw.output:
                 if item.type == "web_search_call":
                     calls.append(item.model_dump(mode="json", exclude_none=True))
@@ -342,6 +357,11 @@ class MainProvider:
                 urls = list(dict.fromkeys(item["url"] for item in citations))
                 text = re.sub(r"cite.*?", "[来源]", result.completion_text or "")
                 result.completion_text = text + "\n来源：\n" + "\n".join(urls)
+                self.final_text = (
+                    re.sub(r"cite.*?", "[来源]", self.final_text or "")
+                    + "\n来源：\n"
+                    + "\n".join(urls)
+                )
         self.capture(result)
         return result
 
@@ -350,7 +370,7 @@ class MainProvider:
         return self.complete(result)
 
     async def text_chat_stream(self, **kwargs):
-        # Buffer a complete model step before exposing it to the runner. API summaries
+        # Buffer a complete model step before exposing it to the runner. Progress updates
         # are independently emitted while the underlying stream is still arriving.
         async def collect():
             if self.stream_unavailable:

@@ -214,51 +214,31 @@ async def test_capabilities(main, review, settings, progress, *, store=None):
                 "web_search_preview", lambda: native_search("web_search_preview")
             )
 
-        async def summary():
-            reasoning = {"summary": settings.get("reasoning_summary") or "auto"}
-            effort = (
-                settings.get("reasoning_effort")
-                or main.provider_config.get("custom_extra_body", {})
-                .get("reasoning", {})
-                .get("effort")
-                or main.provider_config.get("custom_extra_body", {}).get(
-                    "reasoning_effort"
+        async def progress_update():
+            response = await selected.text_chat(
+                prompt="先使用 assistant 的 commentary 阶段用一句简短中文说明正在核对计算，再计算 17*23，使用 final_answer 阶段报告结果。",
+                contexts=[],
+                func_tool=None,
+                request_max_retries=1,
+            )
+            return any(
+                item.type == "message"
+                and getattr(item, "phase", None) == "commentary"
+                and any(
+                    part.type == "output_text" and part.text for part in item.content
                 )
+                for item in response.raw_completion.output
             )
-            if effort:
-                reasoning["effort"] = effort
-            stream = await main.client.responses.create(
-                model=main.get_model(),
-                input="计算 17*23，并用一句话核对。",
-                reasoning=reasoning,
-                stream=True,
-                max_output_tokens=512,
-            )
-            seen = False
-            async with stream:
-                async for event in stream:
-                    if (
-                        event.type == "response.reasoning_summary_text.done"
-                        and event.text
-                    ):
-                        seen = True
-            return seen
 
-        if settings.get("reasoning_summary") == "none":
-            result["items"]["reasoning_summary"] = {
-                "status": "unobserved",
-                "message": "配置已关闭摘要",
-            }
-        else:
-            await check("reasoning_summary", summary)
+        await check("progress", progress_update)
     else:
         result["items"]["web_search"] = {
             "status": "unsupported",
             "error": "托管搜索需要 Responses 提供商",
         }
-        result["items"]["reasoning_summary"] = {
+        result["items"]["progress"] = {
             "status": "unsupported",
-            "error": "明确的摘要事件需要 Responses 提供商",
+            "error": "commentary 执行进度汇报需要 Responses 提供商",
         }
 
     session_id = uuid.uuid4().hex
@@ -336,8 +316,8 @@ def detected_settings(result):
         )
     elif native == "unsupported" and preview in (None, "unsupported"):
         changes["enable_web_search"] = False
-    if items.get("reasoning_summary", {}).get("status") == "unsupported":
-        changes["forward_reasoning_summary"] = False
+    if items.get("progress", {}).get("status") == "unsupported":
+        changes["forward_progress"] = False
     status = items.get("alpha_search", {}).get("status")
     if status == "passed":
         changes["enable_alpha_search"] = True

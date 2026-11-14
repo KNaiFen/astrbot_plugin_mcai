@@ -10,7 +10,7 @@ from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 from .mcai.astrbot_agent import AstrBotAgent
 from .mcai.client import HostClient
 from .mcai.storage import Store
-from .mcai.tasks import Tasks
+from .mcai.tasks import Tasks, message_parts
 from .mcai.tracing import trace_event
 
 COMMANDS = {
@@ -63,13 +63,7 @@ class MCAI(Star):
                 review_provider_id=config.get("review_provider_id", ""),
                 review_reasoning_effort=config.get("review_reasoning_effort", ""),
                 model_max_attempts=config.get("model_max_attempts", 3),
-                forward_reasoning_summary=config.get(
-                    "forward_reasoning_summary", False
-                ),
-                forward_reasoning_summary_body=config.get(
-                    "forward_reasoning_summary_body", False
-                ),
-                reasoning_summary=config.get("reasoning_summary", "auto"),
+                forward_progress=config.get("forward_progress", False),
                 enable_web_search=config.get("enable_web_search", True),
                 web_search_tool_type=config.get("web_search_tool_type", "web_search"),
                 reasoning_effort=config.get("reasoning_effort", ""),
@@ -257,20 +251,19 @@ class MCAI(Star):
             elif command == "mcaipause":
                 self.tasks.pause_requested(job)
             elif command == "mcaiplan":
-                yield reply(
-                    f"「{name}」"
+                text = (
+                    job["plan"]["summary"]
                     + (
-                        job["plan"]["summary"][:220]
-                        + (
-                            f"\n任务已暂停，管理员续接：/mcairesume {name}"
-                            if job["state"] == "paused"
-                            else f"\n管理员批准：/mcaiapply {name}"
-                        )
-                        + f"\n需调整：/mcaisay {name} 内容"
-                        if job["plan"]
-                        else f"当前没有待批准方案。使用 /mcaistatus {name} 查看进度，或 /mcaisay {name} 内容 补充线索。"
+                        f"\n任务已暂停，管理员续接：/mcairesume {name}"
+                        if job["state"] == "paused"
+                        else f"\n管理员批准：/mcaiapply {name}"
                     )
+                    + f"\n需调整：/mcaisay {name} 内容"
+                    if job["plan"]
+                    else f"当前没有待批准方案。使用 /mcaistatus {name} 查看进度，或 /mcaisay {name} 内容 补充线索。"
                 )
+                for _, part in message_parts(text):
+                    yield reply(f"「{name}」{part}")
             else:
                 say_paused = job.get("say_paused", False)
                 audience = "管理员" if say_paused else "群成员"

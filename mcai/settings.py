@@ -157,13 +157,7 @@ class Settings:
                 review_reasoning_effort=config.get("review_reasoning_effort", ""),
                 reasoning_effort=config.get("reasoning_effort", ""),
                 model_max_attempts=config.get("model_max_attempts", 3),
-                forward_reasoning_summary=config.get(
-                    "forward_reasoning_summary", False
-                ),
-                forward_reasoning_summary_body=config.get(
-                    "forward_reasoning_summary_body", False
-                ),
-                reasoning_summary=config.get("reasoning_summary", "auto"),
+                forward_progress=config.get("forward_progress", False),
                 enable_web_search=config.get("enable_web_search", True),
                 web_search_tool_type=config.get("web_search_tool_type", "web_search"),
                 enable_alpha_search=config.get("enable_alpha_search", False),
@@ -245,7 +239,6 @@ class Settings:
                         "review_provider_id",
                         "reasoning_effort",
                         "review_reasoning_effort",
-                        "reasoning_summary",
                     )
                 }
                 stale = (
@@ -270,7 +263,6 @@ class Settings:
                 "review_provider_id",
                 "reasoning_effort",
                 "review_reasoning_effort",
-                "reasoning_summary",
             )
         }
         main = await self.provider(settings["provider_id"])
@@ -301,8 +293,8 @@ class Settings:
                 agent.enable_alpha_search = self.plugin.config.get(
                     "enable_alpha_search", False
                 )
-                agent.forward_summary = self.plugin.config.get(
-                    "forward_reasoning_summary", False
+                agent.forward_progress = self.plugin.config.get(
+                    "forward_progress", False
                 )
                 result["applied"] = changes
                 progress(result)

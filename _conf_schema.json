@@ -10,9 +10,7 @@
   "review_provider_id": {"description": "独立审核模型（必须选择，支持 OpenAI Chat／Responses）", "type": "string", "default": "", "_special": "select_provider"},
   "review_reasoning_effort": {"description": "审核模型思考程度，留空继承审核提供商配置，如 high；仅作用于审核请求", "type": "string", "default": ""},
   "model_max_attempts": {"description": "同一模型步骤最多尝试次数（主模型与审核分别计数）", "type": "int", "default": 3},
-  "forward_reasoning_summary": {"description": "将主模型 Responses API 摘要以纯文本发送到群；语言由服务商返回，审核内容不转发", "type": "bool", "default": false},
-  "forward_reasoning_summary_body": {"description": "同时转发摘要正文；关闭时只发标题，开启时去除空行和 Markdown 标记，完整原文始终留本地", "type": "bool", "default": false},
-  "reasoning_summary": {"description": "API 摘要详细程度：auto 自动、concise 简短、detailed 详细、none 关闭；与思考强度和正文转发开关独立", "type": "string", "default": "auto", "options": ["auto", "concise", "detailed", "none"]},
+  "forward_progress": {"description": "转发主模型 Responses commentary 执行进度汇报，要求简短中文；默认关闭，推理摘要和审核内容不转发", "type": "bool", "default": false},
   "admin_ids": {"description": "允许创建、批准、续接和结束任务的 QQ 号", "type": "list", "default": []},
   "group_ids": {"description": "允许使用的群号（留空允许所有群）", "type": "list", "default": []},
   "max_steps": {"description": "每轮最多模型步骤", "type": "int", "default": 40}

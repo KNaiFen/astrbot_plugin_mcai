@@ -29,9 +29,9 @@
 
 ## 安装前准备
 
-当前插件版本为 **0.11.0**，改进Agent工具调用、结果续读与诊断记录，可通过[插件仓库main](https://github.com/KNaiFen/astrbot_plugin_mcai/tree/main)安装或更新A。通信仍为`mcai-4`，现有0.10.0 B及托管窗口可继续使用，Probe保持0.2.0。从旧版升级先阅读[更新说明](#更新时保留什么)，能力边界见[运维工具](docs/usage/operations.md#文件存档与故障取证)。
+当前插件版本为 **0.11.1**，将进度转发改为执行进度汇报，完善Agent交流规则，群内答复与方案说明完整分段发送，可通过[插件仓库main](https://github.com/KNaiFen/astrbot_plugin_mcai/tree/main)安装或更新A。通信仍为`mcai-4`，现有0.10.0及之后的B与托管窗口可继续使用，Probe保持0.2.0。从旧版升级先阅读[更新说明](#更新时保留什么)，能力边界见[运维工具](docs/usage/operations.md#文件存档与故障取证)。
 
-本次仅将A插件发布到main，0.11.0的B及Probe发行附件尚未上传Releases。首次部署，或B仍为0.9.0及更早版本时，先取得维护者提供的0.11.0 `mcai_windows_host.zip`；维护者的本地构建产物位于`dist/`。旧0.9.0发行附件不能与当前插件配套使用。
+首次部署，或B仍为0.9.0及更早版本时，从[0.11.1发行页](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.11.1)下载 `mcai_windows_host.zip`；同页提供A插件、Probe0.2.0、完整源码与SHA-256校验文件。旧0.9.0发行附件不能与当前插件配套使用。
 
 ### 软件与版本
 
@@ -271,7 +271,7 @@ Set-Location -LiteralPath 'D:\MCAI'
 
 在 AstrBot **插件管理页**使用 ZIP 安装入口，选择配套的 `astrbot_plugin_mcai.zip`，等待安装依赖并启用插件。找到显示名称为 **“MC 排障助手”**、插件标识为 `astrbot_plugin_mcai` 的插件，打开其**设置视图**，页面标题为“MCAI 设置”。
 
-也可以通过仓库地址安装：[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)，默认main为0.11.0。安装前核对本机B已使用`mcai-4`（0.10.0或0.11.0）；历史[Releases](https://github.com/KNaiFen/astrbot_plugin_mcai/releases)中的旧版附件按对应版本配套使用。
+也可以通过仓库地址安装：[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)，默认main为0.11.1。安装前核对本机B已使用`mcai-4`（0.10.0及之后版本）；首次部署使用[0.11.1发行附件](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.11.1)，历史附件按对应版本配套使用。
 
 若安装依赖时出现 `WinError 5`，并指向 `charset_normalizer` 或 `__mypyc*.pyd`，完全退出 AstrBot 后，按[安装依赖时拒绝访问](docs/usage/operations.md#安装依赖时拒绝访问)预装依赖，再启动 AstrBot 重试安装。
 
@@ -299,7 +299,7 @@ Set-Location -LiteralPath 'D:\MCAI'
 4. 在 AstrBot 提供商设置中按模型实际容量配置 `max_context_tokens`。插件按这个值控制历史输入，未配置时按 32768 token 估算，长任务会压缩已结算历史。详细行为见[上下文与群消息范围](docs/usage/configuration.md#上下文与群消息范围)。
 5. 点击“**保存并测试、自动配置**”，等待结果区结束，查看“普通对话”“工具调用与续接”“审核模型与 JSON”等结果。
 
-能力测试只发测试模型／搜索请求，会产生少量 API 费用；不会操作 MC，也不会发送群消息。普通对话、工具调用或审核失败时，先核对对应提供商的错误。搜索和摘要是可选能力：服务商不支持时可关闭对应开关，未观察到摘要也不等于排障功能不可用。API 托管搜索和 `alpha/search` 独立搜索的区别见[模型与搜索说明](docs/usage/configuration.md#模型搜索与能力测试)。
+能力测试只发测试模型／搜索请求，会产生少量 API 费用；不会操作 MC，也不会发送群消息。普通对话、工具调用或审核失败时，先核对对应提供商的错误。搜索和执行进度汇报是可选能力：服务商不支持时可关闭对应开关，未观察到汇报也不等于排障功能不可用。执行进度汇报默认关闭，开启后转发中文的工具前说明与工作进展，不按固定时间通知。群内答复完整分段发送。API 托管搜索和 `alpha/search` 独立搜索的区别见[模型与搜索说明](docs/usage/configuration.md#模型搜索与能力测试)。
 
 ### 4. 配置管理员和允许群
 
@@ -499,8 +499,8 @@ B 窗口按 Ctrl+C 正常退出会等待已接受修复，再结束辅助工作�
 
 1. 用`/mcailist`查看活动任务。已验收的任务用`/mcaidone 任务名`结束；其余用`/mcaistop 任务名`中止并等执行收尾。本轮工具名称和结果格式改变，不迁移未结算旧调用，仅暂停不足以完成升级准备。
 2. 停用MCAI插件或退出AstrBot，备份`AstrBot/data/plugin_data/astrbot_plugin_mcai/`及现有插件配置，保留任务历史和经验。
-3. **B已是0.10.0时跳过B升级**，MC及托管窗口可继续运行。B仍为0.9.0及更早版本时，先正常停服、关闭旧托管窗口，再退出B；用0.11.0主机包更新程序并在原B环境重新执行`.\.venv\Scripts\python.exe -m pip install -e .`。保留`host.json`、`instances.json`、`data_dir`、证书、令牌和备份，再打开新托管窗口运行原`start.bat`。
-4. 在AstrBot插件管理中更新MCAI；通过ZIP安装的实例可使用0.11.0插件包更新，或通过上面的仓库地址安装。确认版本为0.11.0，启用插件并重载或重启AstrBot。
+3. **B已是0.10.0及之后版本时跳过B升级**，MC及托管窗口可继续运行。B仍为0.9.0及更早版本时，先正常停服、关闭旧托管窗口，再退出B；用0.11.1主机包更新程序并在原B环境重新执行`.\.venv\Scripts\python.exe -m pip install -e .`。保留`host.json`、`instances.json`、`data_dir`、证书、令牌和备份，再打开新托管窗口运行原`start.bat`。
+4. 在AstrBot插件管理中更新MCAI；通过ZIP安装的实例可使用0.11.1插件包更新，或通过上面的仓库地址安装。确认版本为0.11.1，启用插件并重载或重启AstrBot。
 5. 已有运行时`AGENTS.md`会保留。将插件中的`mcai/agent_rules.md`与`AstrBot/data/plugin_data/astrbot_plugin_mcai/AGENTS.md`人工合并，采用[工具升级对照](docs/usage/configuration.md#运行时规则)中的新名称、返回格式和示例，保留自己的服务器约定。
 6. 在插件设置页测试A→B连接及模型能力，再创建一个新的状态查询任务确认正常。历史记录继续保留。
 

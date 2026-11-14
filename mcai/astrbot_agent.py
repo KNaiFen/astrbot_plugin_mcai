@@ -23,9 +23,10 @@ from .agent_runtime import (
     ModelUnavailable,
     Reviewer,
     effort_provider,
+    progress_provider,
     request_provider,
+    response_messages,
     search_provider,
-    summary_provider,
 )
 from .client import RemoteError
 from .context_budget import fit_history
@@ -39,8 +40,8 @@ PROMPT = (
 未绑定时按mc_instances说明用mc_select_instance选择目标，模糊才追问。按目标做最小必要查询，优先已有工具、spark和服务端命令，不手写已有通信或统计能力。
 工具结果统一为ok/data及可选error/next_call。ok只表示调用成功，后台进展看data.status，读完看data.complete；next_call是可采用的续读参数，不自动执行。失败按error.path修正，不把漏参归因管理员；unknown沿原operation_id核实，不能另生成编号重放。
 诊断用mc_exec或mc_console_send，由程序审核；修改、启停和保存用mc_propose整组审核并等待一次批准。外部脚本才申报script_files/script_encoding；文件修改先停服备份，脚本backup_paths覆盖实际写入。具体格式与示例见工具和规则。
-只缺用户信息时mc_say合并提问并给出/mcaisay 任务名 内容，然后结束本轮等待；无可行路径需管理员处理才mc_pause。已明确目标继续推进，不附加无关排障、数量上限或重复确认。
-根据实际结果核实效果，请管理员/mcaidone 任务名验收。群里只发必要提问、批准和关键结论，一至三行中文纯文本，避免工具进度与自我辩解；收到补充继续按当前目标调整。
+只有确实缺用户信息时才用mc_say合并提问并给出/mcaisay 任务名 内容，然后结束本轮等待；无可行路径需管理员处理才mc_pause。已明确目标继续推进，不附加无关排障、数量上限或重复确认。
+根据实际结果核实效果，请管理员/mcaidone 任务名验收。执行进度使用commentary，最终结论和验收请求使用final，不用mc_say代发。使用Responses时，final通道对应消息phase:final_answer。最终答复应独立完整，必要结论、依据、未确定事项和下一步说清楚，长消息由程序分段发送，不为字数或行数省略内容。使用中文纯文本，收到补充继续按当前目标调整。
 """
     + TASK_POLICY
 )
@@ -87,6 +88,15 @@ class McToolSet(ToolSet):
         return tools
 
 
+class ResponseMessage(Message):
+    response_messages: list[dict]
+
+
+def load_message(item):
+    kind = ResponseMessage if "response_messages" in item else Message
+    return kind.model_validate(item)
+
+
 class AstrBotAgent:
     def __init__(
         self,
@@ -98,9 +108,7 @@ class AstrBotAgent:
         review_provider_id="",
         review_reasoning_effort="",
         model_max_attempts=3,
-        forward_reasoning_summary=False,
-        forward_reasoning_summary_body=False,
-        reasoning_summary="auto",
+        forward_progress=False,
         enable_web_search=True,
         web_search_tool_type="web_search",
         reasoning_effort="",
@@ -111,11 +119,7 @@ class AstrBotAgent:
         self.attempts = int(model_max_attempts)
         if self.attempts < 1:
             raise ValueError("model_max_attempts 必须大于零")
-        self.forward_summary = forward_reasoning_summary
-        self.forward_summary_body = forward_reasoning_summary_body
-        if reasoning_summary not in ("auto", "concise", "detailed", "none"):
-            raise ValueError("reasoning_summary 仅支持 auto、concise、detailed、none")
-        self.reasoning_summary = reasoning_summary
+        self.forward_progress = forward_progress
         self.enable_web_search, self.web_search_tool_type = (
             enable_web_search,
             web_search_tool_type,
@@ -179,7 +183,7 @@ class AstrBotAgent:
 
     async def run(self, tasks, job):
         rules = self.rules()
-        said = False
+        queued_messages = set()
         current = None
 
         def track(result):
@@ -335,7 +339,6 @@ class AstrBotAgent:
             return result
 
         async def invoke(record, arguments):
-            nonlocal said
             name = record["name"]
             if record.get("remote"):
                 return await remote(record, **record["remote"])
@@ -468,7 +471,7 @@ class AstrBotAgent:
                 }
             if name == "mc_say":
                 tasks.message(job, arguments["text"])
-                said = True
+                queued_messages.add(arguments["text"].strip())
                 return {"status": "queued"}
             if name == "mc_pause":
                 tasks.pause(job, arguments["reason"])
@@ -623,7 +626,11 @@ class AstrBotAgent:
                 )
             if response.completion_text:
                 parts.append({"type": "text", "text": response.completion_text})
-            job["open_step"] = {"calls": calls, "content": parts or None}
+            job["open_step"] = {
+                "calls": calls,
+                "content": parts or None,
+                "response_messages": response_messages(response),
+            }
             tasks.save(job)
 
         async def dispatch(name, arguments):
@@ -663,6 +670,11 @@ class AstrBotAgent:
                 {
                     "role": "assistant",
                     "content": step["content"],
+                    **(
+                        {"response_messages": step["response_messages"]}
+                        if step.get("response_messages")
+                        else {}
+                    ),
                     "tool_calls": [
                         {
                             "id": item["call_id"],
@@ -737,9 +749,8 @@ class AstrBotAgent:
         provider = traced_provider(provider, tasks.store, job["id"], "排障模型")
         tasks.log(
             job,
-            "summary_configuration",
-            mode=self.reasoning_summary,
-            forward=self.forward_summary,
+            "progress_configuration",
+            forward=self.forward_progress,
         )
         job["provider_id"] = provider_id
         tasks.save(job)
@@ -763,22 +774,17 @@ class AstrBotAgent:
             if self.enable_alpha_search
             else "未启用，不能使用。"
         )
-        stream = (
-            self.forward_summary
-            and self.reasoning_summary != "none"
-            and provider.provider_config.get("type") == "openai_responses"
-        )
-        if provider.provider_config.get("type") == "openai_responses":
-            provider = summary_provider(
+        responses = provider.provider_config.get("type") == "openai_responses"
+        stream = self.forward_progress and responses
+        if responses:
+            provider = progress_provider(
                 provider,
-                lambda key, text: tasks.summary(
+                lambda key, text: tasks.progress(
                     job,
                     key,
                     text,
-                    include_body=self.forward_summary_body,
-                    forward=self.forward_summary,
+                    forward=self.forward_progress,
                 ),
-                self.reasoning_summary,
             )
 
         async def inject(kwargs):
@@ -805,7 +811,7 @@ class AstrBotAgent:
             )
             wrapper.messages[:] = [
                 *[item for item in wrapper.messages if item.role == "system"],
-                *[Message.model_validate(item) for item in fitted],
+                *[load_message(item) for item in fitted],
             ]
             kwargs["contexts"] = list(wrapper.messages)
 
@@ -818,6 +824,11 @@ class AstrBotAgent:
             + rules
             + search_note
         )
+        system += (
+            "\n本轮执行进度汇报转发已开启。按规则文件中的通道约定和中途进度说明输出，commentary 会转发到群。不要输出推理过程或逐条工具日志，也不用 mc_say 重复发送进度。"
+            if stream
+            else "\n本轮执行进度汇报转发已关闭，commentary 仅保存本地，不通过 mc_say 绕过开关；必要提问和最终答复照常发送到群。"
+        )
         job["messages"] = await fit_history(
             tasks, job, budget_provider, job["messages"], system, tools=tool_definitions
         )
@@ -827,22 +838,31 @@ class AstrBotAgent:
         )
         runner = ToolLoopAgentRunner()
         runner.EMPTY_OUTPUT_RETRY_ATTEMPTS = 1
-        await runner.reset(
-            provider=provider,
-            request=ProviderRequest(
-                prompt=None,
-                contexts=job["messages"],
-                system_prompt=system,
-                func_tool=tools,
-            ),
-            run_context=wrapper,
-            tool_executor=FunctionToolExecutor(),
-            agent_hooks=BaseAgentRunHooks(),
-            streaming=stream,
-            request_max_retries=1,
-        )
+
+        async def reset_runner():
+            await runner.reset(
+                provider=provider,
+                request=ProviderRequest(
+                    prompt=None,
+                    contexts=job["messages"],
+                    system_prompt=system,
+                    func_tool=tools,
+                ),
+                run_context=wrapper,
+                tool_executor=FunctionToolExecutor(),
+                agent_hooks=BaseAgentRunHooks(),
+                streaming=stream,
+                request_max_retries=1,
+            )
+            wrapper.messages[:] = [
+                *[item for item in wrapper.messages if item.role == "system"],
+                *[load_message(item) for item in job["messages"]],
+            ]
+
+        await reset_runner()
         self.runners[job["id"]] = runner
         self.requests[job["id"]] = provider
+        final_text = ""
         try:
             for _ in range(self.max_steps):
                 if runner.done() or job["state"] == "paused" or job["stop_requested"]:
@@ -874,7 +894,7 @@ class AstrBotAgent:
                         ]
                         wrapper.messages[:] = [
                             *system_messages,
-                            *[Message.model_validate(item) for item in fitted],
+                            *[load_message(item) for item in fitted],
                         ]
                 else:
                     tasks.save(job)
@@ -888,9 +908,23 @@ class AstrBotAgent:
                         )
                 if job["state"] == "paused" or job["stop_requested"]:
                     break
-                response = runner.get_final_llm_resp()
+                response = provider.last_response
                 if response and response.role == "err":
                     raise ModelUnavailable(response.completion_text)
+                native = response_messages(response) if response else []
+                final_text = provider.final_text if response else ""
+                if native:
+                    index = next(
+                        i
+                        for i in reversed(range(len(wrapper.messages)))
+                        if wrapper.messages[i].role == "assistant"
+                    )
+                    wrapper.messages[index] = ResponseMessage.model_validate(
+                        {
+                            **wrapper.messages[index].model_dump(mode="json"),
+                            "response_messages": native,
+                        }
+                    )
                 serialized = clean_history(
                     [
                         item.model_dump(mode="json")
@@ -911,6 +945,12 @@ class AstrBotAgent:
                 tasks.save(job)
                 if job["plan"]:
                     break
+                if (
+                    native
+                    and not response.tools_call_name
+                    and all(item.get("phase") == "commentary" for item in native)
+                ):
+                    await reset_runner()
             else:
                 if not runner.done():
                     tasks.message(
@@ -920,14 +960,14 @@ class AstrBotAgent:
             response = runner.get_final_llm_resp()
             if (
                 response
-                and response.completion_text
+                and final_text
                 and response.role != "err"
-                and not said
+                and final_text.strip() not in queued_messages
                 and not job["plan"]
                 and not job["stop_requested"]
                 and job["state"] != "paused"
             ):
-                tasks.message(job, response.completion_text)
+                tasks.message(job, final_text)
         finally:
             self.runners.pop(job["id"], None)
             self.requests.pop(job["id"], None)

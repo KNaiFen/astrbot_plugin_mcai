@@ -77,7 +77,7 @@ document.querySelector('#save-key').onclick = function () { action(this, async (
 document.querySelector('#clear-key').onclick = function () { action(this, async () => { await api('POST', 'host', { curseforge_api_key: '' }); await loadHost(); show('B 的 CurseForge 密钥已清空。'); }); };
 document.querySelector('#test-key').onclick = function () { action(this, async () => { await api('POST', 'host/curseforge/test'); show('CurseForge 凭据可正常访问官方 API。'); }); };
 document.querySelector('#save-host').onclick = function () { action(this, async () => { const result = await api('POST', 'host', { operations_memory_limit_mib: Number(document.querySelector('#operations-memory').value), powershell_path: document.querySelector('#powershell-path').value, world_tools: { java_path: document.querySelector('#world-java').value } }); show(result.restart_required ? '已保存，重启 B 后生效。' : '已保存。'); }); };
-const names = { conversation: '普通对话', stream: '流式响应', function_call: '工具调用与续接', reasoning_effort: '排障思考强度', web_search: 'API 托管搜索', web_search_preview: '兼容托管搜索', alpha_search: '独立搜索', alpha_open: '独立搜索打开网页', alpha_find: '独立搜索页内查找', reasoning_summary: 'API 思考摘要', review_json: '审核模型与 JSON' };
+const names = { conversation: '普通对话', stream: '流式响应', function_call: '工具调用与续接', reasoning_effort: '排障思考强度', web_search: 'API 托管搜索', web_search_preview: '兼容托管搜索', alpha_search: '独立搜索', alpha_open: '独立搜索打开网页', alpha_find: '独立搜索页内查找', progress: '执行进度汇报', review_json: '审核模型与 JSON' };
 const statuses = { testing: '测试中', passed: '验证通过', unsupported: '明确不支持', unobserved: '本次未观察到', failed: '请求失败' };
 async function readTest() {
   const data = await api('GET', 'capabilities'), container = document.querySelector('#capabilities'); container.replaceChildren();
