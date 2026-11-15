@@ -6,12 +6,13 @@
 |---|---|
 | [测试说明](testing.md) | 测试环境、命令、场景、当前基线和验证边界 |
 | [0.11.0 正确性审查](code-audit-2026-11-14.md) | 已确认缺陷、最小复现、验证证据、38工具契约矩阵与覆盖边界 |
+| [正确性审查整改](code-audit-fixes-2026-11-15.md) | R01—R11与U01的核实、最小修改、回归入口与验证边界 |
 | [B端运维能力与验证](maintenance-capabilities.md) | 精确编辑、取证恢复、修复验证、组件清单与存档工具的分批实现和测试 |
 | [0.8.0 架构与行为审查](architecture-review-0.8.0.md) | 已复现问题、性能风险、测试债务与分批改进及验收条件 |
 | [0.8.0 整改与验证](architecture-remediation-0.8.0.md) | 对应R01—R21的当前行为、验收证据与保留边界 |
 | [固定验证环境](dependencies.md) | Windows/Python/AstrBot依赖版本、包哈希及空环境重建 |
 | [第三方组件与来源](third-party.md) | 设计参考、依赖许可、固定JAR和真实存档片段来源 |
-| [探针构建与验证](probe.md) | 四目标构建、真实服务端、测试负载、共存及性能结果 |
+| [探针构建与验证](probe.md) | 五目标构建、真实服务端、测试负载、共存及性能结果 |
 
 源码仓库根 `AGENTS.md` 定义开发协作规则，先阅读相关专题再修改。用户部署从[README](../../README.md)开始。
 
@@ -72,11 +73,11 @@ B生命周期使用HostRunner：在aiohttp的pre_shutdown停止WebSocket输入�
 .\.venv\Scripts\python.exe scripts/build_release.py
 ```
 
-构建校验固定MCA Selector官方JAR的SHA-256，用JDK21构建辅助程序，并构建四个探针目标。首次构建按代理下载Java17和Gradle依赖；可用 `scripts/build_probe.py --java17 ... --java21 ...` 指定JDK。产物在被忽略的 `dist/`：
+构建校验固定MCA Selector官方JAR的SHA-256，用JDK21构建辅助程序，并构建五个探针目标。首次构建按代理下载Java17和Gradle依赖；可用 `scripts/build_probe.py --java17 ... --java21 ...` 指定JDK。产物在被忽略的 `dist/`：
 
 - `astrbot_plugin_mcai.zip`：插件入口、配置schema、A所需模块、依赖清单、运行时规则模板、设置视图、README和分层文档。
 - `mcai_windows_host.zip`：Python项目、基础与实例配置示例、模块、规则模板、JAR与许可、README和分层文档。
-- `probe/`：四个MOD、各目标sources JAR、完整源码ZIP与许可；B包中同样附带。
+- `probe/`：五个MOD、各目标sources JAR、完整源码ZIP与许可；B包中同样附带。
 - `mcai-<版本>-source.zip`：完整源码、构建脚本、测试和许可，不含Git历史及被忽略的本地文件。
 
 发行包面向部署，不包含源码测试、开发脚本、上游或开发 `AGENTS.md`。开发文档中的测试、构建命令应在源码仓库执行。JAR随B包部署，运行时不下载。

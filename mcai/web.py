@@ -90,9 +90,17 @@ class WebPages:
                 raise ValueError("网页引用不存在或不属于当前任务")
         offset = args.get("offset", 0)
         if mode == "find":
-            offset = page["text"].casefold().find(args["query"].casefold(), offset)
-            if offset < 0:
+            text = page["text"]
+            match = text[offset:].casefold().find(args["query"].casefold())
+            if match < 0:
                 return {"reference": page["reference"], "found": False}
+            position = 0
+            while position < match:
+                width = len(text[offset].casefold())
+                if position + width > match:
+                    break
+                position += width
+                offset += 1
             offset = max(0, offset - 200)
         end = min(offset + 12000, len(page["text"]))
         return {

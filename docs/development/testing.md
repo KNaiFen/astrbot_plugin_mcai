@@ -6,6 +6,32 @@
 
 ## 当前验证
 
+2026-11-15，0.12.0发行验收：插件metadata、Python包及产品头同步为0.12.0，协议保持`mcai-4`，Probe为0.2.1五目标。两端ZIP及完整源码包分别为55、111、204个文件，检查归档完整性、源码一致性、模块、规则模板与许可，两端各135个本地文档链接／锚点通过。Java与Probe源码／构建来源沿用冻结版本，复用的12个JAR内部文件逐项匹配既有受测产物；只重新打包源码与文档，未重新执行Java／Probe编译或实服矩阵。
+
+由解压B包离线构建0.12.0 wheel并独立安装，从空工作目录以解压A包执行4项代表集成，全部通过、零跳过（42.97秒）；51个已加载模块路径确认B及worker来自独立site、A来自解压插件。覆盖自然语言目标、网页下载、独立审核／批准、安装备份／恢复、验收归档、CLI，以及Chat／Responses一次批准三批执行。证据为`runtime/release-0.12.0/`中的`installed.*`、`import-proof.json`、`jar-comparison.json`、`archives-initial.json`及`validation.json`。真实计费模型、QQ、生产服及Probe实服组合未重跑。
+
+2026-11-15，0.12.0以原维护线程完成提交`509e7ad`冻结产品代码，精简测试。精简前475项全部通过、零跳过（1666.68秒）。删除或合并87个旧测试函数，新增8个合并场景；连同按需专项，测试总数由475降至263，默认核心为197项，另外存档与模型兼容专项各33项。移除重复CLI／伪Agent链路与历史重复边界，编码、格式、TLS、网页错误及审核拒绝后重试等场景共享一次环境；每种适配器只校验一次完整schema，修正测试私有插件包的退避替换，缩小仍能实际触发压缩的合成历史。
+
+核心197项按收集清单、进度记录及后续JSONL／JUnit逐项核对最终全部通过、零跳过。首次核心批次受执行环境中断，已完成记录保留，仅续跑剩余与修正节点，不将中断批次作为完整耗时对比。独立检出时的片段许可证换行已固定为原始LF；合并测试的编号冲突断言和冻结版本故障注入入口已对齐。相关17项兼容专项通过；其余49项本轮未重跑，22个存档函数主体及6个模型函数与原基线AST一致，另3个模型函数仅统一测试侧重试夹具。证据为`runtime/test-slimming/`中的`before.*`、`after.log`、`collected-final.log`、`before-interruption.json`、`resumed-results.jsonl`、`resumed.*`、`final-focused.*`、`moved-tests.json`及`validation.json`。后续按下方变更范围选择测试，不重复运行已通过的整套回归。
+
+2026-11-15，归档错误状态修正：只在经验写入成功、archive_state结算为completed时移除archive_error，保留全部archive_failed审计历史。复用原生任务的归档失败恢复用例，覆盖模型超时后自动第二次成功、失败后插件重载成功，两项全部通过、零跳过（19.02秒）；同时核对内存、SQLite记录、经验正文和重试前后的历史失败记录。证据为`runtime/plan-continuation/archive.log`及`archive.xml`。消融审查产品代码仅增加一处成功结算清理。
+
+2026-11-15，搜索过滤参数修正：复现`rg --glob '*.py'`被外部脚本材料检查误判；仅在引用扫描中排除`--glob`／`-g`参数，原命令仍完整交给独立审核。新增四种引号／等号过滤形式通过真实诊断入口，结合现有脚本正文、编码、材料缺失和执行前变更检查，共9项相关用例通过、零跳过（32.16秒）。同一命令中的真实脚本引用仍要求申报；过滤参数不跨命令换行匹配。证据为`runtime/plan-continuation/glob.log`及`glob.xml`。消融审查保留有限字面量识别，仅修正搜索参数误判。
+
+2026-11-15，开发态一次批准多轮方案：`mc_propose`首次可声明允许范围和完成条件，批准后以plan_id续批；新增`mc_plan_finish`结束执行资格。A保存批准快照、审核身份和各批操作编号，B继续使用有限步骤接口。新增16项原生runner／真实HTTPS集成全部通过、零跳过（111.66秒），包含Chat／Responses实际适配器的一次批准三批执行与文件读取、范围拒绝及替代方案重新批准、审核期间反馈／暂停／停止、批准依据变化、执行失败保留部分效果、四个提交／结算重载检查点、结束入口检查点及单轮步数耗尽后续行。证据为`runtime/plan-continuation/iterative.log`和`iterative.xml`；审核与主模型HTTP回复受控，实际计费模型、QQ和真实MC测试服尚未联调。消融审查复用原生runner、任务JSON、审核、applied_plan/operation/repairs及发件箱，只新增一个结束工具，未增加B端循环执行器或数据库表；已安装运行时规则不覆盖，需人工合并模板新增约定。
+
+同期现有审核、任务、工具契约、群命令、网络恢复与say回归按测试ID核对162项全部通过，与上述新增专项合计178项不同场景全部通过、零跳过。首次扩大回归发现旧工具集合断言遗漏新结束工具，补齐专属覆盖清单后，原失败及后续流程111项通过（216.56秒）；先前通过的重叠场景不累加。批次及去重结果见`runtime/plan-continuation/validation.json`、`regression.xml`和`regression-final.xml`。Ruff、92个Python文件格式、Git空白及43个本地文档链接检查通过。
+
+2026-11-15，独立搜索与诊断下载修正：在AstrBot v4.29.4声明支持的最低OpenAI SDK 1.78.0下复现`cast_to=dict`触发`not enough values to unpack (expected 2, got 0)`，补全为`dict[str, object]`；下载接口改用原生`request.query`读取文件名。产品代码仅两处单行修改，复用既有搜索用例，新增诊断导出后经真实PluginRequest／ASGI下载ZIP的集成验证，覆盖文件内容及无效／缺失文件提示。以隔离wheel加载SDK 1.78.0及本地SDK 3.49.0分别执行`test_settings_search.py`和`test_tracing.py`，同组17项均全部通过、零跳过（33.28秒／32.91秒，不累加为不同场景）；另验证401／404／429／503错误原样返回且各只请求一次。Ruff、91个Python文件格式及Git空白检查通过；证据为`runtime/search-sdk-compat/`下的`before.log`、`legacy.*`、`current.*`及`http-error.log`。模型HTTP响应受控，实际服务商的`alpha/search`支持情况仍需安装后测试。
+
+2026-11-15，任务消息前缀统一为`「任务名」：`，覆盖普通消息、执行进度、状态、方案及反馈回复。复用既有8项原生runner、命令与发件箱回归，全部通过、零跳过（26.01秒），Ruff与格式检查通过；证据为runtime/task-prefix.log与task-prefix.xml。仅修改前缀及现有断言，未新增抽象、构建或发布，未联调真实QQ。
+
+2026-11-15，[正确性审查整改](code-audit-fixes-2026-11-15.md)：逐项核实并处理R01—R11及U01，新增23项真实流程与故障边界回归。原生Gemini等不支持完整工具结构的适配器在设置、能力测试与运行入口明确拒绝，排障提供商限定为OpenAI兼容Chat／Responses；保留完整schema、原生runner、38工具、操作编号、审核与一次批准。
+
+完整源码回归452项全部通过、零跳过（1458.30秒）；最终产物／控制台分支顺序调整及新边界用例加入后，19项相关专项全部通过、零跳过（86.52秒）。当前453项收集清单与上述结果逐项核对，无遗漏，批次重叠不累加。两端ZIP、五目标Probe及源码包构建、归档与文档检查通过，12个JAR内部内容与构建前相同。从解压B包离线构建wheel并独立安装，以解压A插件从空工作目录执行28项集成，全部通过、零跳过（124.58秒），确认A/B导入路径。Ruff、格式、JS、JSON及Git空白检查通过。证据见runtime/audit-fix-all.*、audit-fix-final-boundary.*、audit-fix-build*及audit-fix-20261115/；真实模型、QQ、生产服及Probe实服组合未重跑，未发布或推送。
+
+2026-11-15，0.11.1发布后命令提示排版修正：普通群消息入发件箱前移除`/mcai…`命令提示行前的空白行，保留一个换行及其他正文分段。复用既有原生runner长final／追问去重与长消息失败重载续发场景，4项全部通过、零跳过（19.27秒），Ruff与格式检查通过；证据为runtime/command-spacing.log与command-spacing.xml。消融审查仅在既有发送入口增加一处替换，未改运行时规则、命令或持久化格式；未联调QQ、构建或发布新版。
+
 2026-11-15，0.11.1发行验证：同步插件metadata、Python包与产品版本头，协议保持mcai-4，Probe保持0.2.0。README改为当前版本、正式发行附件与升级说明；现有0.10.0及之后的mcai-4 B与托管窗口继续可用。执行进度转发默认关闭，已有运行时AGENTS.md保留，交流章节需人工合并；mc_say命令提示与@行为沿用当前实现，本轮未另行添加自动补全。
 
 两端ZIP、四目标Probe与完整源码包构建通过，检查ZIP完整性、版本、模块、模板和许可，插件包54项、B包108项、源码包193项。由解压B包离线构建0.11.1 wheel并安装到独立site，从空工作目录以解压A包执行197项相关回归，全部通过、零跳过（99项239.92秒、98项301.30秒）。导入路径确认B与worker来自独立site，插件与Agent来自解压验证目录；覆盖真实AstrBot v4.29.4 runner、进度与final、完整分段、必要追问、重试、审核恢复、工具契约、设置、托管搜索、网页下载和HTTPS。证据见runtime/release-0.11.1/的import-proof.json、installed-a.*、installed-b.*、validation.json及归一化构建日志runtime/release-0.11.1-build-utf8.log。
@@ -118,12 +144,11 @@ Probe0.2.0四目标构建与有／无spark共8种隔离实服组合全部通过�
 
 ## 运行
 
-测试环境为 Windows、Python 3.12、PowerShell 7.3+、PATH 中可用的 JDK 21。使用源码目录执行：
+测试环境为 Windows、Python 3.12、PowerShell 7.3+、PATH 中可用的 JDK 21。首次准备环境或依赖变化时，在源码目录执行：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e '.[test]'
 .\.venv\Scripts\python.exe scripts/setup_world_tools.py
-.\.venv\Scripts\python.exe -m pytest -q
 ```
 
 完整 Agent/群命令测试还需要安装 AstrBot v4.29.4 的依赖，并指定其源码路径。例如源码位于 `runtime/astrbot-4.29.4`：
@@ -131,12 +156,37 @@ Probe0.2.0四目标构建与有／无spark共8种隔离实服组合全部通过�
 ```powershell
 $env:ASTRBOT_ROOT = "$PWD/runtime/astrbot-test"
 $env:PYTHONPATH = "$PWD/runtime/astrbot-4.29.4"
-.\.venv\Scripts\python.exe -m pytest --cov=mcai --cov-branch --cov-report=term-missing --cov-report=html:runtime/coverage-html -q
+.\.venv\Scripts\python.exe -m pytest -q --require-astrbot --durations=15 --junitxml=runtime/pytest.xml
 ```
 
-未提供 AstrBot 时，需要真实 runner 的用例会显示 `skipped`。仅靠通过数量不足以判断是否跑过这部分，应同时查看跳过项和运行参数。HTML 覆盖率报告位于 `runtime/coverage-html/index.html`。
+上述默认收集核心行为回归，保留真实runner、HTTPS、托管窗口、审核批准、备份修改、失败恢复及原编号去重。日常修改按受影响行为选择文件或节点；同一轮涉及多个范围时，合并成一条去重后的pytest命令。核心回归只跑一次，已包含的节点不再作为重复关卡。文档整理检查相关链接、示例与打包。
 
-发行验证追加`--require-astrbot`，入口强制核对v4.29.4并在出现任何跳过时返回失败。整改后验证见[0.8.0整改记录](architecture-remediation-0.8.0.md)，上方数量保留为整改前基线。
+详细兼容矩阵按变更范围显式追加，不再让每次任务重复启动全部环境：
+
+| 触发变更 | 追加文件 | 内容 |
+|---|---|---|
+| 存档读写、NBT／区域／方块、Java、备份恢复或共用操作上下文 | `tests/world_compatibility.py` | 数据类型、版本打包、MCR／MCC、第三方编解码器及恢复边界 |
+| 模型适配、搜索、进度流、能力检测、OpenAI SDK或相关依赖 | `tests/api_compatibility.py` | Chat／Responses详细协议、流式错误、SDK重试及搜索能力矩阵 |
+
+例如修改两类共用代码时，一次执行核心和两个专项：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests tests/world_compatibility.py tests/api_compatibility.py -q --require-astrbot
+```
+
+两个专项文件刻意不使用`test_`前缀，默认不收集；它们保留有用的格式和适配器差异，不按普通功能改动反复执行。新测试先确认现有流程是否已覆盖；能在已有完整场景中增加必要断言，就不再复制一套启动／关闭流程。
+
+`--require-astrbot`强制核对v4.29.4，并在出现任何跳过时返回失败。未提供AstrBot时可以执行不依赖runner的专项；含跳过的结果不能作为完整回归或发行通过的证据。需要分析覆盖率时，再给上述命令追加`--cov=mcai --cov-branch --cov-report=html:runtime/coverage-html`；覆盖率采集不作为每轮默认步骤。
+
+构建后用解压A插件和独立安装的B执行代表性安装验证，重点核对导入路径、原生runner、HTTPS、CLI、备份修改、下载归档及多轮方案。可选择以下节点（多轮用例包含Chat／Responses两种适配器，共4项）：
+
+```text
+tests/test_mcai_workflow.py::test_natural_target_web_mod_review_install_verify_and_archive_real_runner
+tests/test_https.py::TestHttpsTransport::test_local_cli_uses_relative_data_dir_for_all_operations_and_attach
+tests/test_plan_continuation.py::test_one_approval_runs_three_observed_batches_with_actual_adapters
+```
+
+这些节点须在准备好的解压验证目录运行，测试解释器使用现有依赖，PYTHONPATH指向独立B安装目录、AstrBot和复制的测试目录；核对A模块来自解压插件、B及worker来自独立安装目录。不能从源码根运行后当作安装验证。Probe／Java产物未变化时核对受测产物的内部文件内容；涉及相关实现或依赖变更时，再执行对应的真实MC组合。上方历史验证数量均以各自版本与日期为准。
 
 真实方块修复验证另行运行，使用本地原版MC **1.21.1 bundler JAR**和JDK21。脚本创建独立的`runtime/maintenance-real/<随机编号>/`，仅监听127.0.0.1，不使用生产世界；通过实际HTTPS／ConPTY执行停服、备份、修改、重启和MC命令确认，保留日志与`result.json`。它不随普通pytest自动启动：
 
@@ -151,28 +201,28 @@ $env:PYTHONPATH = "$PWD/runtime/astrbot-4.29.4"
 | 范围 | 主要覆盖内容 | 测试文件 |
 |---|---|---|
 | 自然语言识别与目标绑定 | 无实例创建、先追问再由反馈识别、未绑定拒绝实例工具、绑定冲突、取消原目标后台工作、方案失效、提交修复后固定目标、暂停重载、规范目录重复、目录变化拒绝新操作与旧编号查询 | `test_mcai_workflow.py` |
-| API 托管搜索 | MC函数与搜索并存、流式/非流式、preview类型、显式不支持降级、503有限重试、摘要与来源保留、主配置不变、审核和验收总结不注入搜索 | `test_hosted_search.py` |
+| API 托管搜索 | 核心检查搜索续接与持久会话；专项检查流式／非流式、preview、降级、有限重试、来源及上下文隔离 | `test_settings_search.py`、`api_compatibility.py` |
 | 网页阅读 | HTML正文和链接、JSON分页、GB18030文本、持久引用、页内查找、跨任务引用拒绝、无正文/二进制/登录/404/超限错误 | `test_web_downloads.py` |
 | MOD与下载 | 两站项目/说明/版本/依赖/变更说明、版本和加载器筛选、CurseForge API/CDN凭据、无关重定向不带凭据、分发受限、哈希失败、大小限制、临时错误重试、网络等待取消、HTTPS响应丢失及工具检查点去重 | `test_web_downloads.py`、`test_mcai_workflow.py` |
 | 批准安装与经验 | 拒绝不安装、审核后暂存变化、旧文件备份/新增文件恢复、真实runner贯穿验收归档、归档失败重载重试、文档/索引中断去重、人工编辑保留、多案例并发、相关片段与不同目录隔离 | `test_mcai_workflow.py`、`test_web_downloads.py` |
 | 日志和文件查询 | 字面量/正则、大小写、空查询、无匹配、普通/gzip、损坏 gzip、UTF-8/UTF-16/GB18030、中文路径、重叠上下文去重、调用栈归属、跨日日期、时区转换、追加/轮转、空文件和缺失文件 | `test_diagnostics.py`、`test_query_edges.py` |
 | 维护工具与存档修复 | 哈希补丁／编码保留、后台等待／检索、JVM身份与卡死恢复、就绪观察、组件清单差异、身份批量NBT、坏邻居点恢复、方块打包／高度图与原生批准流程 | `test_host_maintenance.py`、`test_host_recovery.py`、`test_host_verification.py`、`test_host_inventory.py`、`test_host_nbt_batch.py`、`test_host_region_recovery.py`、`test_host_blocks.py` |
-| 大结果 | 行数和字符预算、全局事件序号不连续、重复读同一页、末页/空页、中文和 emoji 的长字段引用、按字符续读、首次大结果创建持久目录 | `test_diagnostics.py`、`test_query_edges.py`、`test_job_interactions.py` |
+| 大结果 | 行数和字符预算、全局事件序号不连续、重复读同一页、末页/空页、中文和 emoji 的长字段引用、按字符续读、首次大结果创建持久目录 | `test_audit_data.py`、`test_job_interactions.py`、`test_tool_contracts.py` |
 | 在线诊断 | 开服期间执行、工作子目录、中文和空格路径、stdout/stderr、跨输出分块的多字节字符、非零退出码、脚本错误后停止后续语句、无效超时、正常超时、父子进程取消 | `test_diagnostics.py`、`test_job_interactions.py` |
 | 后台协作 | 多请求复用同一操作、并发重复取消、取消已完成/失败任务、同实例扫描串行和排队取消、其他实例并行、扫描期间读控制台、修复前结束所属诊断和扫描、保留其他任务工作 | `test_diagnostics.py`、`test_job_interactions.py` |
-| 存档查询 | 旧 Level.Entities、新独立实体区域、UUID 字符串/四整数/双 Long、异常 UUID 后继续扫描、负坐标、世界过滤、独立实体覆盖旧残留数据、三维实体范围/水平区块相交、NBT 比较条件、按类型/区块计数和排行、未知模组字段 | `test_diagnostics.py`、`test_query_edges.py` |
-| 存档修改和恢复 | 单独 NBT 的数组类型、子项分页、列表删除、gzip 保留、expected 不符、错误路径和 SNBT、四种区域压缩、MCR、真实存档、超大外部 MCC 保持与缩小、相邻 MCC、缺失 MCC、损坏邻居和错误坐标 | `test_workflows.py`、`test_diagnostics.py`、`test_query_edges.py`、`test_repair_edges.py` |
+| 存档查询 | 核心检查真实片段、扫描及原生工具流程；专项检查旧／新实体区域、UUID表示、负坐标、过滤范围、条件和排名 | `test_diagnostics.py`、`test_agent_edges.py`、`world_compatibility.py` |
+| 存档修改和恢复 | 核心保留原生runner批准后的批量NBT、方块与区域恢复；专项保留数据类型、编解码、MCR／MCC及损坏邻居矩阵 | `test_host_nbt_batch.py`、`test_host_blocks.py`、`test_host_region_recovery.py`、`world_compatibility.py` |
 | 修复故障 | 同一目标多次修改只备份原始内容、重叠目录/文件备份、恢复目录时移除新文件、备份失败、替换失败、修复脚本异常/超时保留现场、跳过后续步骤、失败后保持停服、显式停服不被自动重启覆盖、跨实例备份拒绝 | `test_workflows.py`、`test_repair_edges.py` |
-| 群任务状态 | 新反馈使旧方案失效、重复批准、执行修复期间保留反馈、后台等待时改变方向并取消工作、停止/验收后拒绝反馈、修复中止完成当前步骤、失败后补充消息继续、待取消状态重载续接、短群消息和完整本地记录、按任务暂停普通成员say与管理员豁免、来源标注及重载 | `test_workflows.py`、`test_task_interactions.py`、`test_say_mode.py` |
-| 真实 Agent 工具链 | 38个工具的模型契约及原生runner流程，含Chat／Responses实际请求、错参后正确调用、五个探针入口、暂停续接、后台等待／分页／长字段／取消、操作记录与上下文历史、单回复多工具、未知工具后继续、步数上限、配置错误后恢复、中止和原编号检查点恢复 | `test_tool_contracts.py`、`test_astrbot_integration.py`、`test_agent_edges.py`、`test_review_resume.py` |
+| 群任务状态 | 新反馈与来源、修复期间反馈、停止／暂停和重载、完整分段发送及失败续发；设置与实例占用边界保留独立故障场景 | `test_task_interactions.py`、`test_say_mode.py`、`test_audit_agent.py`、`test_review_resume.py` |
+| 真实 Agent 工具链 | 39个工具的模型契约及原生runner流程，含Chat／Responses实际请求、错参后正确调用、五个探针入口、暂停续接、后台等待／分页／长字段／取消、操作记录与上下文历史、单回复多工具、未知工具后继续、步数上限、配置错误后恢复、中止和原编号检查点恢复 | `test_tool_contracts.py`、`test_agent_edges.py`、`test_review_resume.py`、`test_plan_continuation.py` |
 | 服内探针桥接 | HTTPS断线去重、结果身份核对、会话变化、超时状态不确定、晚到结果、已有结果导入、范围schema、分页及长字段、取消确认、修复协作、多实例隔离 | `test_probe.py` |
-| 工具参数 | 必填项、动作与字段不匹配、额外参数、错误类型、页大小/超时边界、负 NBT 索引、缺失的修复字段、空步骤与空脚本备份列表 | `test_agent_edges.py` |
+| 工具参数 | 实际Chat／Responses请求中的39工具schema及26类非法参数，一次验证完整定义，再验证错参纠正后的真实读取 | `test_tool_contracts.py` |
 | 网络和持久化 | 502/503/504 重试、保留请求和操作编号、非 JSON/损坏 JSON、永久错误快速失败、POST/GET 响应丢失时中止、修复/诊断不重复执行、插件重载、B 的任务重建中断状态、PID 身份不匹配时保留新进程 | `test_workflows.py`、`test_diagnostics.py`、`test_client_recovery.py`、`test_job_interactions.py` |
 | HTTPS 直连 | 首次生成/重启复用证书、中文和空格路径、IP 地址直连、指纹格式和匹配、错误令牌、损坏或缺失的证书、本机 CLI、TLS 响应丢失/暂时断网、操作去重、后台任务续读与取消、插件重载 | `test_https.py` |
 | 独立审核和续接 | 三个入口分别放行/拒绝、配置与协议错误、审核重试、材料缺失/超限、脚本变更、主上下文隔离、规则重载、检查点中断恢复、修复部分失败后再次审批 | `test_review_resume.py`、`test_model_recovery_summary.py` |
-| 原生模型适配与 API 摘要 | 真实 Chat／Responses 适配器与模拟 HTTP API、独立思考程度、原始摘要事件、分片完成后发送、原始推理不转发、不支持摘要/流式时的兼容行为、原文分段、去重和停止后丢弃 | `test_provider_runtime.py`、`test_model_recovery_summary.py` |
+| 原生模型适配与 API 摘要 | 核心保留实际适配器工具调用、多轮执行、重试和上下文压缩；专项保留思考程度、流式／非流式、进度、摘要与失败矩阵 | `test_tool_contracts.py`、`test_plan_continuation.py`、`test_model_recovery_summary.py`、`api_compatibility.py` |
 | 完整交互与诊断导出 | 拒绝命令原文、任务私有API请求／响应／摘要、独立审核、批量工具结果、消息发送成功／失败、关闭群摘要和ZIP回放 | `test_tracing.py`、`test_settings_search.py` |
-| Windows 运维入口 | CLI 列表/状态/启停/重启/恢复、attach 输入和 EOF/detach、断开不停止服务端、多行控制台命令拒绝、原进程仍存活时拒绝重复接管、相对配置路径、每实例独立 Java | `test_console_cli.py`、`test_diagnostics.py` |
+| Windows 运维入口 | CLI列表／状态／启停／恢复与相对目录、attach半行／长行／新会话、输入拒绝、每实例Java及托管窗口交互 | `test_https.py`、`test_audit_host.py`、`test_console_cli.py`、`test_terminal_isolation.py` |
 | 独立终端与共享额度 | tm/terminal、当前目录与-C、命名互斥、目录登记、真实补全/历史/中文/Ctrl+C、两个窗口与B强杀重连、会话和控制编号去重、9999行与字节上限、Job配置失败、共享额度耗尽和恢复、修复备份保留 | `test_terminal_isolation.py` |
 
 ## 单独复现
@@ -188,7 +238,7 @@ $env:PYTHONPATH = "$PWD/runtime/astrbot-4.29.4"
 单独检查工具链和提交后恢复：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/test_agent_edges.py tests/test_mcai_workflow.py -k 'all_tools or submitted_tool' -v
+.\.venv\Scripts\python.exe -m pytest tests/test_agent_edges.py::test_native_queries_diagnostic_cancel_repair_and_archive tests/test_mcai_workflow.py::test_submitted_tool_keeps_original_payload_when_resuming -v
 ```
 
 ## 验证范围

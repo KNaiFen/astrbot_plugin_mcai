@@ -10,14 +10,15 @@ MCAI Probe 只安装在服务端，让 AI 获取当前玩家位置、全服与�
 
 | Minecraft | 加载器 | 文件 | Java |
 |---|---|---|---|
-| 1.20.1 | Forge 47.x | `mcai-probe-1.20.1-forge-0.2.0.jar` | 17 |
-| 1.20.1 | Fabric | `mcai-probe-1.20.1-fabric-0.2.0.jar` | 17 |
-| 1.21.1 | Forge 52.x | `mcai-probe-1.21.1-forge-0.2.0.jar` | 21 |
-| 1.21.1 | Fabric | `mcai-probe-1.21.1-fabric-0.2.0.jar` | 21 |
+| 1.19.2 | Forge 43.x | `mcai-probe-1.19.2-forge-0.2.1.jar` | 17 |
+| 1.20.1 | Forge 47.x | `mcai-probe-1.20.1-forge-0.2.1.jar` | 17 |
+| 1.20.1 | Fabric | `mcai-probe-1.20.1-fabric-0.2.1.jar` | 17 |
+| 1.21.1 | Forge 52.x | `mcai-probe-1.21.1-forge-0.2.1.jar` | 21 |
+| 1.21.1 | Fabric | `mcai-probe-1.21.1-fabric-0.2.1.jar` | 21 |
 
-Fabric 需要对应版本的 Fabric API 和 Loader 0.16.14+。Forge 包内包含 MixinExtras；不要安装 `sources` 源码包。1.21.1 Forge JAR 不能用于 NeoForge。本轮未提供 1.16.5、1.7.10 或插件端版本。
+从[0.12.0发行页](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.12.0)下载对应的Probe 0.2.1 JAR，也可从[源码构建](../development/probe.md#构建)。更新时正常停服，移走旧Probe后放入对应的新JAR，再启动；单独更新Probe无需升级A、B或协议。Forge版不依赖Fabric API；Fabric版需要对应版本的 Fabric API 和 Loader 0.16.14+。Forge 包内包含 MixinExtras；不要安装 `sources` 源码包。1.21.1 Forge JAR 不能用于 NeoForge。本轮未提供 1.16.5、1.7.10 或插件端版本。
 
-B 配置的实例目录应与 BAT 启动 Java 时的工作目录一致。MOD 在工作目录生成 `.mcai-probe/`，B 自动发现，无额外配置。启动日志显示 `MCAI Probe 0.2.0 ready` 后即可使用。
+B 配置的实例目录应与 BAT 启动 Java 时的工作目录一致。MOD 在工作目录生成 `.mcai-probe/`，B 自动发现，无额外配置。启动日志显示 `MCAI Probe 0.2.1 ready` 后即可使用。
 
 ## 使用
 
@@ -41,6 +42,8 @@ AI 可依次查询玩家位置、比较维度耗时、普查附近实体，再�
 `mc_status` 返回探针版本、加载器、会话和最近更新时间。没有安装时原有诊断仍可使用；AI 不会自动安装探针或重启。
 
 若提示结果未取得，检查服务端是否卡住、控制台是否可用、工作目录是否一致，以及服务端日志。B 会发送取消标记并保存请求编号，不默认重跑。主线程停顿时最后快照可能过时，此时使用已有外部线程栈工具。
+
+旧Probe 0.2.0 Forge版将MixinExtras限制为`[0.4.1,0.5)`，与需要0.5.x的模组共同安装时会触发`VERSION_RESOLUTION_FAILED`。嵌套依赖解析失败后，可能连带显示多项前置缺失；使用Connector的整合包也可能提示`fabric_permissions_api_v0`缺少`fabric-api-base`。先替换为0.2.1再检查启动日志，不按连带报错盲目添加依赖。0.2.1保留内嵌0.4.1，允许Forge在同服依赖中选择兼容的新版本。
 
 两端断线时采样继续，重连查询原任务。MC重启产生新会话，未完成采样中断。B重启后托管窗口按目录／session重连，原辅助工作标记中断，不自动重新执行。任务停止与修复前清理会请求取消；MOD由后台线程读取取消标记，主线程恢复tick后处理取消事实。
 

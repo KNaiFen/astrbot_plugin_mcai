@@ -13,7 +13,7 @@
 | `host_url` | `https://127.0.0.1:18765` | B 最终控制地址，公网 IP 加映射端口即可 |
 | `host_token` | 必填 | B 的共享令牌，设置视图留空保留原值 |
 | `host_fingerprint` | 空 | B 证书的 SHA-256 指纹，自签名 HTTPS 直连时填写 |
-| `provider_id` | 空 | 排障提供商；留空使用当前群配置，一键测试需明确选择 |
+| `provider_id` | 空 | OpenAI 兼容 Chat／Responses 排障提供商；留空使用当前群同类配置，一键测试需明确选择 |
 | `reasoning_effort` | 空 | 排障思考强度；留空继承，支持服务商接受的自定义值 |
 | `review_provider_id` | 空，必须选择 | 独立审核模型，支持 OpenAI 兼容 Chat／Responses |
 | `review_reasoning_effort` | 空 | 审核思考强度，留空继承审核提供商 |
@@ -30,7 +30,7 @@ QQ 和群号建议填字符串。多位管理员权限相同，可以交叉创�
 
 ### 模型、搜索与能力测试
 
-主模型必须支持工具调用。主模型与审核模型可相同，审核使用独立无工具对话。思考强度可以填 `low/medium/high/xhigh` 等模型支持的值，只覆盖对应请求，不修改共享提供商配置。
+排障与审核均使用 AstrBot 的 `openai_chat_completion` 或 `openai_responses` 提供商，排障模型必须支持工具调用。原生 Gemini 等其他适配器暂不支持本插件的完整工具结构，设置保存、能力测试及任务运行会明确拒绝。主模型与审核模型可相同，审核使用独立无工具对话。思考强度可以填 `low/medium/high/xhigh` 等模型支持的值，只覆盖对应请求，不修改共享提供商配置。
 
 两种搜索可分别开关、同时使用：
 

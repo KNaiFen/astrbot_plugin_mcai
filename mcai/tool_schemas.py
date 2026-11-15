@@ -618,7 +618,7 @@ TOOLS = [
     ),
     (
         "mc_console_read",
-        "读取已绑定实例当前托管窗口的新输出，不发送命令。data含items/cursor/session_id/gap；用cursor作为下次after，长行按items中的seq/next_offset交给mc_console_line。更早的内容用mc_logs。",
+        "读取已绑定实例当前托管窗口的新输出，不发送命令。data含items/cursor/session_id/gap；events_complete只表示事件页结束，pending_reads列出本页每条长行尾部与下一事件页的完整调用，须全部续读，各调用自己的complete不清空其他待办。next_call优先给第一条长行。用cursor作为下次after，更早的内容用mc_logs。",
         contract({**PAGE, "session_id": STRING}),
     ),
     (
@@ -865,18 +865,40 @@ TOOLS = [
     ),
     (
         "mc_propose",
-        "整组审核运维/修复步骤，返回awaiting_approval及approval_command后结束本轮待一次批准。文件修改自动停服备份；command可在线执行，无backup_paths时summary说明无恢复备份；script须声明全部备份路径。",
+        "提交方案或已批准方案的下一批具体步骤。首次可用continuation声明允许范围与完成条件，审核后返回awaiting_approval、plan_id和批准命令；管理员批准一次后，续批填写plan_id，审核通过即queued，无需重复批准。续批不能修改continuation。文件修改仍停服备份；command可在线执行，无恢复备份须在summary说明；script声明全部备份路径。",
+        {
+            **contract(
+                {
+                    "summary": STRING,
+                    "steps": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {"$ref": "#/$defs/step"},
+                    },
+                    "continuation": contract(
+                        {
+                            "scope": {"type": "string", "minLength": 1},
+                            "completion": {"type": "string", "minLength": 1},
+                        },
+                        ("scope", "completion"),
+                    ),
+                    "plan_id": {"type": "string", "minLength": 1},
+                    **SCRIPT_FILES,
+                },
+                ("summary", "steps"),
+            ),
+            "not": {"required": ["continuation", "plan_id"]},
+        },
+    ),
+    (
+        "mc_plan_finish",
+        "当前批次结果已结算后，结束已批准多轮方案的执行资格并记录实际结果；不代替管理员验收。summary说明验证依据和未确定事项，随后用final报告并请求/mcaidone验收。",
         contract(
             {
-                "summary": STRING,
-                "steps": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {"$ref": "#/$defs/step"},
-                },
-                **SCRIPT_FILES,
+                "plan_id": {"type": "string", "minLength": 1},
+                "summary": {"type": "string", "minLength": 1},
             },
-            ("summary", "steps"),
+            ("plan_id", "summary"),
         ),
     ),
     (

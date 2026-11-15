@@ -43,7 +43,7 @@ async def alpha_search(provider, session_id, arguments):
     command["response_length"] = "short"
     body = {"id": session_id, "model": provider.get_model(), "commands": command}
     client = provider.client.with_options(max_retries=0)
-    result = await client.post("alpha/search", cast_to=dict, body=body)
+    result = await client.post("alpha/search", cast_to=dict[str, object], body=body)
     if not isinstance(result.get("output"), str) or not result["output"].strip():
         raise ValueError("独立搜索未返回可读 output，无法把加密内容用作搜索结果")
     return {"output": result["output"], "results": result.get("results", [])}

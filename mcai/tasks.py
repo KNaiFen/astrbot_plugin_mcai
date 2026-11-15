@@ -1,5 +1,7 @@
 import asyncio
+import copy
 import json
+import re
 import time
 import traceback
 import uuid
@@ -21,6 +23,17 @@ def message_parts(text):
                 end = boundary + 1
         yield offset, text[offset:end]
         offset = end
+
+
+def occupies_instance(job):
+    return job["state"] not in ("done", "stopped") or job.get("cancel_pending", False)
+
+
+def plan_text(plan):
+    text = plan["summary"]
+    if plan.get("continuation"):
+        text += f"\n允许范围：{plan['continuation']['scope']}\n完成条件：{plan['continuation']['completion']}"
+    return text
 
 
 class Tasks:
@@ -77,7 +90,7 @@ class Tasks:
                 self.wake(job)
 
     def message(self, job, text, mention=None):
-        text = text.strip()
+        text = re.sub(r"\n\s*\n(?=[^\n]*/mcai[a-z]+\b)", "\n", text.strip())
         if not text:
             return
         self.log(job, "group_message", text=text)
@@ -90,7 +103,7 @@ class Tasks:
                     "id": key,
                     "task": job["id"],
                     "origin": job["origin"],
-                    "text": f"「{job['name']}」{part}",
+                    "text": f"「{job['name']}」：{part}",
                     "mention": mention if offset == 0 else None,
                     "sent": False,
                 },
@@ -117,7 +130,7 @@ class Tasks:
                         "id": item_id,
                         "task": job["id"],
                         "origin": job["origin"],
-                        "text": f"「{job['name']}」{part}",
+                        "text": f"「{job['name']}」：{part}",
                         "mention": None,
                         "sent": False,
                         "progress_task": job["id"],
@@ -205,7 +218,7 @@ class Tasks:
         ):
             raise ValueError("任务名已存在")
         if instance is not None and any(
-            job["instance"] == instance and job["state"] not in ("done", "stopped")
+            job["instance"] == instance and occupies_instance(job)
             for job in self.jobs.values()
         ):
             raise ValueError("该服务端已有进行中的排障任务")
@@ -258,7 +271,7 @@ class Tasks:
         for item in entries:
             item["occupied"] = any(
                 job.get("directory") == item["canonical_directory"]
-                and job["state"] not in ("done", "stopped")
+                and occupies_instance(job)
                 for job in self.jobs.values()
             )
         return entries
@@ -288,7 +301,7 @@ class Tasks:
         if any(
             other["id"] != job["id"]
             and other.get("directory") == directory
-            and other["state"] not in ("done", "stopped")
+            and occupies_instance(other)
             for other in self.jobs.values()
         ):
             raise ValueError("该服务端已有进行中的排障任务，请向原任务补充反馈")
@@ -349,6 +362,8 @@ class Tasks:
 
     async def archive(self, job):
         try:
+            async with self.create_lock:
+                pass  # Wait for an in-flight settings save before using its runtime.
             if job.get("archive_state") != "ready":
                 for attempt in range(getattr(self.agent, "attempts", 3)):
                     job["archive_attempt"] = attempt + 1
@@ -373,6 +388,7 @@ class Tasks:
                         await asyncio.sleep(RETRY_DELAYS[min(attempt, 1)])
             await self.knowledge.append(job, job["archive_text"])
             job["archive_state"] = "completed"
+            job.pop("archive_error", None)
             self.save(job)
         except asyncio.CancelledError:
             raise
@@ -398,7 +414,7 @@ class Tasks:
             raise ValueError("任务已停止接收反馈")
         if job.get("say_paused", False) and not is_admin:
             raise ValueError(
-                f"「{job['name']}」已暂停普通成员 say 接收，本条未保存；管理员仍可补充，或使用 /mcaisaymode {job['name']} true 恢复。"
+                f"「{job['name']}」：已暂停普通成员 say 接收，本条未保存；管理员仍可补充，或使用 /mcaisaymode {job['name']} true 恢复。"
             )
         label = (
             "【管理员补充】"
@@ -432,18 +448,41 @@ class Tasks:
         script_hashes=None,
         reviewed=None,
         launcher_identity=None,
+        proposal_id=None,
+        continuation=None,
+        plan_id=None,
+        operation_id=None,
     ):
         if job["state"] == "applying":
             raise ValueError("修复正在执行")
         if not steps:
             raise ValueError("修复步骤不能为空")
-        job["plan"] = {"summary": summary, "steps": steps, "offline": True}
+        plan = {"summary": summary, "steps": steps, "offline": True}
+        if proposal_id is not None:
+            plan["id"] = proposal_id
+        if continuation is not None:
+            plan["continuation"] = copy.deepcopy(continuation)
+        if plan_id is not None:
+            self.require_plan(job, plan_id)
+            plan["plan_id"] = plan_id
         if reviewed is not None:
-            job["plan"].update(script_hashes=script_hashes, reviewed=reviewed)
+            plan.update(script_hashes=script_hashes, reviewed=reviewed)
             if launcher_identity:
-                job["plan"]["launcher_identity"] = launcher_identity
+                plan["launcher_identity"] = launcher_identity
         if job.get("directory"):
-            job["plan"]["expected_directory"] = job["directory"]
+            plan["expected_directory"] = job["directory"]
+        if plan_id is not None:
+            self.queue_apply(job, plan, operation_id=operation_id)
+            self.log(
+                job,
+                "plan_batch",
+                plan_id=plan_id,
+                operation=job["operation"],
+                plan=plan,
+            )
+            return
+        self.end_plan(job, "replaced", "已提交替代方案，等待重新批准")
+        job["plan"] = plan
         self.save(job)
         self.log(job, "plan", plan=job["plan"])
         unbacked = any(
@@ -454,9 +493,72 @@ class Tasks:
         hints = f"\n管理员批准：/mcaiapply {job['name']}\n需补充或调整：/mcaisay {job['name']} 内容"
         self.message(
             job,
-            f"{summary}{note}{hints}",
+            plan_text(plan) + f"{note}{hints}",
             job["admin"],
         )
+
+    def active_plan(self, job):
+        approved = job.get("approved_plan")
+        return approved if approved and approved["status"] == "active" else None
+
+    def require_plan(self, job, plan_id):
+        approved = self.active_plan(job)
+        if not approved or approved["snapshot"]["plan"]["id"] != plan_id:
+            raise ValueError("没有对应的有效多轮方案，请重新提案等待批准")
+        snapshot = approved["snapshot"]
+        if (
+            approved["identity"] != digest(snapshot)
+            or snapshot["instance"] != job["instance"]
+            or snapshot["directory"] != job.get("directory")
+        ):
+            self.end_plan(job, "invalidated", "已批准方案或目标发生变化")
+            raise ValueError("已批准方案或目标发生变化，请重新提案等待批准")
+        return approved
+
+    def end_plan(self, job, status, summary):
+        approved = self.active_plan(job)
+        if approved:
+            approved.update(status=status, ended=time.time(), summary=summary)
+            self.save(job)
+            self.log(
+                job,
+                "plan_ended",
+                plan_id=approved["snapshot"]["plan"]["id"],
+                status=status,
+                summary=summary,
+            )
+
+    def finish_plan(self, job, plan_id, summary):
+        approved = job.get("approved_plan")
+        if (
+            approved
+            and approved["snapshot"]["plan"]["id"] == plan_id
+            and approved["status"] == "completed"
+            and approved["summary"] == summary
+        ):
+            return {"status": "completed", "plan_id": plan_id, "summary": summary}
+        self.require_plan(job, plan_id)
+        if job.get("operation") or job["state"] == "applying" or job.get("background"):
+            raise ValueError("当前操作或后台结果尚未结算，请先核对结果")
+        if job["pending"]:
+            raise ValueError("收到新反馈，请先读取补充再结束方案")
+        job["pending"].append(
+            {
+                "sender": "system",
+                "text": f"多轮方案已结束：{summary}。请用final报告实际结果并请求管理员验收。",
+            }
+        )
+        self.end_plan(job, "completed", summary)
+        return {"status": "completed", "plan_id": plan_id, "summary": summary}
+
+    def queue_apply(self, job, plan, *, operation_id=None):
+        job.update(
+            state="applying",
+            operation=operation_id or uuid.uuid4().hex,
+            applied_plan=plan,
+            plan=None,
+        )
+        self.save(job)
 
     def approve(self, job):
         if job["state"] == "paused":
@@ -471,13 +573,20 @@ class Tasks:
             raise ValueError("修复已在执行")
         if job["id"] in self.workers:
             raise ValueError("正在整理排查结果，请稍后再批准")
-        job.update(
-            state="applying",
-            operation=uuid.uuid4().hex,
-            applied_plan=job["plan"],
-            plan=None,
-        )
-        self.save(job)
+        plan = job["plan"]
+        if plan.get("continuation"):
+            snapshot = {
+                "plan": copy.deepcopy(plan),
+                "instance": job["instance"],
+                "directory": job.get("directory"),
+            }
+            job["approved_plan"] = {
+                "snapshot": snapshot,
+                "identity": digest(snapshot),
+                "status": "active",
+                "approved_at": time.time(),
+            }
+        self.queue_apply(job, plan)
         self.message(job, "收到，正在执行。")
         self.wake(job)
 
@@ -489,6 +598,11 @@ class Tasks:
         job["stop_requested"] = True
         job["cancel_pending"] = True
         job["finish_as"] = "done" if done else "stopped"
+        self.end_plan(
+            job,
+            "completed" if done else "stopped",
+            "管理员验收" if done else "管理员中止",
+        )
         self.agent.stop(job["id"])
         job["plan"] = None
         if job["id"] not in self.workers:
@@ -560,83 +674,108 @@ class Tasks:
 
     async def run(self, job):
         try:
-            if job["state"] == "applying":
-                if not hasattr(
-                    self.agent, "prepare_apply"
-                ) or await self.agent.prepare_apply(self, job):
-                    key = job["operation"]
-                    job["repair_submitted"] = True
-                    self.save(job)
-                    try:
-                        result = await self.client.call(
-                            job["instance"],
-                            "apply_plan",
-                            job["applied_plan"],
-                            operation_id=key,
-                            task_id=job["id"],
-                            stopped=lambda: job["stop_requested"],
-                        )
-                        self.log(job, "repair_result", result=result)
-                        job.setdefault("repairs", []).append(
-                            {"operation": key, "result": result}
-                        )
-                        job["pending"].append(
-                            {
-                                "sender": "system",
-                                "text": "已批准修复的执行结果："
-                                + json.dumps(result, ensure_ascii=False)
-                                + "。请读取状态和日志验证，不要把进程启动直接视为故障解决。",
-                            }
-                        )
-                    except RemoteError as exc:
-                        # A definitive failed operation is investigated, not submitted again.
-                        job["failed_operation"] = key
-                        self.log(job, "repair_failed", operation=key, error=str(exc))
-                        record = await self.client.call(
-                            job["instance"],
-                            "repair_log",
-                            {"operation": key},
-                            task_id=job["id"],
-                        )
-                        status = await self.client.call(
-                            job["instance"], "status", task_id=job["id"]
-                        )
-                        job.setdefault("repairs", []).append(
-                            {"operation": key, "failure": record}
-                        )
-                        console = await self.client.call(
-                            job["instance"],
-                            "console_query",
-                            {"limit": 20},
-                            task_id=job["id"],
-                        )
-                        job["pending"].append(
-                            {
-                                "sender": "system",
-                                "text": f"上次修复失败，操作编号 {key}，原方案后续步骤已停止。保留备份和已完成修改，不自动回滚或启动。请结合下列记录、状态、控制台及相关日志继续排查；有方向则重新提案等待再次批准，没有方向则 mc_pause："
-                                + json.dumps(
-                                    {
-                                        "repair": record,
-                                        "status": status,
-                                        "console": console,
-                                    },
-                                    ensure_ascii=False,
-                                ),
-                            }
-                        )
-                    job["operation"] = None
-                    job["state"] = "running"
-                    self.save(job)
-                    if job.pop("pause_after_operation", False):
-                        self.pause(job, "管理员要求在修复操作完成后暂停")
+            async with self.create_lock:
+                pass  # Registration in workers prevents a save until this run ends.
             while not job["stop_requested"] and job["state"] != "paused":
+                if job["state"] == "applying":
+                    if not hasattr(
+                        self.agent, "prepare_apply"
+                    ) or await self.agent.prepare_apply(self, job):
+                        key = job["operation"]
+                        job["repair_submitted"] = True
+                        self.save(job)
+                        try:
+                            result = await self.client.call(
+                                job["instance"],
+                                "apply_plan",
+                                {
+                                    key: value
+                                    for key, value in job["applied_plan"].items()
+                                    if key
+                                    not in ("id", "plan_id", "continuation", "reviewed")
+                                },
+                                operation_id=key,
+                                task_id=job["id"],
+                                stopped=lambda: job["stop_requested"],
+                            )
+                            self.log(job, "repair_result", result=result)
+                            job.setdefault("repairs", []).append(
+                                {"operation": key, "result": result}
+                            )
+                            job["pending"].append(
+                                {
+                                    "sender": "system",
+                                    "text": "已批准修复的执行结果："
+                                    + json.dumps(result, ensure_ascii=False)
+                                    + "。请读取状态和日志验证，不要把进程启动直接视为故障解决。",
+                                }
+                            )
+                        except RemoteError as exc:
+                            # A definitive failed operation is investigated, not submitted again.
+                            job["failed_operation"] = key
+                            self.end_plan(job, "failed", f"批次执行失败：{key}")
+                            self.log(
+                                job, "repair_failed", operation=key, error=str(exc)
+                            )
+                            record = await self.client.call(
+                                job["instance"],
+                                "repair_log",
+                                {"operation": key},
+                                task_id=job["id"],
+                            )
+                            status = await self.client.call(
+                                job["instance"], "status", task_id=job["id"]
+                            )
+                            job.setdefault("repairs", []).append(
+                                {"operation": key, "failure": record}
+                            )
+                            console = await self.client.call(
+                                job["instance"],
+                                "console_query",
+                                {"limit": 20},
+                                task_id=job["id"],
+                            )
+                            job["pending"].append(
+                                {
+                                    "sender": "system",
+                                    "text": f"上次修复失败，操作编号 {key}，原方案后续步骤已停止。保留备份和已完成修改，不自动回滚或启动。请结合下列记录、状态、控制台及相关日志继续排查；有方向则重新提案等待再次批准，没有方向则 mc_pause："
+                                    + json.dumps(
+                                        {
+                                            "repair": record,
+                                            "status": status,
+                                            "console": console,
+                                        },
+                                        ensure_ascii=False,
+                                    ),
+                                }
+                            )
+                        job["operation"] = None
+                        job["state"] = "running"
+                        self.save(job)
+                        if job.pop("pause_after_operation", False):
+                            self.pause(job, "管理员要求在修复操作完成后暂停")
+                if job["state"] == "paused" or job["stop_requested"]:
+                    break
                 job["state"] = "running"
                 self.save(job)
                 await self.agent.run(self, job)
                 if job["state"] == "paused":
                     break
+                if job["state"] == "applying":
+                    continue
                 if job["plan"] and not job["pending"]:
                     break
+                if self.active_plan(job):
+                    if job["state"] == "waiting" and not job["pending"]:
+                        break
+                    if not job["pending"]:
+                        job["pending"].append(
+                            {
+                                "sender": "system",
+                                "text": "已批准的多轮方案仍在执行。请结合实际结果继续查询或提交下一批；达到完成条件后使用mc_plan_finish结束方案，确实缺少用户信息才用mc_say等待。",
+                            }
+                        )
+                    continue
                 if not job["pending"]:
                     background = job.setdefault("background", {})
                     while (

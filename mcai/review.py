@@ -37,7 +37,13 @@ def review_material(directory, args):
     pattern = r"""["']([^"'\r\n]+\.(?:ps1|bat|cmd|py))["']|(?<![\w])([^\s;|&<>"']+\.(?:ps1|bat|cmd|py))(?=$|[\s;|&])"""
     declared = {resolve_file(directory, item["path"]) for item in files}
     for command in args.get("commands", []):
-        for quoted, plain in re.findall(pattern, command, re.I):
+        # Search filters are arguments, not literal external script references.
+        references = re.sub(
+            r"""(?<!\S)(?:--glob|-g)(?:=|[ \t]+)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s;|&]+)""",
+            "",
+            command,
+        )
+        for quoted, plain in re.findall(pattern, references, re.I):
             candidate = quoted or plain
             path = resolve_file(directory, cwd / candidate)
             if path not in declared:

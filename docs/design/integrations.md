@@ -63,6 +63,8 @@
 
 清单列出重复ID、仅客户端声明、未找到的必需依赖和数值版本范围不匹配。常见精确、比较、通配和Maven区间可检查；不支持的版本语法明确`version_unverified`，不能据此判定兼容。可从实际JVM参数、所选JDK的release及实际主JAR的version.json确认部分运行版本，其他MC／加载器要求返回`runtime_requirement_unverified`。清单是磁盘声明与取证线索，不证明某个MOD已成功加载，也不自动安装、卸载或解决依赖。
 
+Quilt按`quilt_loader`读取字符串／对象依赖、optional、带独立版本及组名的provides和嵌套JAR，环境来自`minecraft.environment`。组合依赖与unless条件保留原声明并返回`dependency_unverified`，不据此生成确定缺失结论；Fabric继续按自身结构读取。
+
 B通过Modrinth v2及CurseForge官方API查询项目、说明、版本、加载器、依赖和文件。Modrinth设置项目User-Agent；CurseForge API及官方CDN携带B配置的 `x-api-key`，密钥不进入模型与审核材料，无关重定向不转发源站凭据。
 
 先核对MC版本、加载器和服务端适用性，再明确选择文件。返回必需、可选等依赖关系供模型判断，不默认最新版、不自动安装可选依赖。分发受限、无官方下载链接或凭据错误明确失败，不猜测CDN地址。

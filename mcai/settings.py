@@ -90,7 +90,7 @@ class Settings:
     async def diagnostic_file(self):
         from pathlib import Path
 
-        filename = request.args.get("filename", "")
+        filename = request.query.get("filename", "")
         if (
             Path(filename).name != filename
             or not filename.startswith("mcai-diagnostics-")
@@ -122,50 +122,61 @@ class Settings:
                     raise ValueError(f"{key} 类型不正确")
             for key in ("provider_id", "review_provider_id"):
                 if fields.get(key):
-                    await self.provider(fields[key])
-            if (
-                not 1
-                <= fields.get(
-                    "model_max_attempts", plugin.config.get("model_max_attempts", 3)
+                    provider = await self.provider(fields[key])
+                    if provider.provider_config.get("type") not in (
+                        "openai_chat_completion",
+                        "openai_responses",
+                    ):
+                        raise ValueError(
+                            "排障与审核模型仅支持 OpenAI 兼容 Chat／Responses 提供商"
+                        )
+            async with plugin.tasks.create_lock:
+                if (
+                    not 1
+                    <= fields.get(
+                        "model_max_attempts", plugin.config.get("model_max_attempts", 3)
+                    )
+                    <= 10
+                    or not 1
+                    <= fields.get("max_steps", plugin.config.get("max_steps", 40))
+                    <= 200
+                ):
+                    raise ValueError("重试次数为 1–10，模型步数为 1–200")
+                if (
+                    plugin.tasks.workers
+                    or plugin.tasks.archive_workers
+                    or (self.worker and not self.worker.done())
+                ):
+                    raise ValueError(
+                        "任务或能力测试正在运行，请暂停任务或等待操作完成后保存 A 配置"
+                    )
+                config = {**plugin.config, **fields}
+                client = HostClient(
+                    config["host_url"],
+                    config["host_token"],
+                    config.get("host_fingerprint", ""),
                 )
-                <= 10
-                or not 1
-                <= fields.get("max_steps", plugin.config.get("max_steps", 40))
-                <= 200
-            ):
-                raise ValueError("重试次数为 1–10，模型步数为 1–200")
-            if (
-                plugin.tasks.workers
-                or plugin.tasks.archive_workers
-                or (self.worker and not self.worker.done())
-            ):
-                raise ValueError(
-                    "任务或能力测试正在运行，请暂停任务或等待操作完成后保存 A 配置"
+                agent = AstrBotAgent(
+                    plugin.context,
+                    config.get("provider_id", ""),
+                    config.get("max_steps", 40),
+                    rules_path=self.rules_path,
+                    review_provider_id=config.get("review_provider_id", ""),
+                    review_reasoning_effort=config.get("review_reasoning_effort", ""),
+                    reasoning_effort=config.get("reasoning_effort", ""),
+                    model_max_attempts=config.get("model_max_attempts", 3),
+                    forward_progress=config.get("forward_progress", False),
+                    enable_web_search=config.get("enable_web_search", True),
+                    web_search_tool_type=config.get(
+                        "web_search_tool_type", "web_search"
+                    ),
+                    enable_alpha_search=config.get("enable_alpha_search", False),
                 )
-            config = {**plugin.config, **fields}
-            client = HostClient(
-                config["host_url"],
-                config["host_token"],
-                config.get("host_fingerprint", ""),
-            )
-            agent = AstrBotAgent(
-                plugin.context,
-                config.get("provider_id", ""),
-                config.get("max_steps", 40),
-                rules_path=self.rules_path,
-                review_provider_id=config.get("review_provider_id", ""),
-                review_reasoning_effort=config.get("review_reasoning_effort", ""),
-                reasoning_effort=config.get("reasoning_effort", ""),
-                model_max_attempts=config.get("model_max_attempts", 3),
-                forward_progress=config.get("forward_progress", False),
-                enable_web_search=config.get("enable_web_search", True),
-                web_search_tool_type=config.get("web_search_tool_type", "web_search"),
-                enable_alpha_search=config.get("enable_alpha_search", False),
-            )
-            await plugin.config.save_config_async(fields)
-            await plugin.tasks.client.close()
-            plugin.tasks.client, plugin.tasks.agent = client, agent
-            return {"saved": True}
+                if not await plugin.config.save_config_async(fields):
+                    raise ValueError("配置已被更新的保存请求替代，请重新读取设置")
+                await plugin.tasks.client.close()
+                plugin.tasks.client, plugin.tasks.agent = client, agent
+                return {"saved": True}
         providers = plugin.context.get_all_providers()
         return {
             "config": {
@@ -266,6 +277,11 @@ class Settings:
             )
         }
         main = await self.provider(settings["provider_id"])
+        if main.provider_config.get("type") not in (
+            "openai_chat_completion",
+            "openai_responses",
+        ):
+            raise ValueError("排障模型仅支持 OpenAI 兼容 Chat／Responses 提供商")
         review = (
             await self.provider(settings["review_provider_id"])
             if settings["review_provider_id"]

@@ -8,11 +8,15 @@
 
 ```powershell
 .\.venv\Scripts\python.exe scripts/build_probe.py
+# 只构建 Minecraft 1.19.2 Forge
+.\.venv\Scripts\python.exe scripts/build_probe.py forge1192
 ```
 
-脚本使用代理下载固定Temurin17.0.21+9（SHA-256校验），使用JDK21构建1.21.1；两个JDK可由 `--java17`、`--java21` 指定。默认代理 `http://127.0.0.1:7890`，可用 `--proxy` 或 `HTTPS_PROXY` 覆盖。Gradle固定8.8，Fabric Loom1.7.4，ForgeGradle6.0.36，MixinGradle0.7.38，MixinExtras0.4.1。Forge目标固定47.3.0／52.1.2，Fabric Loader0.16.14，API0.92.2／0.116.1。
+脚本使用代理下载固定Temurin17.0.21+9（SHA-256校验），用于1.19.2／1.20.1；使用JDK21构建1.21.1；两个JDK可由 `--java17`、`--java21` 指定。默认代理 `http://127.0.0.1:7890`，可用 `--proxy` 或 `HTTPS_PROXY` 覆盖。Gradle固定8.8，Fabric Loom1.7.4，ForgeGradle6.0.36，MixinGradle0.7.38，MixinExtras0.4.1。Forge目标固定43.5.0（1.19.2）／47.3.0（1.20.1）／52.1.2（1.21.1），Fabric Loader0.16.14，API0.92.2／0.116.1。
 
 构建执行clean，排除测试负载，检查产物不得包含Fixture类或spark／API类，并清理本次构建目标的旧版JAR与旧源码ZIP。各目标编译Java17／21，独立生成JAR及sources，`dist/probe/`附完整源码ZIP、LICENSE、NOTICE。源码包保留构建脚本与协议文档；游戏二进制、测试世界和缓存不分发。
+
+1.19.2 Forge 产物为 `dist/probe/mcai-probe-1.19.2-forge-0.2.1.jar`，沿用协议1；既有 v0.11.1 公开附件不含Probe 0.2.1及新增目标。完整发行构建会将它一并放入B包。该目标复用Forge生命周期和诊断逻辑，`game1192`适配注册表及实体世界接口，资源包格式使用9。
 
 spark API仅作编译依赖。构建脚本通过同一代理下载官方仓库的固定快照`0.1-20260912.112908-2`，SHA-256为`e4856b0d2ba56db652ca340821a5b40ad0bdd192cf77707ba0f4557eeb5cb63d`，缓存在`runtime/probe-build/`并在每次构建校验；不把API JAR嵌入MOD。直接调用Gradle前先运行构建脚本准备依赖。来源和许可记录在Probe的NOTICE。
 
@@ -40,6 +44,27 @@ npm install --prefix runtime/probe-client --proxy=http://127.0.0.1:7890 --no-aud
 Python的HTTPS、任务去重、取消／修复协作、会话错误、分页、大字段及真实AstrBot runner由 `tests/test_probe.py`、`tests/test_agent_edges.py`验证。完整基线见[测试说明](testing.md)。
 
 `python scripts/test_probe_host.py`在隔离Fabric1.20.1安装目录验证真实HTTPS→ConPTY→MOD，含重连去重、取消确认和停服备份修复。该脚本会修改测试实例文件，先完成安装版准备，不能指向生产实例。
+
+## 2026-11-15：新增1.19.2 Forge目标
+
+五个目标重新构建通过。新增Forge43.5.0／Java17.0.21目标在隔离安装版验证无spark与spark1.10.37两种组合，均通过玩家登录、名称／UUID、负坐标、跨维度、离开记录、指标、对象普查、方块NBT、实体／方块实体热点、重复通知、采样互斥、取消和未加载目标检查。开发服务端使用`--fixture --player`验证2ms实体／1ms方块实体计时，全部通过；重新clean构建的发行JAR不包含Fixture或spark/API类。Python探针桥接现有7项测试通过。新目标尚未验证生产整合包及相同规模性能开销，历史四目标数据不扩展到1.19.2。
+
+## 2026-11-15：Probe 0.2.1修复MixinExtras共存
+
+旧0.2.0 Forge包把`mixinextras-forge`限定为`[0.4.1,0.5)`；同服其他模组要求0.5.x时，Forge的Jar-in-Jar版本交集为空，产生`VERSION_RESOLUTION_FAILED`，并可能连带造成其他嵌套前置缺失。三个Forge目标统一允许`[0.4.1,)`，继续内嵌固定0.4.1，让加载器选择同服所需的新版本。Probe版本独立提升到0.2.1，协议1及A／B保持不变；Fabric目标只同步版本。
+
+隔离Forge1.20.1安装版用旧Probe与要求0.5.4的最小嵌套依赖夹具复现相同失败；修正声明后三个Forge目标都实际加载MixinExtras0.5.4，通过玩家、指标、NBT、热点、互斥、取消及spark流程。测试基线为Forge43.5.0／47.3.0／52.1.2，不等同于完整生产整合包验收；未联调Connector或用户的全部模组。旧包复现日志为`runtime/probe-build/mixinextras-old-server.log`，修复回归记录为`runtime/probe-build/mixinextras-fixed-validation.log`。
+
+最终0.2.1五目标发行JAR全部重新构建，并通过`--installed --player --expect-spark present`完整流程；其中三个Forge目标带0.5.4嵌套依赖夹具。1.19.2另暂移spark和夹具后复测`--expect-spark absent`，确认默认内嵌MixinExtras0.4.1与无spark场景通过，随后恢复测试MOD。最终记录为`runtime/probe-build/probe-021-validation.log`及`probe-021-forge1192-absent.log`。两端ZIP、完整源码ZIP、Probe源码ZIP及十个JAR的完整性、版本和内容检查通过；51个相对文档链接、Ruff与格式检查通过。MOD及B包不含测试夹具JAR、旧0.2.0产物或spark/API类。
+
+可重复验证：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/setup_probe_test_servers.py forge1192 forge1201 forge1211 --mixinextras-compat
+.\.venv\Scripts\python.exe scripts/test_probe_servers.py forge1192 forge1201 forge1211 --installed --player
+```
+
+`--mixinextras-compat`只在隔离Forge测试服生成lowcodefml夹具，内嵌官方Maven Central的MixinExtras0.5.4，SHA-256为`7922899a121a27f63a69a9ffe57470d8719cc52d239dfa9408e15d32a7b4c264`。不传该选项重新准备测试服会移除夹具；它不进入任何发行包。消融审查只保留依赖声明修正、版本同步和复现所需的集成夹具，没有新增运行时兼容层。
 
 ## 2026-11-14：Probe 0.2.0可选spark集成
 

@@ -16,6 +16,8 @@
 
 `GET/PUT /configuration` 复用现有 HTTPS、令牌与指纹；只返回密钥是否配置，不回传原值。实例保存携带 revision 防止覆盖其他编辑。`POST /configuration/reload` 立即重载；CurseForge 只读测试使用独立接口。主机路径配置保存后重启生效。无额外端口和传输层。
 
+A设置的保存、生效与任务启动共用任务调度锁。保存期间新建、续接及归档等待生效后再使用运行对象；已有worker运行时拒绝保存。并发保存顺序提交，只安装已提交快照对应的client和agent，框架报告快照未提交时明确报错。
+
 ## AstrBot 视图与模型测试
 
 `views/settings` 通过 AstrBot v4.29.4 原生 bridge 的 apiGet/apiPost 调用插件注册接口，复用 Dashboard 管理员登录。A 的配置继续以 AstrBotConfig 保存，B 的配置经现有 HostClient 写入。主审模型分别覆盖请求配置，不改共享提供商。

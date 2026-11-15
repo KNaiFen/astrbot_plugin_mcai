@@ -29,9 +29,9 @@
 
 ## 安装前准备
 
-当前插件版本为 **0.11.1**，将进度转发改为执行进度汇报，完善Agent交流规则，群内答复与方案说明完整分段发送，可通过[插件仓库main](https://github.com/KNaiFen/astrbot_plugin_mcai/tree/main)安装或更新A。通信仍为`mcai-4`，现有0.10.0及之后的B与托管窗口可继续使用，Probe保持0.2.0。从旧版升级先阅读[更新说明](#更新时保留什么)，能力边界见[运维工具](docs/usage/operations.md#文件存档与故障取证)。
+当前插件版本为 **0.12.0**，支持在批准范围内分批维护、观察结果后继续执行，修正搜索、诊断下载、归档状态及运维流程中的问题。可通过[插件仓库main](https://github.com/KNaiFen/astrbot_plugin_mcai/tree/main)安装或更新A。通信仍为`mcai-4`，现有0.10.0及之后的B与托管窗口可继续连接；B端修复需更新B及托管窗口。Probe为0.2.1，新增1.19.2 Forge并修复MixinExtras依赖冲突。从旧版升级先阅读[更新说明](#更新时保留什么)，能力边界见[运维工具](docs/usage/operations.md#文件存档与故障取证)。
 
-首次部署，或B仍为0.9.0及更早版本时，从[0.11.1发行页](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.11.1)下载 `mcai_windows_host.zip`；同页提供A插件、Probe0.2.0、完整源码与SHA-256校验文件。旧0.9.0发行附件不能与当前插件配套使用。
+首次部署从[0.12.0发行页](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.12.0)下载 `mcai_windows_host.zip`；同页提供A插件、五目标Probe0.2.1、完整源码与SHA-256校验文件。旧0.9.0发行附件不能与当前插件配套使用。
 
 ### 软件与版本
 
@@ -39,7 +39,7 @@
 |---|---|---|
 | A | Windows 本机运行的 AstrBot，**最低 v4.29.4**；Python **3.12+** | 在 AstrBot 管理界面或启动日志查看版本；插件依赖安装到 AstrBot 自己使用的 Python 环境 |
 | A | 已连接 QQ 的消息适配器，支持引用消息和主动发消息 | 先确认 Bot 能收到群消息，并能在该群回复；创建任务要能取得被引用消息的文字 |
-| A | 支持工具调用的排障模型 API，以及支持 OpenAI 兼容 Chat／Responses 的审核模型 API | 在 AstrBot 模型页配置，之后用插件设置页测试；两者可使用同一提供商，但审核独立请求 |
+| A | 支持 OpenAI 兼容 Chat／Responses 的排障模型与审核模型 API，排障模型须支持工具调用 | 在 AstrBot 模型页配置，之后用插件设置页测试；两者可使用同一提供商，但审核独立请求 |
 | B | Windows **10 1809 或更新版本／Windows 11**，建议 x64；Python **3.12+** | 在 Windows“设置 → 系统 → 关于”查看版本和系统类型，再执行下方 Python 检查 |
 | B | PowerShell **7.3+ 的 7.x** | 执行 `$PSVersionTable.PSVersion`；程序是 `pwsh.exe`，Windows 自带的 PowerShell 5.1 不符合要求 |
 | B | 存档辅助工具使用的 Java **21+** 运行环境 | 执行所选 `java.exe -version`；安装发行包只需运行 JAR，无需自行编译 |
@@ -271,7 +271,7 @@ Set-Location -LiteralPath 'D:\MCAI'
 
 在 AstrBot **插件管理页**使用 ZIP 安装入口，选择配套的 `astrbot_plugin_mcai.zip`，等待安装依赖并启用插件。找到显示名称为 **“MC 排障助手”**、插件标识为 `astrbot_plugin_mcai` 的插件，打开其**设置视图**，页面标题为“MCAI 设置”。
 
-也可以通过仓库地址安装：[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)，默认main为0.11.1。安装前核对本机B已使用`mcai-4`（0.10.0及之后版本）；首次部署使用[0.11.1发行附件](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.11.1)，历史附件按对应版本配套使用。
+也可以通过仓库地址安装：[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)，默认main为0.12.0。安装前核对本机B已使用`mcai-4`（0.10.0及之后版本）；首次部署使用[0.12.0发行附件](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.12.0)，历史附件按对应版本配套使用。
 
 若安装依赖时出现 `WinError 5`，并指向 `charset_normalizer` 或 `__mypyc*.pyd`，完全退出 AstrBot 后，按[安装依赖时拒绝访问](docs/usage/operations.md#安装依赖时拒绝访问)预装依赖，再启动 AstrBot 重试安装。
 
@@ -293,7 +293,7 @@ Set-Location -LiteralPath 'D:\MCAI'
 
 先在 **AstrBot 的模型提供商页**填好 API 地址、API Key 和模型名称。回到“MCAI 设置”的“**模型与能力**”区：
 
-1. 在“排障模型”中选择已配置的提供商；首次建议明确选择，方便一键测试。
+1. 在“排障模型”中选择已配置的 OpenAI 兼容 Chat／Responses 提供商；首次建议明确选择，方便一键测试。AstrBot 原生 Gemini 等其他适配器暂不支持完整工具结构，会明确拒绝。
 2. 在“审核模型”中选择一个 OpenAI 兼容 Chat／Responses 提供商。审核模型必须设置，可以与排障模型使用同一个提供商，但审核会独立请求。
 3. 思考强度不确定时先留空，继承提供商设置；只填写该模型支持的值。
 4. 在 AstrBot 提供商设置中按模型实际容量配置 `max_context_tokens`。插件按这个值控制历史输入，未配置时按 32768 token 估算，长任务会压缩已结算历史。详细行为见[上下文与群消息范围](docs/usage/configuration.md#上下文与群消息范围)。
@@ -381,6 +381,8 @@ AI有修复方向时，会发简短方案并提示批准。如果需要重新查
 
 这条命令批准**当前方案**。文件修复会先结束该任务所属诊断、停服、备份，然后修改；成功后原先运行的服务端通常会重新启动，方案中明确的启停步骤优先。在线命令可能没有可恢复备份，确认消息会说明，由这一次批准一并确认。
 
+0.12.0支持根据结果分批维护：方案会说明允许范围和完成条件。批准一次后，AI执行一批、读取效果，再决定下一批；范围内的具体操作每批仍经过独立审核，无需重复批准。用 `/mcaiplan 任务名` 查看已批准方案和状态。普通线索补充保留原批准；改变目标、扩大范围或失败后提出新的修复方案，需要重新批准。达到完成条件后AI停止后续操作并请求验收。
+
 如果暂时不同意，先不要批准，用 `/mcaisay` 说明需要调整的地方。新反馈会使尚未执行的方案失效，由 AI 重新判断；新方案仍需再次批准。下载 MOD 只进入 B 暂存区，安装也要走方案批准；CurseForge 凭据可在“下载与主机”区填写，Modrinth 公开下载无需令牌。
 
 ### 4. 验证效果，再验收
@@ -438,17 +440,18 @@ AI可以继续核对日志与现场。确认问题已解决后，管理员再发
 
 1. 正常停服。
 2. 从 B 包 `probe/` 选择**一个**与 MC 版本、加载器匹配的文件，放进该服务端 `mods/`。
-3. 正常启动，确认日志出现 `MCAI Probe 0.2.0 ready`。
+3. 正常启动，确认日志出现 `MCAI Probe 0.2.1 ready`。
 4. 照常创建排障任务，在补充中提供游戏名或坐标，AI会使用可用的探针能力。
 
 | 服务端 | 选择的 JAR |
 |---|---|
-| Forge 1.20.1（47.x） | `mcai-probe-1.20.1-forge-0.2.0.jar` |
-| Fabric 1.20.1 | `mcai-probe-1.20.1-fabric-0.2.0.jar` |
-| Forge 1.21.1（52.x） | `mcai-probe-1.21.1-forge-0.2.0.jar` |
-| Fabric 1.21.1 | `mcai-probe-1.21.1-fabric-0.2.0.jar` |
+| Forge 1.19.2（43.x） | `mcai-probe-1.19.2-forge-0.2.1.jar` |
+| Forge 1.20.1（47.x） | `mcai-probe-1.20.1-forge-0.2.1.jar` |
+| Fabric 1.20.1 | `mcai-probe-1.20.1-fabric-0.2.1.jar` |
+| Forge 1.21.1（52.x） | `mcai-probe-1.21.1-forge-0.2.1.jar` |
+| Fabric 1.21.1 | `mcai-probe-1.21.1-fabric-0.2.1.jar` |
 
-Fabric还需要对应 Fabric API 和 Loader 0.16.14+。不要选择 `sources` 文件；Forge JAR 不用于 NeoForge。其他 MC 版本或插件端可继续使用日志、存档和脚本诊断，探针支持范围见[完整安装说明](docs/usage/probe.md)。
+从[0.12.0发行页](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.12.0)下载对应的Probe 0.2.1 JAR，也可从[源码构建](docs/development/probe.md#构建)。更新时正常停服，移走旧Probe后放入对应的新JAR，再启动；单独更新Probe无需升级A、B或协议。Forge版不依赖Fabric API；Fabric版需要对应 Fabric API 和 Loader 0.16.14+。不要选择 `sources` 文件；Forge JAR 不用于 NeoForge。其他 MC 版本或插件端可继续使用日志、存档和脚本诊断，探针支持范围见[完整安装说明](docs/usage/probe.md)。
 
 ## 日常启停、规则与备份
 
@@ -497,11 +500,11 @@ B 窗口按 Ctrl+C 正常退出会等待已接受修复，再结束辅助工作�
 
 ### 更新时保留什么
 
-1. 用`/mcailist`查看活动任务。已验收的任务用`/mcaidone 任务名`结束；其余用`/mcaistop 任务名`中止并等执行收尾。本轮工具名称和结果格式改变，不迁移未结算旧调用，仅暂停不足以完成升级准备。
+1. 用`/mcailist`查看活动任务。已验收的任务用`/mcaidone 任务名`结束；其余用`/mcaistop 任务名`中止并等执行收尾。升级不迁移未结算旧调用，仅暂停不足以完成升级准备。
 2. 停用MCAI插件或退出AstrBot，备份`AstrBot/data/plugin_data/astrbot_plugin_mcai/`及现有插件配置，保留任务历史和经验。
-3. **B已是0.10.0及之后版本时跳过B升级**，MC及托管窗口可继续运行。B仍为0.9.0及更早版本时，先正常停服、关闭旧托管窗口，再退出B；用0.11.1主机包更新程序并在原B环境重新执行`.\.venv\Scripts\python.exe -m pip install -e .`。保留`host.json`、`instances.json`、`data_dir`、证书、令牌和备份，再打开新托管窗口运行原`start.bat`。
-4. 在AstrBot插件管理中更新MCAI；通过ZIP安装的实例可使用0.11.1插件包更新，或通过上面的仓库地址安装。确认版本为0.11.1，启用插件并重载或重启AstrBot。
-5. 已有运行时`AGENTS.md`会保留。将插件中的`mcai/agent_rules.md`与`AstrBot/data/plugin_data/astrbot_plugin_mcai/AGENTS.md`人工合并，采用[工具升级对照](docs/usage/configuration.md#运行时规则)中的新名称、返回格式和示例，保留自己的服务器约定。
+3. **B已是0.10.0及之后版本时可继续连接**；要取得本轮B端修复，建议更新到0.12.0。B仍为0.9.0及更早版本时必须更新。更新B时先正常停服、关闭旧托管窗口，再退出B；用0.12.0主机包更新程序并在原B环境重新执行`.\.venv\Scripts\python.exe -m pip install -e .`。保留`host.json`、`instances.json`、`data_dir`、证书、令牌和备份，再打开新托管窗口运行原`start.bat`。
+4. 在AstrBot插件管理中更新MCAI；通过ZIP安装的实例可使用0.12.0插件包更新，或通过上面的仓库地址安装。确认版本为0.12.0，启用插件并重载或重启AstrBot。
+5. 已有运行时`AGENTS.md`会保留。将插件中的`mcai/agent_rules.md`与`AstrBot/data/plugin_data/astrbot_plugin_mcai/AGENTS.md`人工合并，采用[工具升级对照](docs/usage/configuration.md#运行时规则)中的新名称、返回格式、示例及一次批准多轮执行约定，保留自己的服务器约定。
 6. 在插件设置页测试A→B连接及模型能力，再创建一个新的状态查询任务确认正常。历史记录继续保留。
 
 若升级要求更新托管窗口或改变终端协议，先正常停服、关闭旧托管窗口，再用新程序打开并启动；单纯重启 B 不需要关闭服务端。更多细节见[升级说明](docs/usage/operations.md#升级与常见问题)。

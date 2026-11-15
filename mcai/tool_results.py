@@ -66,6 +66,36 @@ def model_result(name, arguments, result, operation_id=None):
                 return output
             next_name = "mc_artifact_read"
             next_args = {"job_id": data["job_id"], "reference": artifact["reference"]}
+    elif name == "mc_console_read":
+        pending = [
+            {
+                "name": "mc_console_line",
+                "arguments": {
+                    "session_id": data["session_id"],
+                    "seq": row["seq"],
+                    "offset": row["next_offset"],
+                },
+            }
+            for row in data["items"]
+            if row.get("next_offset") is not None
+        ]
+        data["events_complete"] = data["next_cursor"] is None
+        if data["next_cursor"] is not None:
+            pending.append(
+                {
+                    "name": "mc_console_read",
+                    "arguments": {
+                        **arguments,
+                        "after": data["cursor"],
+                        "session_id": data["session_id"],
+                    },
+                }
+            )
+        data["pending_reads"] = pending
+        data["complete"] = not pending
+        if pending:
+            output["next_call"] = pending[0]
+        return output
     elif name == "mc_console_send":
         data["status"] = "cancelled" if data["cancelled"] else "sent"
         if "session_id" not in data:
@@ -84,19 +114,6 @@ def model_result(name, arguments, result, operation_id=None):
             }
     elif data.get("next_cursor") is not None:
         next_args["after"] = data["next_cursor"]
-        if name == "mc_console_read":
-            next_args["session_id"] = data["session_id"]
-    elif name == "mc_console_read" and (
-        line := next(
-            (row for row in data["items"] if row.get("next_offset") is not None), None
-        )
-    ):
-        next_name = "mc_console_line"
-        next_args = {
-            "session_id": data["session_id"],
-            "seq": line["seq"],
-            "offset": line["next_offset"],
-        }
     else:
         if name == "mc_operation_read":
             data["operation_id"] = data["operation"]["id"]

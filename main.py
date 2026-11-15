@@ -10,7 +10,7 @@ from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 from .mcai.astrbot_agent import AstrBotAgent
 from .mcai.client import HostClient
 from .mcai.storage import Store
-from .mcai.tasks import Tasks, message_parts
+from .mcai.tasks import Tasks, message_parts, plan_text
 from .mcai.tracing import trace_event
 
 COMMANDS = {
@@ -223,7 +223,7 @@ class MCAI(Star):
                 self.tasks.feedback(job, sender, content.strip(), is_admin=is_admin)
                 if job["state"] == "paused":
                     yield reply(
-                        f"「{name}」补充已保存；任务仍暂停，管理员使用 /mcairesume {name} 后会一起读取。"
+                        f"「{name}」：补充已保存；任务仍暂停，管理员使用 /mcairesume {name} 后会一起读取。"
                     )
             elif command == "mcaisaymode":
                 mode = content.strip()
@@ -233,7 +233,7 @@ class MCAI(Star):
                     )
                 self.tasks.set_say_mode(job, mode == "true", sender)
                 yield reply(
-                    f"「{name}」"
+                    f"「{name}」："
                     + (
                         f"已开启普通成员 say 接收。暂停：/mcaisaymode {name} false"
                         if mode == "true"
@@ -252,7 +252,7 @@ class MCAI(Star):
                 self.tasks.pause_requested(job)
             elif command == "mcaiplan":
                 text = (
-                    job["plan"]["summary"]
+                    plan_text(job["plan"])
                     + (
                         f"\n任务已暂停，管理员续接：/mcairesume {name}"
                         if job["state"] == "paused"
@@ -262,8 +262,40 @@ class MCAI(Star):
                     if job["plan"]
                     else f"当前没有待批准方案。使用 /mcaistatus {name} 查看进度，或 /mcaisay {name} 内容 补充线索。"
                 )
+                approved = job.get("approved_plan")
+                if not job["plan"] and approved:
+                    plan_status = {
+                        "active": "执行中",
+                        "completed": "已完成",
+                        "failed": "执行失败",
+                        "invalidated": "已失效",
+                        "replaced": "已被替代",
+                        "stopped": "已中止",
+                    }[approved["status"]]
+                    task_status = {
+                        "running": "观察决策",
+                        "applying": "当前批次执行中",
+                        "waiting": "等待",
+                        "paused": "已暂停",
+                        "done": "已验收",
+                        "stopped": "已中止",
+                    }[job["state"]]
+                    text = (
+                        plan_text(approved["snapshot"]["plan"])
+                        + f"\n方案状态：{plan_status}；任务状态：{task_status}"
+                        + (
+                            f"\n任务已暂停，管理员续接：/mcairesume {name}"
+                            if job["state"] == "paused"
+                            else ""
+                        )
+                        + (
+                            f"\n方案已批准，按结果继续执行。补充：/mcaisay {name} 内容"
+                            if self.tasks.active_plan(job)
+                            else f"\n执行资格已结束。使用 /mcaistatus {name} 查看进度。"
+                        )
+                    )
                 for _, part in message_parts(text):
-                    yield reply(f"「{name}」{part}")
+                    yield reply(f"「{name}」：{part}")
             else:
                 say_paused = job.get("say_paused", False)
                 audience = "管理员" if say_paused else "群成员"
@@ -277,8 +309,14 @@ class MCAI(Star):
                     ),
                     "paused": f"已暂停。{audience}可用 /mcaisay {name} 内容 保存补充；管理员使用 /mcairesume {name} 续接。",
                 }
+                if self.tasks.active_plan(job):
+                    state.update(
+                        running=f"方案已批准，正在观察结果并决策下一批。{audience}可用 /mcaisay {name} 内容 补充线索。",
+                        applying=f"方案已批准，正在执行当前批次。{audience}可用 /mcaisay {name} 内容 补充，执行结束后读取。",
+                        waiting=f"方案已批准，等待必要补充。{audience}使用 /mcaisay {name} 内容 继续。",
+                    )
                 yield reply(
-                    f"「{name}」{state.get(job['state'], job['state'])}"
+                    f"「{name}」：{state.get(job['state'], job['state'])}"
                     + (
                         f"\n普通成员 say：暂停，管理员仍可补充。恢复：/mcaisaymode {name} true"
                         if say_paused

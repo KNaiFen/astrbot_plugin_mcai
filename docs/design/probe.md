@@ -4,7 +4,7 @@
 
 ## 采集与语义
 
-共享代码负责 JSON、时间窗口、计数和聚合；Minecraft 1.20.1／1.21.1 适配接口差异，Forge／Fabric 适配生命周期事件。实现使用 Java、官方构建链及 MixinExtras，不依赖 Architectury 或 Kotlin。Forge 1.21.1 是单独目标。
+共享代码负责 JSON、时间窗口、计数和聚合；Minecraft 1.19.2／1.20.1／1.21.1 适配接口差异，Forge／Fabric 适配生命周期事件。实现使用 Java、官方构建链及 MixinExtras，不依赖 Architectury 或 Kotlin。Forge 1.19.2、Forge 1.21.1 是单独目标；1.19.2 复用 1.20.1 的 Forge 生命周期入口。
 
 主线程通过 tick 事件测量全服、维度 elapsed wall time，保留五分钟原始样本和秒级摘要。全服 TPS 为窗口内 tick 数除以实际经过时间；冷启动按实际时长计算，样本不足返回 null。MSPT给出平均、P95、最大及超过50ms的次数。维度耗时包含该维度tick内的工作；全服与维度差值不强行归因。1.21.1 另返回目标 tick rate、冻结、加速状态。100,000条tick上限触及时标记 partial。
 
@@ -38,7 +38,7 @@ B沿用operation id作为后台编号和MOD请求编号。同编号／参数只�
 
 ## 工具与批准
 
-Probe 0.2.0可选接入spark公开API。四个目标仅编译依赖spark API，不打包spark/API类，也不要求安装spark。加载器报告spark存在后才访问独立适配类；不存在时不加载其API引用。能力文件的`integrations.spark`报告安装状态、版本、可用性及API错误，调用失败记录日志，不伪装成未安装。
+Probe 0.2.0可选接入spark公开API。五个目标仅编译依赖spark API，不打包spark/API类，也不要求安装spark。加载器报告spark存在后才访问独立适配类；不存在时不加载其API引用。能力文件的`integrations.spark`报告安装状态、版本、可用性及API错误，调用失败记录日志，不伪装成未安装。
 
 metrics结果在原Probe数据之外添加独立`spark`字段，包含采集时间、平均TPS、MSPT、CPU及GC。直接使用API提供的窗口和值，注明单位；未支持和未取得有效值的情况显式标注。原Probe的维度耗时、历史、对象和热点协议保持不变，不把不同来源或不同窗口的统计混合计算。
 
