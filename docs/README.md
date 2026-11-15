@@ -15,4 +15,4 @@
 - 仓库根 `AGENTS.md` 约束开发工作；A 插件数据目录的 `AGENTS.md` 约束运行时排障与审核模型。两者用途不同。
 - 详细文档放在 `docs/`。代码目录的 `mcai/agent_rules.md` 是随包安装的运行时模板，第三方许可和测试数据来源随组件保留。
 
-文档描述对应 0.8.0。配置字段以 `_conf_schema.json`、`host.example.json` 和 `instances.example.json` 为入口，工具参数以 `mcai/tool_schemas.py` 为准。
+文档描述对应 0.14.0。配置字段以 `_conf_schema.json`、`host.example.json` 和 `instances.example.json` 为入口，工具参数以 `mcai/tool_schemas.py` 为准。

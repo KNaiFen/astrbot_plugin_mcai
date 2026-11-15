@@ -12,17 +12,57 @@
 .\.venv\Scripts\python.exe scripts/build_probe.py forge1192
 ```
 
-脚本使用代理下载固定Temurin17.0.21+9（SHA-256校验），用于1.19.2／1.20.1；使用JDK21构建1.21.1；两个JDK可由 `--java17`、`--java21` 指定。默认代理 `http://127.0.0.1:7890`，可用 `--proxy` 或 `HTTPS_PROXY` 覆盖。Gradle固定8.8，Fabric Loom1.7.4，ForgeGradle6.0.36，MixinGradle0.7.38，MixinExtras0.4.1。Forge目标固定43.5.0（1.19.2）／47.3.0（1.20.1）／52.1.2（1.21.1），Fabric Loader0.16.14，API0.92.2／0.116.1。
+脚本使用代理下载固定Temurin17.0.21+9（SHA-256校验），用于1.19.2／1.20.1；使用JDK21构建1.21.1；1.16.5运行时使用Java8，1.7.10已验证Java17／21运行，由RetroFuturaGradle使用独立JDK25构建。默认代理 `http://127.0.0.1:7890`，可用 `--proxy` 或 `HTTPS_PROXY` 覆盖。Gradle固定8.8，Fabric Loom1.7.4，ForgeGradle6.0.36，MixinGradle0.7.38，MixinExtras0.4.1。Forge目标固定36.2.42（1.16.5）／43.5.0（1.19.2）／47.3.0（1.20.1）／52.1.2（1.21.1），Fabric Loader0.16.14，API0.92.2／0.116.1。
 
 构建执行clean，排除测试负载，检查产物不得包含Fixture类或spark／API类，并清理本次构建目标的旧版JAR与旧源码ZIP。各目标编译Java17／21，独立生成JAR及sources，`dist/probe/`附完整源码ZIP、LICENSE、NOTICE。源码包保留构建脚本与协议文档；游戏二进制、测试世界和缓存不分发。
 
-1.19.2 Forge产物为`dist/probe/mcai-probe-1.19.2-forge-0.3.0.jar`，沿用协议1；既有v0.11.1公开附件仍为旧Probe。完整本地发行构建将五目标放入B包，A／B配套升级。该目标复用Forge生命周期和诊断逻辑，`game1192`适配注册表及实体世界接口，资源包格式使用9。
+1.19.2 Forge产物为`dist/probe/mcai-probe-1.19.2-forge-0.4.0.jar`，沿用协议1；既有v0.11.1公开附件仍为旧Probe。完整本地发行构建将七目标放入B包，A／B配套升级。该目标复用Forge生命周期和诊断逻辑，`game1192`适配注册表及实体世界接口，资源包格式使用9。
 
 spark API仅作编译依赖。构建脚本通过同一代理下载官方仓库的固定快照`0.1-20260912.112908-2`，SHA-256为`e4856b0d2ba56db652ca340821a5b40ad0bdd192cf77707ba0f4557eeb5cb63d`，缓存在`runtime/probe-build/`并在每次构建校验；不把API JAR嵌入MOD。直接调用Gradle前先运行构建脚本准备依赖。来源和许可记录在Probe的NOTICE。
 
 Forge1.21.1使用官方运行时映射，关闭reobf并移除SRG refmap；开发环境让metadata与classes共用目录，固定jopt-simple5.0.4。MixinExtras common仅用于编译／注解处理，loader组件嵌入JAR，避免Java21重复模块。安装版验证实际映射和Jar-in-Jar；Forge52.0.28实测停服后仍遗留上游非daemon线程，本轮固定52.1.2完成正常退出验收。
 
+## 0.14.0发行（Probe 0.4.0，2026-11-16）
+
+本版发布七目标Probe和临时模拟玩家，保留Java8核心与协议1；新发行号同步全部Gradle／加载器元数据、能力版本及当前集成脚本。`scripts/build_release.py`完整clean构建七目标通过，两端ZIP、Probe源码ZIP和完整源码ZIP生成成功，Probe源码包补入1.7.10及共享模拟玩家验收脚本。两端与完整源码ZIP的CRC、版本、七目标JAR、测试负载排除、许可和相对文档链接检查通过，记录为`runtime/release-0.14.0-build.log`及`runtime/release-0.14.0/archive-validation.json`。
+
+由解压B包离线构建0.14.0 wheel并安装到独立site，从空工作目录以解压A包执行现有发行代表流程：真实AstrBot v4.29.4 runner的自然语言目标／网页MOD审核安装／验收归档、HTTPS CLI、Chat／Responses一次批准三批执行。4项全部通过、零跳过（47.11秒）；56个模块路径确认A来自解压插件、B及worker来自独立site。9条警告均为上游弃用提示。证据为`runtime/release-0.14.0-installed.log`、`runtime/release-0.14.0/installed.xml`和`import-proof.json`。
+
+新版本发行JAR另在Forge1.7.10／Java21完成`--fake-player`完整安装版流程（含spark默认／全部线程／慢tick、取消与迟到回执），Forge1.20.1完成安装版`--fake-player`；均通过并正常退出，能力文件实际报告Probe0.4.0。记录为`runtime/release-0.14.0-probe.log`。前述七目标功能与Java21有／无spark验收在相同实现的Probe0.3.0上完成，版本变更不冒充重跑全部历史压力结果。
+
 ## 可重复验证
+
+### 核心拆分：现有五目标回归（2026-11-15）
+
+`common`独立以Java 8 API与Gson 2.2.4编译，通过统计与排除嵌套子调用计时检查。现有五目标clean构建通过，发行JAR合并核心class；安装版Forge1.19.2／1.20.1／1.21.1和Fabric1.20.1／1.21.1均通过`--installed --player --spark-profile --io-check --expect-spark present`，包括玩家登录与跨维度、普通方块、区块、运行时、NBT完整字段省略、对象计时、spark本地报告、占用与取消。记录为`runtime/probe-core-five-build.log`、`runtime/probe-core-five-real.log`及各隔离服日志。本次结果不扩展到尚在接入的旧版本或生产整合包。
+
+### Forge 1.16.5 与 1.7.10 接入（2026-11-15）
+
+新增Forge1.16.5（36.2.42／Java8／spark1.9.1）与Forge1.7.10（10.13.4.1614／lwjgl3ify3.1.0／UniMixins0.3.2／Java17）目标。两者共用Java8核心和`ProbePlatform`，旧版能力文件明确标出数据包、模拟距离、ticket等级、原生block state等不支持字段；1.7.10维度使用数字ID字符串。1.16.5安装版完整流程通过玩家、NBT、区块、对象计时、spark递归报告、人工占用、取消与迟到回执，记录为`runtime/probe-1165-real.log`、`runtime/probe-1165-fixture-real.log`及`runtime/probe-1165-host.log`。1.7.10使用RetroFuturaGradle、UniMixins早期加载接口和lwjgl3ify服务端启动方式，编译及无玩家隔离启动通过；Forge旧版客户端握手仍需使用支持FML协议1的客户端，当前普通minecraft-protocol客户端只能验证连接到play状态，不能作为玩家验收证据。1.7.10完整夹具结果保留为后续专项，未标记为全流程通过。
+
+### 临时模拟玩家交接审查与验收（2026-11-15）
+
+审查22:03开始的实现及暂停前修补，确认并修复：1.20.1构造参数错误、按映射前名称反射调用登录／回复、1.16.5绕开完整登录、Forge内部连接缺少版本属性、1.7.10旧Netty不接受空handler、创建失败残留活动表、缺少完整玩家tick与区块跟踪刷新、移除不关闭channel、缺少坐标边界、重复手写历史事件及查询表兜底掩盖真实登录失败。现代版本改用既有GameVersion的编译期接口；保留仅按字段类型定位channel的必要反射，没有新增通用兼容框架。
+
+七目标均完成clean构建与安装版`--fake-player`验收：正常玩家列表、players／objects／inspect同UUID、固定小数坐标、对象计时、异维度和多个玩家、同名／非法名称／越界坐标／未知维度／重复remove错误、在线人数增减、远端区块自然加载和移除后释放、join／leave各一次、带活动玩家停服、重启无自动登录。共享检查为`scripts/probe_fake_player_checks.py`。记录：`runtime/probe-fake-review-1165-final.log`、`probe-fake-review-three-real.log`、`probe-fake-review-1211-real.log`、`probe-fake-review-1710-final.log`及`runtime/probe-build/*validation*.json`。
+
+1.7.10 Java17完整安装版进一步通过普通查询、NBT、对象计时、spark默认／全部线程／慢tick报告解析、人工占用、取消与迟到回执。本次修正该测试的UTF-8协议读取，并为GTNH spark弱引用发送者补上UniMixins晚期保留钩子，复用现有采样生命周期。Forge1.20.1与Fabric1.21.1在保留模拟玩家时也通过完整spark联合回归，日志为`runtime/probe-fake-review-spark-real.log`。发行JAR检查不含Fixture或spark/API实现类。Java21模拟玩家验收已在下述2026-11-16专项补齐；真实FML客户端及指定GTNH整合包共存仍未扩展验收，先前接入阶段未完成的压力／夹具结果保持原有边界。
+
+最终收尾（2026-11-16）：1.7.10另通过无spark的完整安装版与模拟玩家重启检查，之后恢复原spark JAR，日志为`runtime/probe-fake-review-1710-absent.log`。现有桥接／IO／查询／ready／清单专项为17 passed、1 skipped（40.50秒），记录为`runtime/probe-fake-review-python-final.log`。Ruff与格式检查、`git diff --check`通过。`scripts/build_release.py`重新clean构建七目标并生成两端ZIP和完整源码ZIP；逐包CRC、七目标JAR与dist一致性、无Fixture／spark实现类、源码含共享验收脚本、README与docs相对链接检查通过。消融审查删除现代登录／回复反射和三组查询兜底，复用GameVersion、原生事件及既有采样状态机，新增共享检查只服务于两个实际集成入口。
+
+### Forge 1.7.10 Java 21专项验收（2026-11-16）
+
+标准Forge10.13.4.1614＋lwjgl3ify3.1.0＋UniMixins0.3.2，在Windows x64的Oracle JDK21.0.7（21.0.7+8-LTS-245）上补跑完成。通过活动进程可执行路径和`jcmd <pid> VM.version`确认实际使用Java21；继续使用既有`@java9args.txt`和lwjgl3ify forgePatches启动方式。安装JAR与已构建发行JAR逐字节一致，SHA-256为`5c85a6c5949c33e9001e5b1a5dffac2e36cc5a32a42f90fb09741ff920ffe6be`。本轮无需修改产品代码。
+
+```powershell
+.\.venv\Scripts\python.exe scripts/test_probe_1710.py --java21 --fake-player --expect-spark present
+# 在隔离测试服临时移出spark，运行后恢复原JAR
+.\.venv\Scripts\python.exe scripts/test_probe_1710.py --java21 --fake-player --expect-spark absent
+```
+
+两套命令均正常通过并停服：模拟玩家创建／删除、players／objects／inspect同UUID、固定小数坐标、多玩家／异维度、无效输入、真实在线人数、区块加载与释放、对象计时、join／leave各一次、带活动玩家停服及重启不恢复。安装spark的组合另通过普通查询、NBT、指标、默认／全部线程／慢tick报告解析、人工占用、取消与迟到回执；无spark组合确认可选mixin不影响启动和诊断，结束已恢复原spark JAR。
+
+独立记录为`runtime/probe-java21-present.log`、`probe-java21-absent.log`，对应`*-server.log`和`*-validation.json`保留各场景完整证据。验收限于上述固定基线；真实FML客户端登录、指定GTNH整合包及早前未完成的压力／夹具专项仍按各自范围验证。
 
 ### 0.3.0第一批：现场与运行时查询（2026-11-15）
 
@@ -61,6 +101,13 @@ NBT同步保存与复制分别记录耗时，离线快照的路径遍历、排�
 ```powershell
 npm install --prefix runtime/probe-client --proxy=http://127.0.0.1:7890 --no-audit --no-fund minecraft-protocol@1.62.0
 .\.venv\Scripts\python.exe scripts/test_probe_servers.py --installed --player
+```
+
+模拟玩家不需要外部客户端或FML握手，可直接在隔离服验证：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/test_probe_servers.py forge1165 forge1201 --installed --fake-player
+.\.venv\Scripts\python.exe scripts/test_probe_1710.py --fake-player
 ```
 
 测试服务端只监听127.0.0.1随机端口，使用隔离世界，测试命令可生成、删除对象。Fixture源码仅在 `-PprobeFixture` 时编译；该负载类和配置不会进入发行JAR。普通构建含Java统计／聚合检查，真实测试覆盖负坐标、掉落物堆栈、骑乘、方块NBT、采样、重复通知、取消、未加载目标、1.21.1冻结状态。结果和日志在 `runtime/probe-build/`。
