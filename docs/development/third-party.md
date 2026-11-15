@@ -9,6 +9,7 @@
 - **MCAI Probe 0.1.0** 源码采用MPL-2.0，完整许可见 `mods/mcai-probe/LICENSE`，来源说明见同目录NOTICE；每次发行附对应源码。
 - 计时位置参考 [Observable](https://github.com/tasgon/observable) 固定提交 `f07aba86fbb075077ac7b8d820b4ff8fc6e69aae` 的 ServerLevelMixin、LevelMixin。实现改用 [MixinExtras WrapOperation](https://github.com/LlamaLad7/MixinExtras/wiki/WrapOperation)，不引入Observable的客户端、上传服务或调用栈采样运行时。
 - **MixinExtras0.4.1** 为MIT；loader JAR嵌入并保留自身许可。Forge／Fabric和Minecraft为外部构建与运行依赖，不随包分发游戏程序。用于共存测试的第三方MOD仅保存在忽略目录。
+- **spark报告格式**：按[lucko/spark固定提交2335038](https://github.com/lucko/spark/tree/2335038acccc621275e78b8f16a47f5d47babbdd/spark-common/src/main/proto/spark)的`spark.proto`／`spark_sampler.proto`字段号独立声明所需最小布局，原项目GPL-3.0许可保留在`mcai/vendor/licenses/spark-format-GPL-3.0.txt`。采样由外部已安装spark的命令接口执行，B不包含spark运行时或Java生成类。Python **protobuf >=5,<8**通过依赖安装，保留其BSD-3-Clause许可；本轮固定验证版本见依赖记录。
 
 ## 网页、搜索及 MOD 接口
 
@@ -17,6 +18,8 @@
 - MOD 元数据和下载使用 [Modrinth 官方 v2 API](https://docs.modrinth.com/api/) 和 [CurseForge 官方 API](https://docs.curseforge.com/rest-api/)。CurseForge CDN 鉴权遵循其 [2026年公告](https://blog.curseforge.com/introducing-api-key-authentication-for-curseforge-file-downloads/)。MOD 本身由用户的 B 按请求下载，不随本项目发行。
 
 ## 审核与重试设计参考
+
+本轮审核整改参考本地Codex固定提交69231e119b：guardian/review_request.rs的真实输入版本与审核失效判断、guardian-reviewer/approval_request_json.rs的原始动作序列化，以及shell-command中使用PowerShell原生AST的解析方式。MCAI以现有Python、持久记录和PowerShell实现对应能力，不引入Codex运行依赖。
 
 参考 DeepSeek Harness 固定提交 `e8f7b93a344964de3dca1ace9e72b6e4d6de87cb` 的 [auto-review](https://github.com/deepseek-ai/deepseek-harness/tree/e8f7b93a344964de3dca1ace9e72b6e4d6de87cb/packages/experimental/auto-review)、user-approval 和 llm-retry：工具执行前独立审核、决定绑定单次调用、审核事件不进入主模型对话，以及从持久步骤恢复。实现继续使用 AstrBot 原生 runner，没有引入该 harness 的运行时或复制其权限策略。
 

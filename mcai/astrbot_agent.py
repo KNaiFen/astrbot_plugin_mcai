@@ -22,6 +22,8 @@ from .agent_runtime import (
     MainProvider,
     ModelUnavailable,
     Reviewer,
+    ReviewInvalidated,
+    check_review_feedback,
     effort_provider,
     progress_provider,
     request_provider,
@@ -30,7 +32,8 @@ from .agent_runtime import (
 )
 from .client import RemoteError
 from .context_budget import fit_history
-from .review import digest
+from .plans import plan_identity
+from .review import REVIEW_VERSION, digest
 from .tool_results import model_result
 from .tool_schemas import TOOLS
 from .tracing import traced_provider
@@ -40,9 +43,10 @@ PROMPT = (
 未绑定时按mc_instances说明用mc_select_instance选择目标，模糊才追问。按目标做最小必要查询，优先已有工具、spark和服务端命令，不手写已有通信或统计能力。
 工具结果统一为ok/data及可选error/next_call。ok只表示调用成功，后台进展看data.status，当前结果读完看data.complete；控制台data.pending_reads列出本页全部长行尾部与后续事件页，逐项续读，某一项complete不代表其他待办已读。next_call是可采用的续读参数，不自动执行。失败按error.path修正，不把漏参归因管理员；unknown沿原operation_id核实，不能另生成编号重放。
 诊断用mc_exec或mc_console_send，由程序审核；修改、启停和保存用mc_propose整组审核并等待一次批准。外部脚本才申报script_files/script_encoding；文件修改先停服备份，脚本backup_paths覆盖实际写入。具体格式与示例见工具和规则。
+工具结果的evidence_id可在受审调用的evidence_ids引用，程序从本任务读取真实参数、结果及采集目标作为依据；按本次需要引用，不用自行转述申报。历史压缩不删除这些记录，未读完的分页不能当完整证据。
 需要根据结果分批决策时，首次mc_propose同时提交首批steps和continuation的允许范围、完成条件。批准后以plan_id提交后续批次，每批独立审核，无需重复批准；可在范围内调整命令或工具。先执行一批再观察，不因缺少单脚本循环入口而暂停。达到完成条件用mc_plan_finish结束方案，再报告并请求验收。改变目标、扩大范围或修复失败后须新提案重新批准。
-只有确实缺用户信息时才用mc_say合并提问并给出/mcaisay 任务名 内容，然后结束本轮等待；无可行路径需管理员处理才mc_pause。已明确目标继续推进，不附加无关排障、数量上限或重复确认。
-根据实际结果核实效果，请管理员/mcaidone 任务名验收。执行进度使用commentary，最终结论和验收请求使用final，不用mc_say代发。使用Responses时，final通道对应消息phase:final_answer。最终答复应独立完整，必要结论、依据、未确定事项和下一步说清楚，长消息由程序分段发送，不为字数或行数省略内容。使用中文纯文本，收到补充继续按当前目标调整。
+只有确实缺用户信息时才用mc_say合并提问并给出“/mcaisay 任务名 内容”，然后结束本轮等待；无可行路径需管理员处理才mc_pause。已明确目标继续推进，不附加无关排障、数量上限或重复确认。
+根据实际结果核实效果，请管理员使用“/mcaidone 任务名”验收。面向群的命令提示都用中文双引号括起完整命令及参数，用途说明放在引号外。执行进度使用commentary，最终结论和验收请求使用final，不用mc_say代发。使用Responses时，final通道对应消息phase:final_answer。最终答复应独立完整，必要结论、依据、未确定事项和下一步说清楚，长消息由程序分段发送，不为字数或行数省略内容。使用中文纯文本，收到补充继续按当前目标调整。
 """
     + TASK_POLICY
 )
@@ -52,7 +56,7 @@ def clean_arguments(arguments):
     return {
         key: value
         for key, value in arguments.items()
-        if key not in ("review", "script_files", "script_encoding")
+        if key not in ("review", "script_files", "script_encoding", "evidence_ids")
     }
 
 
@@ -159,11 +163,6 @@ class AstrBotAgent:
                 raise
         plan = job["applied_plan"]
         reviewed = plan.get("reviewed")
-        payload = {
-            key: plan[key]
-            for key in ("summary", "steps", "continuation", "plan_id")
-            if key in plan
-        }
         approved_hash = None
         if plan.get("plan_id") or plan.get("continuation"):
             try:
@@ -173,8 +172,9 @@ class AstrBotAgent:
                 approved_hash = "invalid"
         if (
             not reviewed
-            or reviewed.get("protocol_version") != 3
-            or reviewed["arguments_hash"] != digest(payload)
+            or reviewed.get("protocol_version") != REVIEW_VERSION
+            or not plan.get("prepared")
+            or reviewed["arguments_hash"] != plan_identity(plan)
             or reviewed["rules_hash"] != digest(TASK_POLICY + self.rules())
             or (
                 plan.get("plan_id")
@@ -231,6 +231,8 @@ class AstrBotAgent:
             record.setdefault("operation", uuid.uuid4().hex)
             record["remote"] = {"action": action, "arguments": arguments}
             record["state"] = "submitted"
+            record["instance"] = job["instance"]
+            record["directory"] = job.get("directory")
             tasks.store.save("tool_call", record["id"], record)
             result = await tasks.client.call(
                 job["instance"],
@@ -322,6 +324,13 @@ class AstrBotAgent:
                         "execution_state": "not_executed",
                         "path": path,
                         "reason": f"工具参数错误（{'.'.join(map(str, path)) or '参数根节点'}）：{exc.message}",
+                    }
+                except ReviewInvalidated as exc:
+                    result = {
+                        "not_executed": True,
+                        "error_code": "precondition_failed",
+                        "execution_state": "not_executed",
+                        "reason": str(exc),
                     }
                 except ModelUnavailable:
                     raise
@@ -427,23 +436,28 @@ class AstrBotAgent:
                     raise ValueError("运行规则已变化，请重新提案等待批准")
             approved_hash = approved["identity"] if approved else None
             needs_review = name in ("mc_exec", "mc_propose", "mc_console_send")
-            if needs_review and (
-                record.get("decision", {}).get("rules_hash")
-                != digest(TASK_POLICY + rules)
-                or record.get("decision", {}).get("protocol_version") != 3
-                or record.get("decision", {}).get("arguments_hash") != digest(arguments)
-                or record.get("decision", {}).get("approved_plan_hash") != approved_hash
+            decision = record.get("decision")
+            if (
+                needs_review
+                and decision
+                and (
+                    decision["rules_hash"] != digest(TASK_POLICY + rules)
+                    or decision.get("protocol_version") != REVIEW_VERSION
+                    or decision["arguments_hash"] != digest(arguments)
+                    or decision.get("approved_plan_hash") != approved_hash
+                )
             ):
                 record.pop("decision", None)
             if needs_review and "decision" not in record:
                 metadata = record["review"]
                 commands = (
                     [
-                        step.get("script", step.get("command", ""))
+                        step["script"]
                         for step in arguments["steps"]
+                        if step["action"] == "script"
                     ]
                     if name == "mc_propose"
-                    else arguments["commands"]
+                    else []
                     if name == "mc_console_send"
                     else [arguments["script"]]
                 )
@@ -455,16 +469,16 @@ class AstrBotAgent:
                         "script_files": metadata["script_files"],
                         "encoding": metadata.get("encoding", "utf-8-sig"),
                         "commands": commands,
-                        "include_launcher": name == "mc_propose",
+                        "diagnostic": name == "mc_exec",
+                        **(
+                            {"steps": arguments["steps"]}
+                            if name == "mc_propose"
+                            else {}
+                        ),
                         "download_ids": [
                             step["download_id"]
                             for step in arguments.get("steps", [])
                             if step["action"] == "install_download"
-                        ],
-                        "backup_ids": [
-                            step["backup"]
-                            for step in arguments.get("steps", [])
-                            if step["action"] == "restore"
                         ],
                         "export_ids": [
                             step["export_id"]
@@ -478,12 +492,8 @@ class AstrBotAgent:
                         ),
                     },
                     task_id=job["id"],
+                    operation_id=record["id"],
                 )
-                if approved and material.get("launcher_identity") != approved[
-                    "snapshot"
-                ]["plan"].get("launcher_identity"):
-                    tasks.end_plan(job, "invalidated", "实例启动配置已变化")
-                    raise ValueError("实例启动配置已变化，请重新提案等待批准")
                 try:
                     decision = await self.reviewer.decide(
                         tasks, job, record, rules, material
@@ -491,17 +501,27 @@ class AstrBotAgent:
                 except ValueError as exc:
                     tasks.pause(job, str(exc))
                     raise ModelUnavailable(str(exc)) from exc
-                decision["protocol_version"] = 3
+                decision["protocol_version"] = REVIEW_VERSION
                 decision["arguments_hash"] = digest(arguments)
                 decision["approved_plan_hash"] = approved_hash
                 record["decision"] = decision
                 record["checks"] = [
-                    {"path": item["path"], "sha256": item["sha256"]}
+                    {
+                        key: item[key]
+                        for key in ("path", "sha256", "steps", "planned")
+                        if key in item
+                    }
                     for item in material["scripts"]
+                    if item.get("steps")
                 ]
-                record["launcher_identity"] = material.get("launcher_identity")
+                record["review_configuration"] = material["configuration"]
+                if name == "mc_propose":
+                    record["effective_steps"] = material["effective_steps"]
                 tasks.store.save("tool_call", record["id"], record)
             if needs_review:
+                check_review_feedback(job, record)
+                if job["stop_requested"] or job["state"] == "paused":
+                    raise ReviewInvalidated("任务已停止或暂停，原调用未执行。")
                 if record["decision"]["decision"] == "deny":
                     return {
                         "not_executed": True,
@@ -510,15 +530,10 @@ class AstrBotAgent:
                         "reason": "审核未通过：" + record["decision"]["reason"][:200],
                     }
                 arguments["script_hashes"] = record["checks"]
+                arguments["review_configuration"] = record["review_configuration"]
             if name == "mc_propose":
-                if job["pending"] or job["stop_requested"] or job["state"] == "paused":
-                    return {
-                        "not_executed": True,
-                        "error_code": "precondition_failed",
-                        "execution_state": "not_executed",
-                        "reason": "收到新反馈，请结合补充重新判断方案。",
-                    }
                 checks = arguments.pop("script_hashes")
+                configuration = arguments.pop("review_configuration")
                 if approved:
                     tasks.require_plan(job, arguments["plan_id"])
                     record.setdefault("batch_operation", uuid.uuid4().hex)
@@ -527,13 +542,13 @@ class AstrBotAgent:
                     job,
                     **arguments,
                     script_hashes=checks,
-                    launcher_identity=record.get("launcher_identity"),
+                    effective_steps=record["effective_steps"],
+                    review_configuration=configuration,
                     proposal_id=record["id"],
                     operation_id=record.get("batch_operation"),
                     reviewed={
                         "call_id": record["id"],
-                        "protocol_version": 3,
-                        "arguments_hash": digest(arguments),
+                        "protocol_version": REVIEW_VERSION,
                         "rules_hash": record["decision"]["rules_hash"],
                         "approved_plan_hash": approved_hash,
                     },
@@ -650,6 +665,8 @@ class AstrBotAgent:
                 "mc_players",
                 "mc_metrics",
                 "mc_objects",
+                "mc_chunks",
+                "mc_runtime",
                 "mc_profile",
                 "mc_inspect",
             ):
@@ -686,6 +703,9 @@ class AstrBotAgent:
                     "id": uuid.uuid4().hex,
                     "call_id": key,
                     "task": job["id"],
+                    "instance": job["instance"],
+                    "directory": job.get("directory"),
+                    "feedback_revision": len(job.get("feedback", [])),
                     "name": name,
                     "arguments": copy.deepcopy(arguments or {}),
                     "review": {
@@ -731,6 +751,7 @@ class AstrBotAgent:
                     record["result"],
                     record.get("operation"),
                 )
+                record["model_result"]["evidence_id"] = record["id"]
                 tasks.store.save("tool_call", record["id"], record)
             return record["model_result"]
 
@@ -1062,7 +1083,7 @@ class AstrBotAgent:
                 ):
                     tasks.message(
                         job,
-                        f"本轮排查已达步数上限，记录已保存。群成员可用 /mcaisay {job['name']} 内容 补充线索继续。",
+                        f"本轮排查已达步数上限，记录已保存。群成员可用 “/mcaisay {job['name']} 内容” 补充线索继续。",
                     )
             response = runner.get_final_llm_resp()
             if (

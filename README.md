@@ -29,9 +29,9 @@
 
 ## 安装前准备
 
-当前插件版本为 **0.12.0**，支持在批准范围内分批维护、观察结果后继续执行，修正搜索、诊断下载、归档状态及运维流程中的问题。可通过[插件仓库main](https://github.com/KNaiFen/astrbot_plugin_mcai/tree/main)安装或更新A。通信仍为`mcai-4`，现有0.10.0及之后的B与托管窗口可继续连接；B端修复需更新B及托管窗口。Probe为0.2.1，新增1.19.2 Forge并修复MixinExtras依赖冲突。从旧版升级先阅读[更新说明](#更新时保留什么)，能力边界见[运维工具](docs/usage/operations.md#文件存档与故障取证)。
+当前插件版本为 **0.13.0**，配套Probe **0.3.0**，新增区块与运行时查询、主线程响应验证及spark限时本地采样，并完善审核与恢复流程。可通过[插件仓库main](https://github.com/KNaiFen/astrbot_plugin_mcai/tree/main)安装或更新A。本版使用`mcai-5`，**A、B与托管窗口须配套更新**；0.12.0及更早版本的`mcai-4`程序不能混用。从旧版升级先阅读[更新说明](#更新时保留什么)，能力边界见[运维工具](docs/usage/operations.md#文件存档与故障取证)。
 
-首次部署从[0.12.0发行页](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.12.0)下载 `mcai_windows_host.zip`；同页提供A插件、五目标Probe0.2.1、完整源码与SHA-256校验文件。旧0.9.0发行附件不能与当前插件配套使用。
+首次部署与本次升级均使用配套0.13.0的 `mcai_windows_host.zip`，其中包含五目标Probe0.3.0；可从当前完整源码[构建两端发行包](docs/development/README.md#构建与发行)。既有0.12.0公开附件仍使用`mcai-4`与Probe0.2.1，历史附件按对应版本配套使用。
 
 ### 软件与版本
 
@@ -271,7 +271,7 @@ Set-Location -LiteralPath 'D:\MCAI'
 
 在 AstrBot **插件管理页**使用 ZIP 安装入口，选择配套的 `astrbot_plugin_mcai.zip`，等待安装依赖并启用插件。找到显示名称为 **“MC 排障助手”**、插件标识为 `astrbot_plugin_mcai` 的插件，打开其**设置视图**，页面标题为“MCAI 设置”。
 
-也可以通过仓库地址安装：[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)，默认main为0.12.0。安装前核对本机B已使用`mcai-4`（0.10.0及之后版本）；首次部署使用[0.12.0发行附件](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.12.0)，历史附件按对应版本配套使用。
+也可以通过仓库地址安装：[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)，默认main为0.13.0。安装前配套更新B和所有托管窗口至0.13.0，确认使用`mcai-5`；部署步骤见[安装前准备](#安装前准备)。
 
 若安装依赖时出现 `WinError 5`，并指向 `charset_normalizer` 或 `__mypyc*.pyd`，完全退出 AstrBot 后，按[安装依赖时拒绝访问](docs/usage/operations.md#安装依赖时拒绝访问)预装依赖，再启动 AstrBot 重试安装。
 
@@ -329,6 +329,8 @@ Set-Location -LiteralPath 'D:\MCAI'
 
 创建需要管理员权限。`主城卡顿` 是任务名，后面的文本在没有引用时就是问题描述；有引用时作为创建者补充，与引用原文一起进入首次排查。只输入 `/mcainew 主城卡顿` 时，需要引用一条有文字的问题消息。
 
+`/mcainew` 和 `/mcaisay` 都将任务名后的整段文字作为内容，支持空格、换行和空行，无需加引号；任务名仍不带空格。任务名与内容可用空格或换行分隔。
+
 日常运维也用同一入口，例如 `/mcainew 维护公告 给CTI服发送公告：今晚22点维护，请提前下线`。明确的操作只核对必要的目标、状态和范围，再按原有审核／批准流程执行，无需先提供故障或复现信息。
 
 Bot 应回复“开始排查”，并附上群成员补充命令 `/mcaisay 主城卡顿 内容` 和进度查询命令 `/mcaistatus 主城卡顿`。AI根据实例说明、引用和补充选择服务端；不明确时会追问。一个任务只处理一个服务端，同一服务端只允许一个活动任务，已暂停的任务继续占用它。其他服的问题请另建任务。
@@ -338,7 +340,9 @@ Bot 应回复“开始排查”，并附上群成员补充命令 `/mcaisay 主�
 普通玩家也可以补充，消息里带上任务名：
 
 ```text
-/mcaisay 主城卡顿 我的游戏名是Steve，主世界坐标120 65 -300，大约20:10开始卡
+/mcaisay 主城卡顿 我的游戏名是 Steve，主世界坐标 120 65 -300
+大约 20:10 开始卡
+更新模组后第一次出现
 ```
 
 有价值的信息包括：哪台服、游戏名、时间、维度、坐标、怎样复现、最近改过什么，以及已经人工做过的处理。Bot 没有独立的图片或语音解析入口，关键内容请写成文字。
@@ -381,7 +385,7 @@ AI有修复方向时，会发简短方案并提示批准。如果需要重新查
 
 这条命令批准**当前方案**。文件修复会先结束该任务所属诊断、停服、备份，然后修改；成功后原先运行的服务端通常会重新启动，方案中明确的启停步骤优先。在线命令可能没有可恢复备份，确认消息会说明，由这一次批准一并确认。
 
-0.12.0支持根据结果分批维护：方案会说明允许范围和完成条件。批准一次后，AI执行一批、读取效果，再决定下一批；范围内的具体操作每批仍经过独立审核，无需重复批准。用 `/mcaiplan 任务名` 查看已批准方案和状态。普通线索补充保留原批准；改变目标、扩大范围或失败后提出新的修复方案，需要重新批准。达到完成条件后AI停止后续操作并请求验收。
+支持根据结果分批维护：方案会说明允许范围和完成条件。批准一次后，AI执行一批、读取效果，再决定下一批；范围内的具体操作每批仍经过独立审核，无需重复批准。用 `/mcaiplan 任务名` 查看已批准方案和状态。普通线索补充保留原批准；改变目标、扩大范围或失败后提出新的修复方案，需要重新批准。达到完成条件后AI停止后续操作并请求验收。
 
 如果暂时不同意，先不要批准，用 `/mcaisay` 说明需要调整的地方。新反馈会使尚未执行的方案失效，由 AI 重新判断；新方案仍需再次批准。下载 MOD 只进入 B 暂存区，安装也要走方案批准；CurseForge 凭据可在“下载与主机”区填写，Modrinth 公开下载无需令牌。
 
@@ -417,7 +421,7 @@ AI可以继续核对日志与现场。确认问题已解决后，管理员再发
 
 ## 群命令速查
 
-下表中的方括号表示可选内容，实际发送时不用带方括号。
+下表中的方括号表示可选内容，实际发送时不用带方括号。群内提示用中文双引号标出完整命令及参数，实际发送时不用带引号。
 
 | 命令 | 谁可以用 | 用途 |
 |---|---|---|
@@ -440,18 +444,18 @@ AI可以继续核对日志与现场。确认问题已解决后，管理员再发
 
 1. 正常停服。
 2. 从 B 包 `probe/` 选择**一个**与 MC 版本、加载器匹配的文件，放进该服务端 `mods/`。
-3. 正常启动，确认日志出现 `MCAI Probe 0.2.1 ready`。
+3. 正常启动，确认日志出现 `MCAI Probe 0.3.0 ready`。
 4. 照常创建排障任务，在补充中提供游戏名或坐标，AI会使用可用的探针能力。
 
 | 服务端 | 选择的 JAR |
 |---|---|
-| Forge 1.19.2（43.x） | `mcai-probe-1.19.2-forge-0.2.1.jar` |
-| Forge 1.20.1（47.x） | `mcai-probe-1.20.1-forge-0.2.1.jar` |
-| Fabric 1.20.1 | `mcai-probe-1.20.1-fabric-0.2.1.jar` |
-| Forge 1.21.1（52.x） | `mcai-probe-1.21.1-forge-0.2.1.jar` |
-| Fabric 1.21.1 | `mcai-probe-1.21.1-fabric-0.2.1.jar` |
+| Forge 1.19.2（43.x） | `mcai-probe-1.19.2-forge-0.3.0.jar` |
+| Forge 1.20.1（47.x） | `mcai-probe-1.20.1-forge-0.3.0.jar` |
+| Fabric 1.20.1 | `mcai-probe-1.20.1-fabric-0.3.0.jar` |
+| Forge 1.21.1（52.x） | `mcai-probe-1.21.1-forge-0.3.0.jar` |
+| Fabric 1.21.1 | `mcai-probe-1.21.1-fabric-0.3.0.jar` |
 
-从[0.12.0发行页](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.12.0)下载对应的Probe 0.2.1 JAR，也可从[源码构建](docs/development/probe.md#构建)。更新时正常停服，移走旧Probe后放入对应的新JAR，再启动；单独更新Probe无需升级A、B或协议。Forge版不依赖Fabric API；Fabric版需要对应 Fabric API 和 Loader 0.16.14+。不要选择 `sources` 文件；Forge JAR 不用于 NeoForge。其他 MC 版本或插件端可继续使用日志、存档和脚本诊断，探针支持范围见[完整安装说明](docs/usage/probe.md)。
+Probe 0.3.0随0.13.0的B包交付，也可从当前源码[本地构建](docs/development/probe.md#构建)。更新时正常停服，移走旧Probe后放入对应的新JAR，再启动；A、B须配套更新，Probe协议1按能力声明扩展。Forge版不依赖Fabric API；Fabric版需要对应 Fabric API 和 Loader 0.16.14+。不要选择 `sources` 文件；Forge JAR 不用于 NeoForge。其他 MC 版本或插件端可继续使用日志、存档和脚本诊断，探针支持范围见[完整安装说明](docs/usage/probe.md)。
 
 ## 日常启停、规则与备份
 
@@ -500,10 +504,10 @@ B 窗口按 Ctrl+C 正常退出会等待已接受修复，再结束辅助工作�
 
 ### 更新时保留什么
 
-1. 用`/mcailist`查看活动任务。已验收的任务用`/mcaidone 任务名`结束；其余用`/mcaistop 任务名`中止并等执行收尾。升级不迁移未结算旧调用，仅暂停不足以完成升级准备。
+1. 用`/mcailist`查看活动任务。已验收的任务用`/mcaidone 任务名`结束；其余用`/mcaistop 任务名`中止并等执行收尾。本轮工具名称和结果格式改变，不迁移未结算旧调用，仅暂停不足以完成升级准备。
 2. 停用MCAI插件或退出AstrBot，备份`AstrBot/data/plugin_data/astrbot_plugin_mcai/`及现有插件配置，保留任务历史和经验。
-3. **B已是0.10.0及之后版本时可继续连接**；要取得本轮B端修复，建议更新到0.12.0。B仍为0.9.0及更早版本时必须更新。更新B时先正常停服、关闭旧托管窗口，再退出B；用0.12.0主机包更新程序并在原B环境重新执行`.\.venv\Scripts\python.exe -m pip install -e .`。保留`host.json`、`instances.json`、`data_dir`、证书、令牌和备份，再打开新托管窗口运行原`start.bat`。
-4. 在AstrBot插件管理中更新MCAI；通过ZIP安装的实例可使用0.12.0插件包更新，或通过上面的仓库地址安装。确认版本为0.12.0，启用插件并重载或重启AstrBot。
+3. **本次必须配套更新B和所有托管窗口到0.13.0**。先正常停服、关闭旧托管窗口，再退出B；用0.13.0主机包更新程序并在原B环境重新执行`.\.venv\Scripts\python.exe -m pip install -e .`。保留`host.json`、`instances.json`、`data_dir`、证书、令牌和备份；安装Probe的服务端同时替换为对应0.3.0 JAR，再打开新托管窗口运行原`start.bat`。
+4. 在AstrBot插件管理中更新MCAI；通过ZIP安装的实例可使用0.13.0插件包更新，或通过上面的仓库地址安装。确认版本为0.13.0，启用插件并重载或重启AstrBot。
 5. 已有运行时`AGENTS.md`会保留。将插件中的`mcai/agent_rules.md`与`AstrBot/data/plugin_data/astrbot_plugin_mcai/AGENTS.md`人工合并，采用[工具升级对照](docs/usage/configuration.md#运行时规则)中的新名称、返回格式、示例及一次批准多轮执行约定，保留自己的服务器约定。
 6. 在插件设置页测试A→B连接及模型能力，再创建一个新的状态查询任务确认正常。历史记录继续保留。
 

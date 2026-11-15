@@ -42,6 +42,32 @@ Probe 0.2.0可选接入spark公开API。五个目标仅编译依赖spark API，�
 
 metrics结果在原Probe数据之外添加独立`spark`字段，包含采集时间、平均TPS、MSPT、CPU及GC。直接使用API提供的窗口和值，注明单位；未支持和未取得有效值的情况显式标注。原Probe的维度耗时、历史、对象和热点协议保持不变，不把不同来源或不同窗口的统计混合计算。
 
-`mc_players`、`mc_metrics`、`mc_objects`、`mc_profile`、`mc_inspect`为固定只读接口，不经过AI审核；后台用`mc_job_read`查询、`mc_job_wait`等待、`mc_job_cancel`取消。其他脚本、普通控制台及提案保持原审核规则，MOD不提供修改入口。
+`mc_players`、`mc_metrics`、`mc_objects`、`mc_chunks`、`mc_runtime`、`mc_profile`、`mc_inspect`为固定只读接口，不经过AI审核；后台用`mc_job_read`查询、`mc_job_wait`等待、`mc_job_cancel`取消。其他脚本、普通控制台及提案保持原审核规则，MOD不提供修改入口。
 
 目标检查按已加载UUID或方块坐标寻找，不存在时明确说明。NBT仅在指定 `nbt_path` 时读取，保留SNBT类型、子项offset/limit；大字段由现有artifact引用续读。
+
+NBT仅对单对象按需保存并复制脱离世界；保存、复制在主线程分别记录耗时，模组同步save不能被约1ms普查预算抢占。路径遍历、排序及SNBT生成在IO线程执行；单请求SNBT总量上限1MiB，超限整项省略，明确partial／原因和next_offset，建议缩小路径，不返回损坏的截断SNBT。异步计算或结果写入失败在`failures/<id>.json`记录阶段、会话、参数哈希及错误；B验证身份后明确失败。已受理的内存记录在finally清理，磁盘完全不可写时日志保留具体阶段与写入错误。
+
+## 0.3.0现场查询
+
+`mc_chunks`复用分批普查与范围参数，读取现有chunk holder、非阻塞区块引用及距离管理器的直接ticket，不创建ticket、不请求区块。每行区分实际加载、方块／实体tick就绪、有效ticket等级、原版强加载与直接ticket；直接ticket为空不排除相邻ticket传播。Forge标准ticket的mod ID、方块位置／实体UUID可核实时返回，其他来源保留原始类型与opaque key，不推断模组所有者。每区块最多256条直接ticket、5名视距范围内的附近玩家，并明确上限。
+
+`mc_inspect`读取普通方块状态及方块实体，区分越界、区块未加载和没有方块实体。实体检查补充名称、生命值、骑乘关系及玩家游戏模式；普查和热点的高频路径不额外收集这些字段。UUID未找到仅表示当前已加载集合未找到，不断言删除。结果附采集时间及Probe会话。
+
+`mc_runtime`按summary／mods／datapacks／dimensions／settings读取实际版本、加载器、已加载组件、已启用数据包、维度及当前设置。mods可引用本实例同规范目录已完成的`mc_inventory`任务；B按ID及声明版本关联，保留全部候选、版本差异与单边记录。版本匹配不证明二进制或来源文件匹配。新能力通过协议1的capabilities增量声明，未安装Probe时原磁盘工具仍可使用。
+
+## 主线程响应与ready
+
+能力文件增加实际JVM PID，`ping`在服务端主线程处理后返回同请求身份、PID、tick序号和tick控制状态。B的Probe后台任务与ready检查共用持久化请求／结果交换，编号、参数哈希和会话校验不分叉。
+
+`ready`从实例mods归档元数据识别Probe；已安装时，在匹配本次就绪日志后取得新ping回执，观察期间每秒检查，并在满足观察时长后取得最终新回执、重新检查日志和进程身份后通过。每次响应最多等待15秒且不超过原总超时。子编号由原操作、方案步骤、检查位置和请求序号组成，请求文件先落盘再发送；JVM或Probe会话变化、能力不兼容、无响应均明确失败。tick冻结和主动调速不通过固定TPS门槛判错。未安装时结果为`logs_only`并明确主线程未验证，旧能力残留不作为安装依据。该检查只说明观察期间能够响应，不代替玩家登录或性能复现。
+
+## spark限时采样
+
+`mc_profile engine=probe`保持对象实测计时；`engine=spark`默认30秒，允许15—60秒，默认服务端线程，可选全部线程或慢tick阈值，不接受区块范围。Probe通过固定Minecraft命令参数启动并要求本地保存，以注释`mcai:<操作编号>:<Probe会话>`关联报告。请求专属接收实体从不加入世界，解决Forge spark忽略CommandSourceStack.source、改取entity或server的行为；它只接收该命令的异步回执，不读取游戏世界。可选的`SparkSenderMixin`仅在spark创建本请求的命令发送者时保留其包装器，防止spark的弱引用在GC后丢失回执；取得报告或明确结束并达到保存期限后释放。没有链接spark实现类或调用其私有采样方法。
+
+两种引擎共享同实例互斥；人工前台spark已在采样时明确返回占用。取消只停止B等待，不发送全局stop／cancel，未确认结束时保留占用及`sampling_end_confirmed=false`。结束与报告保存分别记录；结束回执及时更新原文件，保存期间保留接收器和占用，最迟在采样时长加15秒的保存期限释放已确认结束的采样。迟到回执更新原文件，原cancelled／failed状态不复活；无法确认结束时保留占用到JVM退出，断线或B重启不重新采样。
+
+B在原辅助进程和共享Job Object内，用标准Protobuf运行时解析本地报告，导入前核实实例内来源路径、编号、会话及时间。保存原始bytes、SHA-256与结构化摘要；解析失败也保留已取得的原报告。摘要的调用路径区分包含子调用与自身采样权重，方法排行只累计自身权重，递归不会重复累计；组件归属只来自报告的method／line／class映射，未知保留未知。权重不是Probe实测耗时或整机CPU比例。解析上限64MiB／100万节点，展示路径最多64帧，明确被省略外层帧数。
+
+五分钟内存历史另保留最多256条≥100ms的单tick事件和维度耗时；`mc_metrics history=true`按需返回，记录容量淘汰数量。事件不会触发采样或健康结论。本轮不建立性能基线或自动性能验收。

@@ -9,6 +9,7 @@ import uuid
 from .agent_runtime import RETRY_DELAYS, progress_text, retryable
 from .client import RemoteError
 from .knowledge import Knowledge
+from .plans import plan_identity, plan_text
 from .review import digest
 from .web import WebPages
 
@@ -27,13 +28,6 @@ def message_parts(text):
 
 def occupies_instance(job):
     return job["state"] not in ("done", "stopped") or job.get("cancel_pending", False)
-
-
-def plan_text(plan):
-    text = plan["summary"]
-    if plan.get("continuation"):
-        text += f"\n允许范围：{plan['continuation']['scope']}\n完成条件：{plan['continuation']['completion']}"
-    return text
 
 
 class Tasks:
@@ -66,7 +60,7 @@ class Tasks:
         ]
         if not matches:
             raise ValueError(
-                "没有这个进行中的任务。使用 /mcailist 查看当前群任务，或 /mcaihelp 查看用法。"
+                "没有这个进行中的任务。使用 “/mcailist” 查看当前群任务，或 “/mcaihelp” 查看用法。"
             )
         return matches[0]
 
@@ -146,7 +140,7 @@ class Tasks:
         self.save(job)
         self.message(
             job,
-            f"已保存进度并暂停：{reason}。管理员使用 /mcairesume {job['name']} 续接。\n群成员可用 /mcaisay {job['name']} 内容 保存补充，暂不继续排查。",
+            f"已保存进度并暂停：{reason}。管理员使用 “/mcairesume {job['name']}” 续接。\n群成员可用 “/mcaisay {job['name']} 内容” 保存补充，暂不继续排查。",
             job["admin"],
         )
 
@@ -261,7 +255,7 @@ class Tasks:
         self.save(job)
         self.message(
             job,
-            f"开始排查。\n群成员可用 /mcaisay {name} 内容 补充线索；普通群聊不会进入任务。\n查看进度：/mcaistatus {name}",
+            f"开始排查。\n群成员可用 “/mcaisay {name} 内容” 补充线索；普通群聊不会进入任务。\n查看进度：“/mcaistatus {name}”",
         )
         self.wake(job)
         return job
@@ -414,7 +408,7 @@ class Tasks:
             raise ValueError("任务已停止接收反馈")
         if job.get("say_paused", False) and not is_admin:
             raise ValueError(
-                f"「{job['name']}」：已暂停普通成员 say 接收，本条未保存；管理员仍可补充，或使用 /mcaisaymode {job['name']} true 恢复。"
+                f"「{job['name']}」：已暂停普通成员 say 接收，本条未保存；管理员仍可补充，或使用 “/mcaisaymode {job['name']} true” 恢复。"
             )
         label = (
             "【管理员补充】"
@@ -447,7 +441,8 @@ class Tasks:
         steps,
         script_hashes=None,
         reviewed=None,
-        launcher_identity=None,
+        effective_steps=None,
+        review_configuration=None,
         proposal_id=None,
         continuation=None,
         plan_id=None,
@@ -458,6 +453,10 @@ class Tasks:
         if not steps:
             raise ValueError("修复步骤不能为空")
         plan = {"summary": summary, "steps": steps, "offline": True}
+        if effective_steps is not None:
+            plan.update(steps=effective_steps, prepared=True)
+        if review_configuration is not None:
+            plan["review_configuration"] = review_configuration
         if proposal_id is not None:
             plan["id"] = proposal_id
         if continuation is not None:
@@ -467,8 +466,7 @@ class Tasks:
             plan["plan_id"] = plan_id
         if reviewed is not None:
             plan.update(script_hashes=script_hashes, reviewed=reviewed)
-            if launcher_identity:
-                plan["launcher_identity"] = launcher_identity
+            reviewed["arguments_hash"] = plan_identity(plan)
         if job.get("directory"):
             plan["expected_directory"] = job["directory"]
         if plan_id is not None:
@@ -485,15 +483,10 @@ class Tasks:
         job["plan"] = plan
         self.save(job)
         self.log(job, "plan", plan=job["plan"])
-        unbacked = any(
-            step["action"] == "command" and not step.get("backup_paths")
-            for step in steps
-        )
-        note = "\n在线命令无恢复备份。" if unbacked else ""
-        hints = f"\n管理员批准：/mcaiapply {job['name']}\n需补充或调整：/mcaisay {job['name']} 内容"
+        hints = f"\n管理员批准：“/mcaiapply {job['name']}”\n需补充或调整：“/mcaisay {job['name']} 内容”"
         self.message(
             job,
-            plan_text(plan) + f"{note}{hints}",
+            plan_text(plan) + hints,
             job["admin"],
         )
 
@@ -563,11 +556,11 @@ class Tasks:
     def approve(self, job):
         if job["state"] == "paused":
             raise ValueError(
-                f"任务已暂停，管理员请先使用 /mcairesume {job['name']} 续接。"
+                f"任务已暂停，管理员请先使用 “/mcairesume {job['name']}” 续接。"
             )
         if not job["plan"]:
             raise ValueError(
-                f"当前没有待批准的修复方案。使用 /mcaistatus {job['name']} 查看进度，或 /mcaisay {job['name']} 内容 补充线索。"
+                f"当前没有待批准的修复方案。使用 “/mcaistatus {job['name']}” 查看进度，或 “/mcaisay {job['name']} 内容” 补充线索。"
             )
         if job["state"] == "applying":
             raise ValueError("修复已在执行")
@@ -593,7 +586,7 @@ class Tasks:
     def stop(self, job, done=False):
         if done and job["state"] == "applying":
             raise ValueError(
-                f"修复正在执行，请完成后验收，或使用 /mcaistop {job['name']} 中止。"
+                f"修复正在执行，请完成后验收，或使用 “/mcaistop {job['name']}” 中止。"
             )
         job["stop_requested"] = True
         job["cancel_pending"] = True
@@ -662,10 +655,12 @@ class Tasks:
                 + (" · 补充仅管理员" if item.get("say_paused", False) else "")
             )
         if not rows:
-            return "当前群没有活动任务。管理员可用 /mcainew 任务名 问题描述 创建。"
-        lines.append("查看详情：/mcaistatus 任务名；补充线索：/mcaisay 任务名 内容。")
+            return "当前群没有活动任务。管理员可用 “/mcainew 任务名 问题描述” 创建。"
+        lines.append(
+            "查看详情：“/mcaistatus 任务名”；补充线索：“/mcaisay 任务名 内容”。"
+        )
         if page < pages:
-            lines.append(f"下一页：/mcailist {page + 1}")
+            lines.append(f"下一页：“/mcailist {page + 1}”")
         return "\n".join(lines)
 
     def wake(self, job):

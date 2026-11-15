@@ -70,6 +70,12 @@ def variants(key, entries):
 
 
 SCRIPT_FILES = {
+    "evidence_ids": {
+        "type": "array",
+        "items": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
+        "uniqueItems": True,
+        "description": "本次依据的已结算工具结果evidence_id；程序提供原始参数、结果和采集目标。无关证据无需引用。",
+    },
     "script_files": {
         "type": "array",
         "items": STRING,
@@ -381,7 +387,7 @@ TOOLS = [
     ),
     (
         "mc_verify",
-        "验证实例file格式、text文本、nbt/region值、ready控制台就绪或tcp端口。ready须提供after，session_id可固定会话；方案内可继承start/restart游标。端口监听不证明登录成功；后台沿next_call读取。",
+        "验证文件/文本/NBT、启动就绪或TCP。ready须after，可固定session_id；方案内可继承start/restart游标。已装Probe时还须本次主线程响应，未装仅日志就绪；端口不证明登录成功。后台沿next_call读取。",
         contract(
             {"checks": {**CHECKS, "items": {"$ref": "#/$defs/standalone_check"}}},
             ("checks",),
@@ -437,6 +443,24 @@ TOOLS = [
         ),
     ),
     (
+        "mc_chunks",
+        "需Probe；分批查询已加载区块的加载/tick状态、有效ticket等级、直接ticket、可核实的强加载所有者与附近玩家。不加载区块；直接ticket不代表全部传播原因。后台沿next_call读取。",
+        probe_range({"top": {"type": "integer", "minimum": 1, "maximum": 1000}}),
+    ),
+    (
+        "mc_runtime",
+        "需Probe；读取实际运行的版本、模组、已启用数据包、维度或生效设置。section默认summary；mods可带inventory_job_id，与本实例同目录已完成磁盘清单比较，版本相同不证明二进制相同。后台沿next_call读取。",
+        contract(
+            {
+                "section": {
+                    "enum": ["summary", "mods", "datapacks", "dimensions", "settings"]
+                },
+                "dimension": STRING,
+                "inventory_job_id": STRING,
+            }
+        ),
+    ),
+    (
         "mc_objects",
         "需Probe；普查已加载对象，不加载区块，数量不代表耗时。按scope限定范围，后台沿next_call读取。",
         probe_range(
@@ -453,22 +477,51 @@ TOOLS = [
     ),
     (
         "mc_profile",
-        "需Probe；短时实测已加载实体/骑乘实体/方块实体tick，每实例一个。仅代表已观测耗时；后台沿next_call读取，mc_job_cancel取消。",
-        probe_range(
-            {
-                "seconds": {"type": "integer", "minimum": 1, "maximum": 30},
-                "type": STRING,
-                "group_by": {
-                    "type": "string",
-                    "enum": ["chunk", "type", "object", "dimension"],
-                },
-                "top": {"type": "integer", "minimum": 1, "maximum": 1000},
-            }
-        ),
+        "需Probe；engine默认probe，实测对象tick(须scope，默认10秒，上限30)。spark模式默认30秒、15至60秒，保存本地调用栈并解析采样权重，不支持区块范围。每实例一个；后台沿next_call读取。取消spark只停止等待，采样按原限时结束。",
+        {
+            "type": "object",
+            "oneOf": [
+                probe_range(
+                    {
+                        "engine": {"enum": ["probe"]},
+                        "seconds": {"type": "integer", "minimum": 1, "maximum": 30},
+                        "type": STRING,
+                        "group_by": {
+                            "type": "string",
+                            "enum": ["chunk", "type", "object", "dimension"],
+                        },
+                        "top": {"type": "integer", "minimum": 1, "maximum": 1000},
+                    }
+                ),
+                contract(
+                    {
+                        "engine": {"enum": ["spark"]},
+                        "seconds": {
+                            "type": "integer",
+                            "minimum": 15,
+                            "maximum": 60,
+                            "description": "spark采样秒数，默认30，上限60。",
+                        },
+                        "threads": {
+                            "enum": ["server", "all"],
+                            "description": "默认server，仅服务端线程；all采样全部线程。",
+                        },
+                        "only_ticks_over_ms": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 60000,
+                            "description": "只纳入超过指定毫秒数的tick，省略采集全部；份额仅相对于纳入样本。",
+                        },
+                        "top": {"type": "integer", "minimum": 1, "maximum": 1000},
+                    },
+                    ("engine",),
+                ),
+            ],
+        },
     ),
     (
         "mc_inspect",
-        "需Probe；按UUID或方块位置检查已加载对象。省略nbt_path返回关键状态，提供路径读取NBT；offset/limit分页。后台沿next_call读取；目标消失或卸载明确返回。",
+        "需Probe；按UUID查已加载实体状态/骑乘关系，或按坐标读普通方块状态及方块实体。明确未加载/越界；UUID未找到不证明删除。nbt_path按需读取NBT，offset/limit分页。后台沿next_call读取。",
         variants(
             "target",
             {

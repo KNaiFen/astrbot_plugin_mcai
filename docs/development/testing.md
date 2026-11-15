@@ -6,6 +6,8 @@
 
 ## 当前验证
 
+2026-11-15，群命令提示与多行内容修正：帮助、状态、方案批准、暂停续接、任务列表和错误提示统一用中文双引号标出完整命令及参数，主模型提示同步要求此格式。`/mcainew`、`/mcaisay`按空白分隔命令和任务名，任务名后的整段正文保留内部空格、制表符、换行和空行。先用原生消息管道复现任务名后换行被错误解析，再扩展现有引用／无引用创建、成员补充及暂停保存场景，检查SQLite与实际模型请求中的完整内容。AstrBot v4.29.4原生群命令、say控制及Chat／Responses一次批准多批流程共21项全部通过、零跳过（117.42秒）；证据为`runtime/command-content-before.log`、`command-content.log`及`command-content.xml`。模型和发送边界受控，未联调真实QQ或计费模型。消融审查保留两处分隔解析与既有发送入口的字面量提示，复用现有任务状态、持久化和runner。
+
 2026-11-15，0.12.0发行验收：插件metadata、Python包及产品头同步为0.12.0，协议保持`mcai-4`，Probe为0.2.1五目标。两端ZIP及完整源码包分别为55、111、204个文件，检查归档完整性、源码一致性、模块、规则模板与许可，两端各135个本地文档链接／锚点通过。Java与Probe源码／构建来源沿用冻结版本，复用的12个JAR内部文件逐项匹配既有受测产物；只重新打包源码与文档，未重新执行Java／Probe编译或实服矩阵。
 
 由解压B包离线构建0.12.0 wheel并独立安装，从空工作目录以解压A包执行4项代表集成，全部通过、零跳过（42.97秒）；51个已加载模块路径确认B及worker来自独立site、A来自解压插件。覆盖自然语言目标、网页下载、独立审核／批准、安装备份／恢复、验收归档、CLI，以及Chat／Responses一次批准三批执行。证据为`runtime/release-0.12.0/`中的`installed.*`、`import-proof.json`、`jar-comparison.json`、`archives-initial.json`及`validation.json`。真实计费模型、QQ、生产服及Probe实服组合未重跑。
@@ -168,10 +170,10 @@ $env:PYTHONPATH = "$PWD/runtime/astrbot-4.29.4"
 | 存档读写、NBT／区域／方块、Java、备份恢复或共用操作上下文 | `tests/world_compatibility.py` | 数据类型、版本打包、MCR／MCC、第三方编解码器及恢复边界 |
 | 模型适配、搜索、进度流、能力检测、OpenAI SDK或相关依赖 | `tests/api_compatibility.py` | Chat／Responses详细协议、流式错误、SDK重试及搜索能力矩阵 |
 
-例如修改两类共用代码时，一次执行核心和两个专项：
+例如修改两类共用代码时，核心回归按上方命令执行一次，再合并运行两个专项。不要同时把父目录和专项文件传给pytest：当前版本会将目录中未匹配默认文件名的专项去重掉。
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests tests/world_compatibility.py tests/api_compatibility.py -q --require-astrbot
+.\.venv\Scripts\python.exe -m pytest tests/world_compatibility.py tests/api_compatibility.py -q --require-astrbot
 ```
 
 两个专项文件刻意不使用`test_`前缀，默认不收集；它们保留有用的格式和适配器差异，不按普通功能改动反复执行。新测试先确认现有流程是否已覆盖；能在已有完整场景中增加必要断言，就不再复制一套启动／关闭流程。
