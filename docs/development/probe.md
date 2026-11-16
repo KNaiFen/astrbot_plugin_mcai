@@ -30,6 +30,22 @@ Forge1.21.1使用官方运行时映射，关闭reobf并移除SRG refmap；开发
 
 新版本发行JAR另在Forge1.7.10／Java21完成`--fake-player`完整安装版流程（含spark默认／全部线程／慢tick、取消与迟到回执），Forge1.20.1完成安装版`--fake-player`；均通过并正常退出，能力文件实际报告Probe0.4.0。记录为`runtime/release-0.14.0-probe.log`。前述七目标功能与Java21有／无spark验收在相同实现的Probe0.3.0上完成，版本变更不冒充重跑全部历史压力结果。
 
+## CatServer 1.16.5兼容修复（2026-11-16）
+
+用户日志中的Probe0.4.0在预加载阶段被Forge版本检查拒绝：CatServer `1.16.5-1d8d6313`内置Forge36.2.39，发行元数据却把构建基线36.2.42当成最低要求。此时尚未执行Probe初始化或Mixin，Java11反射提示不是本次停服原因。最小产品修正仅将1.16.5 `mods.toml`的Forge范围从`[36.2.42,37)`改为`[36.2.39,37)`；继续在36.2.42上构建，不增加CatServer分支、禁用计时或吞掉Mixin失败。
+
+使用官方23.05.26-1资产`CatServer-1.16.5-1d8d6313-server.jar`（SHA-256 `8edea98c597e7af44a45ef9093678c38ca3749d55a71cdff10218c1c6b946fd0`），在Windows／Temurin11.0.21隔离服运行Probe与spark1.9.1。完整有spark流程通过玩家／对象／普通方块／NBT、区块与运行时、模拟玩家多实例／跨维度／删除／区块释放／重启不恢复、对象计时、spark默认／全部线程／慢tick报告、人工占用、取消与迟到回执、大NBT输出限制及IO故障回执。无spark流程亦通过，结束恢复原spark JAR。记录为`runtime/catserver-1165-real-final.log`、`catserver-1165-present-server.log`、`catserver-1165-absent.log`及`catserver-1165-absent-validation.json`。未加载任何第三方Bukkit插件或用户ISG整合包，因此不扩展为全部混合端／整合包兼容保证。
+
+标准Forge36.2.39／Java8对照的安装版`--fake-player --expect-spark present`通过，记录为`runtime/forge-36.2.39-compat-final.log`与`forge-36.2.39-validation.json`。首次对照因测试器使用新版`minecraft:flat`标识而生成普通地形，掉落物离开断言区块；改为1.16.5原生`flat`后，在保留旧世界现场并新建隔离世界的条件下重跑通过。CatServer首次依赖安装后的同进程EOF及一次重启读取能力文件时的Windows临时共享冲突保留在初始日志，重新独立启动后的最终完整流程通过；没有为这些现象增加产品兜底。
+
+现有实服脚本增加`--server-jar`与`--java-home`，要求单目标`--installed`，用JAR父目录运行并以目录名保存独立报告；复用同一套验收逻辑，不另造混合端测试框架。示例：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/test_probe_servers.py forge1165 --installed --server-jar runtime/probe-catserver1165/CatServer-1.16.5-1d8d6313-server.jar --java-home runtime/probe-build/jdk11 --fake-player --spark-profile --io-check --expect-spark present
+```
+
+修复构建JAR的SHA-256为`fc5a470aa9c72ed290b91827f2802d3f275880278bad5a102c6ced4f72dcd01b`。本轮仅本地修复与提交，未覆盖v0.14.0公开附件或推送main；公开原包仍有旧下限。
+
 ## 可重复验证
 
 ### 核心拆分：现有五目标回归（2026-11-15）

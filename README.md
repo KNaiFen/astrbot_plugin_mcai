@@ -29,9 +29,9 @@
 
 ## 安装前准备
 
-当前插件版本为 **0.14.0**，配套Probe **0.4.0**，新增Forge 1.16.5／1.7.10支持和七目标临时模拟玩家，修复托管窗口标题与启动显示。区块与运行时查询、主线程响应验证、spark限时本地采样及审核恢复流程继续可用。可通过[插件仓库main](https://github.com/KNaiFen/astrbot_plugin_mcai/tree/main)安装或更新A。本版使用`mcai-5`，**A、B与托管窗口须配套更新**；0.12.0及更早版本的`mcai-4`程序不能混用。从旧版升级先阅读[更新说明](#更新时保留什么)，能力边界见[运维工具](docs/usage/operations.md#文件存档与故障取证)。
+当前插件版本为 **0.14.1**，修复长任务上下文压缩失败，支持分批摘要并保留原始证据和最近交互，已有暂停任务可在更新后续接。配套Probe仍为 **0.4.0**，包含七目标临时模拟玩家，并修正Forge 1.16.5的最低版本为36.2.39，补充CatServer验证说明。可通过[插件仓库main](https://github.com/KNaiFen/astrbot_plugin_mcai/tree/main)安装或更新A。本版继续使用`mcai-5`；**从0.12.0及更早版本升级须配套更新A、B和托管窗口**，不能混用`mcai-4`程序。升级先阅读[更新说明](#更新时保留什么)，能力边界见[运维工具](docs/usage/operations.md#文件存档与故障取证)。
 
-首次部署与本次升级均使用配套0.14.0的 `mcai_windows_host.zip`，其中包含七目标Probe0.4.0；可从当前完整源码[构建两端发行包](docs/development/README.md#构建与发行)。既有0.12.0公开附件仍使用`mcai-4`与Probe0.2.1，历史附件按对应版本配套使用。
+首次部署或更新B时使用配套0.14.1的 `mcai_windows_host.zip`，其中包含七目标Probe0.4.0；可从当前完整源码[构建两端发行包](docs/development/README.md#构建与发行)。既有0.12.0公开附件仍使用`mcai-4`与Probe0.2.1，历史附件按对应版本配套使用。
 
 ### 软件与版本
 
@@ -272,7 +272,7 @@ Set-Location -LiteralPath 'D:\MCAI'
 
 在 AstrBot **插件管理页**使用 ZIP 安装入口，选择配套的 `astrbot_plugin_mcai.zip`，等待安装依赖并启用插件。找到显示名称为 **“MC 排障助手”**、插件标识为 `astrbot_plugin_mcai` 的插件，打开其**设置视图**，页面标题为“MCAI 设置”。
 
-也可以通过仓库地址安装：[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)，默认main为0.14.0。安装前配套更新B和所有托管窗口至0.14.0，确认使用`mcai-5`；部署步骤见[安装前准备](#安装前准备)。
+也可以通过仓库地址安装：[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)，默认main为0.14.1。首次部署或从旧协议升级时，配套更新B和所有托管窗口，确认使用`mcai-5`；已有0.14.0环境按[更新说明](#更新时保留什么)处理，部署步骤见[安装前准备](#安装前准备)。
 
 若安装依赖时出现 `WinError 5`，并指向 `charset_normalizer` 或 `__mypyc*.pyd`，完全退出 AstrBot 后，按[安装依赖时拒绝访问](docs/usage/operations.md#安装依赖时拒绝访问)预装依赖，再启动 AstrBot 重试安装。
 
@@ -451,14 +451,14 @@ AI可以继续核对日志与现场。确认问题已解决后，管理员再发
 | 服务端 | 选择的 JAR |
 |---|---|
 | Forge 1.7.10（10.13.4.1614，配套lwjgl3ify 3.1.0与UniMixins 0.3.2） | `mcai-probe-1.7.10-forge-0.4.0.jar` |
-| Forge 1.16.5（36.2.42） | `mcai-probe-1.16.5-forge-0.4.0.jar` |
+| Forge 1.16.5（36.2.39+，36.x） | `mcai-probe-1.16.5-forge-0.4.0.jar` |
 | Forge 1.19.2（43.x） | `mcai-probe-1.19.2-forge-0.4.0.jar` |
 | Forge 1.20.1（47.x） | `mcai-probe-1.20.1-forge-0.4.0.jar` |
 | Fabric 1.20.1 | `mcai-probe-1.20.1-fabric-0.4.0.jar` |
 | Forge 1.21.1（52.x） | `mcai-probe-1.21.1-forge-0.4.0.jar` |
 | Fabric 1.21.1 | `mcai-probe-1.21.1-fabric-0.4.0.jar` |
 
-Probe 0.4.0随0.14.0的B包交付，也可从当前源码[本地构建](docs/development/probe.md#构建)。更新时正常停服，移走旧Probe后放入对应的新JAR，再启动；A、B须配套更新，Probe协议1按能力声明扩展。1.16.5使用Java8；1.7.10已在标准Forge＋lwjgl3ify＋UniMixins上验证Java17／21，GTNH整合包须另测。Forge版不依赖Fabric API；Fabric版需要对应 Fabric API 和 Loader 0.16.14+。不要选择 `sources` 文件；Forge JAR 不用于 NeoForge。临时模拟玩家的创建、删除与参数见[使用说明](docs/usage/probe.md#临时模拟玩家)。
+Probe 0.4.0随0.14.1的B包交付，也可从当前源码[本地构建](docs/development/probe.md#构建)。更新时正常停服，移走旧Probe后放入对应的新JAR，再启动；A、B须配套更新，Probe协议1按能力声明扩展。1.16.5使用Java8；1.7.10已在标准Forge＋lwjgl3ify＋UniMixins上验证Java17／21，GTNH整合包须另测。Forge版不依赖Fabric API；Fabric版需要对应 Fabric API 和 Loader 0.16.14+。不要选择 `sources` 文件；Forge JAR 不用于 NeoForge。临时模拟玩家的创建、删除与参数见[使用说明](docs/usage/probe.md#临时模拟玩家)。
 
 ## 日常启停、规则与备份
 
@@ -507,10 +507,14 @@ B 窗口按 Ctrl+C 正常退出会等待已接受修复，再结束辅助工作�
 
 ### 更新时保留什么
 
+从 **0.14.0升级到0.14.1** 时，任务格式、工具和`mcai-5`协议不变。先暂停活动任务并等待执行收尾，停用MCAI插件或退出AstrBot，备份并保留插件配置、任务数据、经验及运行时`AGENTS.md`，再更新A并重载；原有暂停任务可用“/mcairesume 任务名”续接。已有0.14.0的B和托管窗口可继续运行。需要Forge 1.16.5最低版本修正时，另在正常停服后替换本版对应Probe JAR，再启动服务端。
+
+从 **0.12.0及更早版本** 升级时，按以下完整流程更新两端与托管窗口：
+
 1. 用`/mcailist`查看活动任务。已验收的任务用`/mcaidone 任务名`结束；其余用`/mcaistop 任务名`中止并等执行收尾。本轮工具名称和结果格式改变，不迁移未结算旧调用，仅暂停不足以完成升级准备。
 2. 停用MCAI插件或退出AstrBot，备份`AstrBot/data/plugin_data/astrbot_plugin_mcai/`及现有插件配置，保留任务历史和经验。
-3. **本次必须配套更新B和所有托管窗口到0.14.0**。先正常停服、关闭旧托管窗口，再退出B；用0.14.0主机包更新程序并在原B环境重新执行`.\.venv\Scripts\python.exe -m pip install -e .`。保留`host.json`、`instances.json`、`data_dir`、证书、令牌和备份；安装Probe的服务端同时替换为对应0.4.0 JAR，再打开新托管窗口运行原`start.bat`。
-4. 在AstrBot插件管理中更新MCAI；通过ZIP安装的实例可使用0.14.0插件包更新，或通过上面的仓库地址安装。确认版本为0.14.0，启用插件并重载或重启AstrBot。
+3. **配套更新B和所有托管窗口到0.14.1**。先正常停服、关闭旧托管窗口，再退出B；用0.14.1主机包更新程序并在原B环境重新执行`.\.venv\Scripts\python.exe -m pip install -e .`。保留`host.json`、`instances.json`、`data_dir`、证书、令牌和备份；安装Probe的服务端同时替换为对应0.4.0 JAR，再打开新托管窗口运行原`start.bat`。
+4. 在AstrBot插件管理中更新MCAI；通过ZIP安装的实例可使用0.14.1插件包更新，或通过上面的仓库地址安装。确认版本为0.14.1，启用插件并重载或重启AstrBot。
 5. 已有运行时`AGENTS.md`会保留。将插件中的`mcai/agent_rules.md`与`AstrBot/data/plugin_data/astrbot_plugin_mcai/AGENTS.md`人工合并，采用[工具升级对照](docs/usage/configuration.md#运行时规则)中的新名称、返回格式、示例及一次批准多轮执行约定，保留自己的服务器约定。
 6. 在插件设置页测试A→B连接及模型能力，再创建一个新的状态查询任务确认正常。历史记录继续保留。
 

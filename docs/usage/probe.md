@@ -15,7 +15,7 @@ MCAI Probe 只安装在服务端，让 AI 获取当前玩家位置、全服与�
 | Minecraft | 加载器 | 文件 | Java |
 |---|---|---|---|
 | 1.7.10 | Forge 10.13.4.1614 + lwjgl3ify 3.1.0 + UniMixins 0.3.2 | `mcai-probe-1.7.10-forge-0.4.0.jar` | 17／21 |
-| 1.16.5 | Forge 36.2.42 | `mcai-probe-1.16.5-forge-0.4.0.jar` | 8 |
+| 1.16.5 | Forge 36.2.39+（36.x） | `mcai-probe-1.16.5-forge-0.4.0.jar` | 8 |
 | 1.19.2 | Forge 43.x | `mcai-probe-1.19.2-forge-0.4.0.jar` | 17 |
 | 1.20.1 | Forge 47.x | `mcai-probe-1.20.1-forge-0.4.0.jar` | 17 |
 | 1.20.1 | Fabric | `mcai-probe-1.20.1-fabric-0.4.0.jar` | 17 |
@@ -23,6 +23,8 @@ MCAI Probe 只安装在服务端，让 AI 获取当前玩家位置、全服与�
 | 1.21.1 | Fabric | `mcai-probe-1.21.1-fabric-0.4.0.jar` | 21 |
 
 Probe 0.4.0随0.14.0的B包交付，也可从当前源码[本地构建](../development/probe.md#构建)。更新时正常停服，移走旧Probe后放入对应的新JAR，再启动；A、B须配套更新，Probe协议1按能力声明扩展。Forge版不依赖Fabric API；Fabric版需要对应版本的 Fabric API 和 Loader 0.16.14+。Forge 包内包含 MixinExtras；不要安装 `sources` 源码包。1.21.1 Forge JAR 不能用于 NeoForge。1.7.10 当前基线是标准 Forge + lwjgl3ify + UniMixins，不包含 GTNH 整合包验证。
+
+1.16.5当前源码将Forge下限修正为36.2.39，已验证CatServer `1.16.5-1d8d6313`（官方23.05.26发行，Forge36.2.39／Java11.0.21）和标准Forge36.2.39；构建基线仍为36.2.42。v0.14.0已发布的原始Probe0.4.0附件仍声明36.2.42下限，遇到版本门槛报错需使用包含此修复的构建。混合端验证仅覆盖上述版本的隔离Probe／spark环境，其他插件及整合包组合需另测。
 
 B 配置的实例目录应与 BAT 启动 Java 时的工作目录一致。MOD 在工作目录生成 `.mcai-probe/`，B 自动发现，无额外配置。启动日志显示 `MCAI Probe 0.4.0 ready` 后即可使用。
 

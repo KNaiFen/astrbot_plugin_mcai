@@ -83,11 +83,31 @@ def retryable(error):
     )
 
 
-async def model_request(tasks, job, stage, call, attempts, *, pause_on_error=True):
+def context_length_error(error):
+    return bool(
+        re.search(
+            r"context[_ ](?:length[_ ]exceeded|window[_ ]exceeded)|maximum context length|input exceeds the context window",
+            str(error),
+            re.I,
+        )
+    )
+
+
+async def model_request(
+    tasks,
+    job,
+    stage,
+    call,
+    attempts,
+    *,
+    pause_on_error=True,
+    recover_context=None,
+    check_stop=True,
+):
     saved = job.get("model_retry", {})
-    start = saved.get("attempt", 0) if saved.get("stage") == stage else 0
-    for attempt in range(start, attempts):
-        if job["stop_requested"]:
+    attempt = saved.get("attempt", 0) if saved.get("stage") == stage else 0
+    while attempt < attempts:
+        if check_stop and job["stop_requested"]:
             raise asyncio.CancelledError
         job["model_retry"] = {"stage": stage, "attempt": attempt + 1}
         tasks.save(job)
@@ -101,15 +121,33 @@ async def model_request(tasks, job, stage, call, attempts, *, pause_on_error=Tru
             job["model_retry"]["error"] = f"{type(exc).__name__}: {exc}"
             tasks.log(job, "model_attempt_failed", **job["model_retry"])
             tasks.save(job)
+            if recover_context is not None and context_length_error(exc):
+                try:
+                    await recover_context(exc)
+                except (asyncio.CancelledError, ReviewInvalidated, ModelUnavailable):
+                    raise
+                except Exception as recovery_error:
+                    job["model_retry"] = {
+                        "stage": stage,
+                        "attempt": attempt + 1,
+                        "error": f"{type(recovery_error).__name__}: {recovery_error}",
+                    }
+                    tasks.log(job, "context_compaction_failed", **job["model_retry"])
+                    tasks.save(job)
+                    break
+                # This is a new, smaller request, not a transport retry.
+                job.pop("model_retry", None)
+                continue
             if not retryable(exc) or attempt + 1 == attempts:
                 break
             deadline = asyncio.get_running_loop().time() + RETRY_DELAYS[min(attempt, 1)]
             while asyncio.get_running_loop().time() < deadline:
-                if job["stop_requested"]:
+                if check_stop and job["stop_requested"]:
                     raise asyncio.CancelledError
                 await asyncio.sleep(
                     min(0.1, max(0, deadline - asyncio.get_running_loop().time()))
                 )
+            attempt += 1
         else:
             job.pop("model_retry", None)
             tasks.save(job)
@@ -298,6 +336,8 @@ class MainProvider:
             capture,
         )
         self.stream_unavailable = False
+        self.last_response = None
+        self.final_text = ""
         self.inject = inject
         self.input_ready = asyncio.Event()
 
@@ -305,9 +345,29 @@ class MainProvider:
         while True:
             self.input_ready.clear()
             if self.inject:
-                await self.inject(kwargs)
+                try:
+                    await self.inject(kwargs)
+                except (asyncio.CancelledError, ReviewInvalidated, ModelUnavailable):
+                    raise
+                except Exception as exc:
+                    self.tasks.log(
+                        self.job, "context_compaction_failed", error=str(exc)
+                    )
+                    self.tasks.pause(self.job, str(exc))
+                    raise ModelUnavailable(str(exc)) from exc
             operation = asyncio.create_task(
-                model_request(self.tasks, self.job, "排障模型", call, self.attempts)
+                model_request(
+                    self.tasks,
+                    self.job,
+                    "排障模型",
+                    call,
+                    self.attempts,
+                    recover_context=(
+                        (lambda error: self.inject(kwargs, force=True))
+                        if self.inject
+                        else None
+                    ),
+                )
             )
             incoming = asyncio.create_task(self.input_ready.wait())
             try:

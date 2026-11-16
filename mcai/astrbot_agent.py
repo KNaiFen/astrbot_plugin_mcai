@@ -25,13 +25,14 @@ from .agent_runtime import (
     ReviewInvalidated,
     check_review_feedback,
     effort_provider,
+    model_request,
     progress_provider,
     request_provider,
     response_messages,
     search_provider,
 )
 from .client import RemoteError
-from .context_budget import fit_history
+from .context_budget import context_identity, fit_history, summary_messages
 from .plans import plan_identity
 from .review import REVIEW_VERSION, digest
 from .tool_results import model_result
@@ -688,8 +689,21 @@ class AstrBotAgent:
                 arguments,
             )
 
+        request_snapshot = None
+
         def capture(response):
+            if (
+                request_snapshot is not None
+                and response.usage is not None
+                and response.usage.input > 0
+            ):
+                job["context_usage"] = {
+                    **request_snapshot,
+                    "input_tokens": response.usage.input,
+                    "output_tokens": response.usage.output,
+                }
             if not response.tools_call_name:
+                tasks.save(job)
                 return
             if job.get("open_step"):
                 raise RuntimeError("前一工具步骤尚未结算")
@@ -857,6 +871,9 @@ class AstrBotAgent:
         provider = effort_provider(provider, self.reasoning_effort)
         budget_provider = provider
         provider = traced_provider(provider, tasks.store, job["id"], "排障模型")
+        # MCAI owns task history and archival. Disable only the native runner's
+        # request-time truncation on this private view, retaining the real budget.
+        provider.provider_config["max_context_tokens"] = 0
         tasks.log(
             job,
             "progress_configuration",
@@ -897,11 +914,11 @@ class AstrBotAgent:
                 ),
             )
 
-        async def inject(kwargs):
+        async def inject(kwargs, *, force=False):
+            nonlocal request_snapshot
             pending = tasks.drain(job)
-            if not pending:
-                return
-            wrapper.messages.append(Message(role="user", content=pending))
+            if pending:
+                wrapper.messages.append(Message(role="user", content=pending))
             job["messages"] = clean_history(
                 [
                     item.model_dump(mode="json")
@@ -918,12 +935,18 @@ class AstrBotAgent:
                 job["messages"],
                 system,
                 tools=tool_definitions,
+                force=force,
             )
             wrapper.messages[:] = [
                 *[item for item in wrapper.messages if item.role == "system"],
                 *[load_message(item) for item in fitted],
             ]
             kwargs["contexts"] = list(wrapper.messages)
+            request_snapshot = {
+                "identity": context_identity(budget_provider, system, tool_definitions),
+                "messages": len(fitted),
+                "prefix": digest(fitted),
+            }
 
         provider = MainProvider(
             provider, tasks, job, self.attempts, capture, inject=inject
@@ -952,9 +975,6 @@ class AstrBotAgent:
             "\n本轮执行进度汇报转发已开启。按规则文件中的通道约定和中途进度说明输出，commentary 会转发到群。不要输出推理过程或逐条工具日志，也不用 mc_say 重复发送进度。"
             if stream
             else "\n本轮执行进度汇报转发已关闭，commentary 仅保存本地，不通过 mc_say 绕过开关；必要提问和最终答复照常发送到群。"
-        )
-        job["messages"] = await fit_history(
-            tasks, job, budget_provider, job["messages"], system, tools=tool_definitions
         )
         wrapper = AgentContextWrapper(
             context=AstrAgentContext(context=self.context, event=event),
@@ -1002,26 +1022,7 @@ class AstrBotAgent:
                     ],
                     copy_messages=False,
                 )
-                if not job.get("open_step"):
-                    history = job["messages"]
-                    fitted = await fit_history(
-                        tasks,
-                        job,
-                        budget_provider,
-                        job["messages"],
-                        system,
-                        tools=tool_definitions,
-                    )
-                    if fitted is not history:
-                        system_messages = [
-                            item for item in wrapper.messages if item.role == "system"
-                        ]
-                        wrapper.messages[:] = [
-                            *system_messages,
-                            *[load_message(item) for item in fitted],
-                        ]
-                else:
-                    tasks.save(job)
+                tasks.save(job)
                 async for event in runner.step():
                     if event.type == "tool_call" and job.get("open_step"):
                         call_id = event.data["chain"].chain[0].data["id"]
@@ -1123,32 +1124,56 @@ class AstrBotAgent:
             }
             for item in [*job["feedback"], *job.get("repairs", [])]
         )
-        messages = await fit_history(
-            tasks, job, provider, history, self.rules(), archive=True
-        )
-        for message in messages:
-            if isinstance(message.get("content"), list):
-                message["content"] = [
-                    part for part in message["content"] if part.get("type") != "think"
-                ]
         payload = {
             "task": job["name"],
             "directory": job["directory"],
             "report": job["report"],
-            "messages": messages,
             "verification": "管理员已验收；具体效果以保存的反馈和工具事实为准",
         }
-        response = await traced_provider(
-            request_provider(provider), tasks.store, job["id"], "验收总结"
-        ).text_chat(
-            prompt=json.dumps(payload, ensure_ascii=False),
-            contexts=[],
-            func_tool=None,
-            request_max_retries=1,
-            system_prompt="你整理已验收的 MC 运维与排障经验，不执行工具。用中文 Markdown 分节记录：任务目标与环境、依据或故障原因、实际操作、失败尝试、备份与恢复线索、验证结果、适用条件、来源。只写事实，不臆测；日常运维无故障时不编造症状或原因，故障原因未知就写未知，不能把管理员验收当成所有推测已证实。不含审核申报或审核响应。\n"
+        system = (
+            "你整理已验收的 MC 运维与排障经验，不执行工具。用中文 Markdown 分节记录：任务目标与环境、依据或故障原因、实际操作、失败尝试、备份与恢复线索、验证结果、适用条件、来源。只写事实，不臆测；日常运维无故障时不编造症状或原因，故障原因未知就写未知，不能把管理员验收当成所有推测已证实。不含审核申报或审核响应。\n"
             + TASK_POLICY
-            + self.rules(),
+            + self.rules()
         )
-        if response.role == "err":
-            raise RuntimeError(response.completion_text)
+
+        async def prepare(error=None):
+            nonlocal history
+            history = await fit_history(
+                tasks,
+                job,
+                provider,
+                history,
+                system,
+                archive=True,
+                force=error is not None,
+                payload=payload,
+            )
+
+        selected = traced_provider(
+            request_provider(provider), tasks.store, job["id"], "验收总结"
+        )
+
+        async def summarize():
+            return await selected.text_chat(
+                prompt=json.dumps(
+                    {**payload, "messages": summary_messages(history)},
+                    ensure_ascii=False,
+                ),
+                contexts=[],
+                func_tool=None,
+                request_max_retries=1,
+                system_prompt=system,
+            )
+
+        await prepare()
+        response = await model_request(
+            tasks,
+            job,
+            "验收总结",
+            summarize,
+            1,
+            pause_on_error=False,
+            recover_context=prepare,
+            check_stop=False,
+        )
         return response.completion_text or ""
