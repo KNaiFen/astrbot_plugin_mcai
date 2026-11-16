@@ -5,11 +5,12 @@ import json
 from astrbot.core.agent.context.token_counter import EstimateTokenCounter
 from astrbot.core.agent.message import Message
 
-from .agent_runtime import TASK_POLICY, model_request, request_provider
+from .agent_runtime import TASK_POLICY, collect_stream, model_request, request_provider
 from .review import digest
 from .tracing import traced_provider
 
 SUMMARY_PREFIX = "已结算历史摘要（原始证据可用 mc_context_history entry="
+SUMMARY_TIMEOUT = 300
 SUMMARY_PROMPT = (
     """压缩已结算的 Minecraft 运维与排障对话，为继续当前任务生成简洁、结构化的交接摘要，只输出摘要。
 保留任务目标、实例与目录、用户约束和明确批准的范围；区分消息来源、未核实陈述、已知事实和推测。
@@ -249,6 +250,15 @@ async def fit_history(
                 reason=str(error),
             )
 
+        summary_provider = request_provider(provider)
+        if hasattr(summary_provider, "client"):
+            summary_provider.client = summary_provider.client.with_options(
+                timeout=SUMMARY_TIMEOUT, max_retries=0
+            )
+        summary_provider = traced_provider(
+            summary_provider, tasks.store, job["id"], "上下文压缩"
+        )
+
         async def summarize():
             tasks.log(
                 job,
@@ -258,13 +268,14 @@ async def fit_history(
                 used_tokens=used,
                 count_source=source,
                 groups=len(selected),
+                stream=True,
+                timeout_seconds=SUMMARY_TIMEOUT,
                 input_tokens=summary_overhead
                 + tokens([{"role": "user", "content": prompt}]),
                 reason="context_length_exceeded" if force else "threshold",
             )
-            return await traced_provider(
-                request_provider(provider), tasks.store, job["id"], "上下文压缩"
-            ).text_chat(
+            return await collect_stream(
+                summary_provider,
                 prompt=prompt,
                 contexts=[],
                 func_tool=None,
@@ -287,9 +298,9 @@ async def fit_history(
         if not text or (
             raw is not None
             and (
-                getattr(raw, "status", None) in ("incomplete", "failed", "cancelled")
+                (hasattr(raw, "status") and raw.status != "completed")
                 or any(
-                    choice.finish_reason == "length"
+                    choice.finish_reason != "stop"
                     for choice in getattr(raw, "choices", [])
                 )
             )

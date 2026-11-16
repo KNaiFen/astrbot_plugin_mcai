@@ -35,6 +35,16 @@ def request_provider(provider):
     return selected
 
 
+async def collect_stream(provider, **kwargs):
+    final = None
+    async for response in provider.text_chat_stream(**kwargs):
+        if not response.is_chunk:
+            final = response
+    if final is None:
+        raise ConnectionError("模型流未返回完整响应，原记录保留")
+    return final
+
+
 def effort_provider(provider, effort):
     if not effort:
         return provider
@@ -448,11 +458,8 @@ class MainProvider:
         async def collect():
             if self.stream_unavailable:
                 return await self.provider.text_chat(**kwargs)
-            final = None
             try:
-                async for response in self.provider.text_chat_stream(**kwargs):
-                    if not response.is_chunk:
-                        final = response
+                return await collect_stream(self.provider, **kwargs)
             except Exception as exc:
                 if getattr(exc, "status_code", None) not in (400, 422) or not re.search(
                     r"stream.*(?:support|unknown|unrecognized)|(?:support|unknown|unrecognized).*stream",
@@ -462,9 +469,6 @@ class MainProvider:
                     raise
                 self.stream_unavailable = True
                 return await self.provider.text_chat(**kwargs)
-            if final is None:
-                raise ConnectionError("模型流未返回完整响应")
-            return final
 
         result = await self.request(collect, kwargs)
         yield self.complete(result)
