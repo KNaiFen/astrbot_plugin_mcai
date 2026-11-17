@@ -21,6 +21,11 @@ def model_result(name, arguments, result, operation_id=None):
         if "operation_record" in data:
             details["operation"] = data["operation_record"]
         output = {"ok": False, "data": details, "error": error}
+        if data.get("load_tool"):
+            output["next_call"] = {
+                "name": "mc_tools",
+                "arguments": {"names": [data["load_tool"]]},
+            }
         if (
             operation_id
             and name != "mc_operation_read"

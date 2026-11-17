@@ -5,6 +5,8 @@ import json
 
 import nbtlib
 
+from .tool_help import resolved_query
+
 
 def describe_tag(tag, view="value", offset=0, limit=100):
     if view == "value":
@@ -61,12 +63,13 @@ def result_at(value, path):
 
 
 def tool_evidence(source):
+    tool, arguments = resolved_query(source)
     return {
         "evidence_id": source["id"],
-        "tool": source["name"],
+        "tool": tool,
         "arguments": {
             name: value
-            for name, value in source["arguments"].items()
+            for name, value in arguments.items()
             if name not in ("script_files", "script_encoding", "evidence_ids")
         },
         "instance": source.get("instance"),

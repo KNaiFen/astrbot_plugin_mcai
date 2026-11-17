@@ -42,12 +42,14 @@ from .evidence import (
     review_evidence,
     tool_evidence,
 )
-from .model_budget import budget_factor, record_usage
+from .model_budget import BASELINE_FACTORS, estimated_input, record_usage
 from .plans import plan_identity
+from .query_cli import QueryError, QueryHelp, parse_query, query_argv, query_operation
 from .review import REVIEW_VERSION, digest
 from .tool_arguments import argument_error, arguments_for, model_continuations
+from .tool_help import resolved_query, tool_catalog, tool_help
 from .tool_results import model_result
-from .tool_schemas import TOOLS
+from .tool_schemas import BASE_TOOLS, QUERY_TOOLS, TOOLS
 from .tracing import traced_provider
 
 PROMPT = (
@@ -103,7 +105,9 @@ class McToolSet(ToolSet):
         tools = super().openai_schema(omit_empty_parameter_field)
         for tool in tools:
             tool["function"]["strict"] = False
-        return tools
+        # Append discovered contracts without reordering the existing prefix.
+        by_name = {tool["function"]["name"]: tool for tool in tools}
+        return [by_name[tool.name] for tool in self.tools]
 
 
 class ResponseMessage(Message):
@@ -237,9 +241,10 @@ class AstrBotAgent:
 
         def result_budget():
             budget = job.get("context_budget", {})
-            factor = budget_factor(tasks.store, budget_provider, "main")
-            available = budget.get(
-                "input_limit", budget.get("limit", 272000)
+            factor = BASELINE_FACTORS["main"]
+            available = (
+                budget.get("input_limit", budget.get("limit", 272000))
+                - estimated_input(tasks.store, budget_provider, "main", 0)
             ) / factor - budget.get("overhead_tokens", 0)
             usage = job.get("context_usage")
             if usage and usage["identity"] == context_identity(
@@ -344,6 +349,14 @@ class AstrBotAgent:
                     "execution_state": "not_executed",
                     "reason": f"未知工具：{name}",
                 }
+            elif name not in tools.names():
+                result = {
+                    "not_executed": True,
+                    "error_code": "precondition_failed",
+                    "execution_state": "not_executed",
+                    "reason": f"工具尚未加载：{name}；先用mc_tools加载后再调用。",
+                    "load_tool": name,
+                }
             else:
                 try:
                     validate(arguments, schema)
@@ -351,6 +364,14 @@ class AstrBotAgent:
                         record,
                         arguments_for(name, clean_arguments(arguments), internal=True),
                     )
+                except QueryError as exc:
+                    result = {
+                        "not_executed": True,
+                        "error_code": "invalid_arguments",
+                        "execution_state": "not_executed",
+                        "path": ["argv"],
+                        "reason": str(exc),
+                    }
                 except ValidationError as exc:
                     exc = argument_error(exc)
                     path = list(exc.absolute_path)
@@ -464,9 +485,45 @@ class AstrBotAgent:
             return result
 
         async def invoke(record, arguments):
+            nonlocal tool_definitions
             name = record["name"]
             if record.get("remote"):
                 return await remote(record, **record["remote"])
+            if name == "mc_query":
+                if "query" not in record:
+                    try:
+                        query_name, query_arguments = parse_query(arguments["argv"])
+                    except QueryHelp as exc:
+                        return {"help": str(exc)}
+                    record["query"] = {"name": query_name, "arguments": query_arguments}
+                    tasks.store.save("tool_call", record["id"], record)
+                name, public_arguments = resolved_query(record)
+                action, query_arguments = query_operation(name, public_arguments)
+                return await remote(record, action, query_arguments)
+            if name == "mc_tools":
+                for requested in arguments["names"]:
+                    description, schema = next(
+                        (description, schema)
+                        for tool, description, schema in TOOLS
+                        if tool == requested
+                    )
+                    tools.add_tool(
+                        McTool(
+                            name=requested,
+                            description=description,
+                            parameters=schema,
+                            callback=dispatch,
+                        )
+                    )
+                job["loaded_tools"] = [
+                    name for name in tools.names() if name not in BASE_TOOLS
+                ]
+                tasks.save(job)
+                tool_definitions = tools.openai_schema()
+                return {
+                    "loaded_tools": job["loaded_tools"],
+                    "help": [tool_help(requested) for requested in arguments["names"]],
+                }
             if name == "mc_instances":
                 return await tasks.instances()
             if name == "mc_select_instance":
@@ -687,29 +744,6 @@ class AstrBotAgent:
                     arguments,
                 )
             if name in (
-                "mc_region_nbt",
-                "mc_region_blocks",
-                "mc_region_check",
-                "mc_region_export",
-                "mc_region_scan",
-            ):
-                mode = (
-                    arguments.pop("mode")
-                    if name in ("mc_region_nbt", "mc_region_blocks")
-                    else name.removeprefix("mc_region_")
-                )
-                if name == "mc_region_blocks":
-                    mode = {"read": "block", "search": "blocks"}[mode]
-                return await remote(
-                    record,
-                    {"scan": "region_scan", "export": "region_export"}.get(
-                        mode, "region_query"
-                    ),
-                    arguments
-                    if mode in ("scan", "export")
-                    else {"mode": mode, **arguments},
-                )
-            if name in (
                 "mc_job_read",
                 "mc_job_wait",
                 "mc_job_cancel",
@@ -805,19 +839,13 @@ class AstrBotAgent:
                 "mc_inspect",
             ):
                 return await remote(record, "probe", {"kind": name[3:], **arguments})
-            if name == "mc_logs":
-                arguments.setdefault("view", "events")
             return await remote(
                 record,
                 {
                     "mc_status": "metrics",
-                    "mc_diagnostics": "diagnostics",
                     "mc_verify": "verify",
                     "mc_inventory": "inventory",
-                    "mc_files": "files_query",
-                    "mc_logs": "logs",
                     "mc_exec": "exec",
-                    "mc_nbt": "nbt_query",
                     "mc_download": "download",
                     "mc_mods": "mods",
                 }[name],
@@ -901,18 +929,29 @@ class AstrBotAgent:
 
         def visible(record):
             if "model_result" not in record:
+                result_name, result_arguments = resolved_query(record)
                 record["model_result"] = model_continuations(
                     model_result(
-                        record["name"],
+                        result_name,
                         arguments_for(
-                            record["name"],
-                            clean_arguments(record["arguments"]),
+                            result_name,
+                            clean_arguments(result_arguments),
                             internal=True,
                         ),
                         record["result"],
                         record.get("operation"),
                     )
                 )
+                next_call = record["model_result"].get("next_call")
+                if next_call and next_call["name"] in QUERY_TOOLS:
+                    next_call.update(
+                        name="mc_query",
+                        arguments={
+                            "argv": query_argv(
+                                next_call["name"], next_call["arguments"]
+                            )
+                        },
+                    )
                 record["model_result"]["evidence_id"] = record["id"]
                 if (
                     record["name"]
@@ -1117,7 +1156,16 @@ class AstrBotAgent:
                     parameters=schema,
                     callback=dispatch,
                 )
-                for name, description, schema in TOOLS
+                for name, description, schema in sorted(
+                    TOOLS,
+                    key=lambda item: (
+                        item[0] not in BASE_TOOLS,
+                        job.get("loaded_tools", []).index(item[0])
+                        if item[0] in job.get("loaded_tools", [])
+                        else 0,
+                    ),
+                )
+                if name in BASE_TOOLS or name in job.get("loaded_tools", [])
             ]
         )
         tool_definitions = tools.openai_schema()
@@ -1150,21 +1198,6 @@ class AstrBotAgent:
             raise ValueError("排障模型仅支持 OpenAI 兼容 Chat／Responses 提供商")
         provider = effort_provider(provider, self.reasoning_effort)
         budget_provider = provider
-        await recover_step()
-        if queued_messages:
-            pending = tasks.drain(job)
-            if pending:
-                job["messages"].append({"role": "user", "content": pending})
-            job["state"] = "waiting"
-            tasks.save(job)
-            return
-        if (
-            job["state"] == "paused"
-            or job["state"] in ("applying", "waiting")
-            or job["stop_requested"]
-            or (job["plan"] and not job["pending"])
-        ):
-            return
         provider = traced_provider(provider, tasks.store, job["id"], "排障模型")
         # MCAI owns task history and archival. Disable only the native runner's
         # request-time truncation on this private view, retaining the real budget.
@@ -1210,7 +1243,8 @@ class AstrBotAgent:
             )
 
         async def inject(kwargs, *, force=False):
-            nonlocal request_snapshot
+            nonlocal request_snapshot, tool_definitions
+            tool_definitions = tools.openai_schema()
             pending = tasks.drain(job)
             if pending:
                 wrapper.messages.append(Message(role="user", content=pending))
@@ -1262,6 +1296,9 @@ class AstrBotAgent:
             + f"\n当前任务：{job['name']}；实例：{job['instance']}。\n规则文件：\n"
             + rules
             + search_note
+            + "\n工具使用：文件、日志、NBT/区域与进程/JVM诊断统一用mc_query。其余按需工具先用mc_tools加载，下一次请求即可调用。"
+            "当前工具定义和帮助是参数格式依据；运行规则中的生产操作约束继续遵守。\n可按需加载的能力：\n"
+            + tool_catalog()
         )
         system += (
             "\n当前待批准方案的程序状态："
@@ -1294,6 +1331,22 @@ class AstrBotAgent:
             if forward
             else "\n本轮执行进度汇报转发已关闭，commentary 仅保存本地，不通过 mc_say 绕过开关；必要提问和最终答复照常发送到群。"
         )
+        # Recovery may materialize a result and consult the current schema budget.
+        await recover_step()
+        if queued_messages:
+            pending = tasks.drain(job)
+            if pending:
+                job["messages"].append({"role": "user", "content": pending})
+            job["state"] = "waiting"
+            tasks.save(job)
+            return
+        if (
+            job["state"] == "paused"
+            or job["state"] in ("applying", "waiting")
+            or job["stop_requested"]
+            or (job["plan"] and not job["pending"])
+        ):
+            return
         wrapper = AgentContextWrapper(
             context=AstrAgentContext(context=self.context, event=event),
             tool_call_timeout=86400,

@@ -34,13 +34,13 @@ A、B均为Windows，A通过HTTPS调用B。每任务绑定一个服务端，以�
 - `mc_chunks`区分有效加载等级与直接ticket，未知模组来源不推测；`mc_runtime`核对实际加载与生效状态，磁盘清单和运行时版本一致不证明加载了相同二进制。`ready`已装Probe时会检查本次主线程响应；`logs_only`只证明日志就绪。性能效果结合spark现场与复现反馈判断，不建立自动性能验收基线。
 - `mc_profile`默认Probe对象计时；调用栈用`engine=spark`，默认30秒、15—60秒，不带区块范围。采样权重与实测耗时分别解释，仅按报告映射说明组件归属。取消后spark自然结束，未确认结束仍占用；不发送全局stop／cancel，不因缺少报告判定没有热点。NBT超限部分结果按更具体路径继续读取。
 - spark采样先核对已有profiler，存在前台或后台采样时保留原采样并使用现有结果或Probe取证。观测结合来源、窗口、范围、误差及实际影响解释；辅助数值偏差不自动成为失败，用户明确的精确条件按原要求验证。保留实测值，不为符合结论改写数据。
-- 卡顿或卡死可用`mc_diagnostics`采集实例进程增量与JVM连续线程现场。正常停服超时不自动强杀；确需恢复时先保留证据，以当前Java的PID、创建时间和窗口session提交`force_stop`作为方案第一步，等待原审核和一次批准。不得结束无关进程或托管PowerShell。
+- 卡顿或卡死可用`mc_query`的`diagnostics`命令采集实例进程增量与JVM连续线程现场。正常停服超时不自动强杀；确需恢复时先保留证据，以当前Java的PID、创建时间和窗口session提交`force_stop`作为方案第一步，等待原审核和一次批准。不得结束无关进程或托管PowerShell。
 - 控制台只保留当前窗口最近9999行，检查session和淘汰提示，更早内容查MC日志。窗口断线或目标不明不能视为已停服。
 
 ## 查询、操作、审核与修复
 
 - 查询自主执行；诊断脚本/命令经独立审核，修改、恢复、启停、强制保存提案待批准。优先已有工具和命令，独立诊断合并commands，依赖结果再顺序调用；多条修改同一方案，一次审核和批准。
-- 文本局部修改先用`mc_files stat/preview_patch`核对哈希和差异，再提交`patch_text`；保留编码、BOM、换行，原文须唯一匹配。后台与长字段沿返回的next_call续读。
+- 文本局部修改先用`mc_query`的`files stat/preview-patch`核对哈希和差异，再提交`patch_text`；保留编码、BOM、换行，原文须唯一匹配。后台与长字段沿返回的next_call续读。
 - 删除、覆盖、递归及批量操作前核实实例、目标和实际范围，检查空变量、相对路径、通配符和实体选择条件。
 - 修改只覆盖当前目标所需内容，保留无关配置、用户已有修改和未知模组数据，不顺手重构或处理无关问题。关键查询或执行失败时明确保留错误，不用空结果、默认值或成功消息掩盖失败。
 - 存档列表优先按UUID、方块实体坐标或Slot选择对象，先`select/preview_batch`核对数量与旧值，再提交`nbt_batch/region_batch`；每项填写带类型expected，null仅用于原先不存在的新字段。同区域多项修改合成一个批量步骤；不把旧列表下标当稳定身份，批量也不代表跨文件事务。
@@ -126,68 +126,16 @@ A、B均为Windows，A通过HTTPS调用B。每任务绑定一个服务端，以�
 
 ## 工具交互
 
-所有工具返回ok/data；失败还含error.code/message/path及execution_state。ok表示调用处理成功，后台完成看data.status，输出读完看data.complete。next_call给出后续name/arguments供采用，不自动执行。示例按当前需求选择，不构成固定流程；编号取实际返回值。
+工具定义与按需帮助提供当前参数格式。生产操作约束始终遵守；本节示例按任务需要选择，编号、路径和坐标换成实际返回值。
 
-查询分支统一mode；实际步骤统一action，验证类型统一kind。文本检索统一query和regex（默认false），文件范围用glob；前后文用before_lines/after_lines。事件分页用cursor/limit（1至100），字符或列表续读用offset。时间字段明确单位：timeout_seconds、duration_seconds、interval_seconds、wait_seconds、window_seconds、stable_seconds。优先直接采用next_call参数。
+文件、日志、NBT／区域与进程／JVM诊断统一使用`mc_query`。argv从类别开始，不含mcai、query、实例ID或shell；每个参数是一个字符串，含空格的路径也只占一项。已知格式直接执行；陌生参数直接查看具体子命令帮助，例如`mc_query {"argv":["nbt","select","--help"]}`，独立帮助同轮调用。只有不知道命令时才查顶层或类别帮助，避免逐级重复阅读。数组、选择器和批量变更使用JSON字符串。简单读取：`mc_query {"argv":["files","read","--path","server.properties","--line-count","30"]}`。
 
-Probe对象类型筛选用object_type，实体存档扫描用entity_type；清单对比用baseline_job_id，世界目录用world_path。type不是步骤或检查类型字段。ready默认按字面量匹配query/forbid_query；确需正则才设regex=true，提交前会检查表达式。
+其他复杂工具按需加载，例如`mc_tools {"names":["mc_propose","mc_verify"]}`。下一次请求可调用完整工具；任务保留加载集合，暂停重启后恢复。重复mc_tools可重读帮助。帮助包含适用条件、参数、调用与结果解释；不需要为收齐说明加载整套工具。
 
-最小启动方案：`mc_propose {"summary":"启动并核实本次就绪","steps":[{"action":"start"},{"action":"verify","checks":[{"kind":"ready","query":"Done (","timeout_seconds":300}]}]}`。同方案自动继承启动cursor；独立mc_verify必须提供本次真实cursor和session_id。TCP检查只填port，不填host；模拟玩家使用command步骤发送mcai_probe命令。
+所有工具返回ok/data；失败含error.code/message/path及execution_state。ok表示调用处理成功，后台完成看data.status，输出读完看data.complete。next_call提供后续name/arguments，优先采用。job_id、operation_id、cursor和session_id取实际返回值，不重新发起原采集。
 
-以下返回省略无关业务字段，示例编号须替换成实际返回值。
+后台尚未结束时，沿mc_job_wait等待；已结束但有余页用mc_job_read。产物先用mc_artifact_read默认summary看概览，再按result_path定向展开；文本用mc_artifact_find定位后按offset读取。covered_by表示已有原文区间，不重复搬运；未读部分保持未核实。当前决定证据够用即可推进，complete不是任务验收门槛。
 
-### 指标与后台续读
+参数错误按path及具体子命令--help纠正，保留其他有效字段和原证据引用，不向管理员追问工具格式。failed可能已有部分效果；unknown沿原operation_id用mc_operation_read核实，不能换编号重跑。
 
-状态用`mc_status {}`；平均指标用`mc_metrics {}`，解释来源、时间和窗口。后台尚未结束时：
-
-```json
-{"ok":true,"data":{"job_id":"J","operation_id":"O","status":"running","items":[],"cursor":0,"complete":false},"next_call":{"name":"mc_job_wait","arguments":{"job_id":"J","cursor":0}}}
-```
-
-调用`mc_job_wait {"job_id":"J","cursor":0}`；若仍有next_call继续采用。最终`data.status="completed"`且`data.complete=true`才表示工作结束且事件读完。failed/cancelled/interrupted须按实际结果报告；已结束但有余页用mc_job_read，不能重发采集。
-
-### 文件与长字段
-
-调用`mc_files {"mode":"read","path":"server.properties","line_count":30}`。大结果会返回：
-
-```json
-{"ok":true,"data":{"job_id":"J","status":"completed","items":[{"seq":1,"body":{"reference":"R.json","characters":20000,"preview":"原文预览"}}],"complete":true},"next_call":{"name":"mc_artifact_read","arguments":{"job_id":"J","reference":"R.json"}}}
-```
-
-事件已读完后先看overview；`mc_artifact_read {"job_id":"J","reference":"R.json"}`默认返回有界summary。按概览路径用`mc_artifact_read {"job_id":"J","reference":"R.json","result_path":["target","expected"],"view":"value"}`读取精确值；文本用`mc_artifact_find`定位后按offset读取。调用`mc_artifact_read {"job_id":"J","reference":"R.json","offset":0}`可能返回：
-
-```json
-{"ok":true,"data":{"text":"本页原文","next_offset":12000,"complete":false},"next_call":{"name":"mc_artifact_read","arguments":{"job_id":"J","reference":"R.json","offset":12000}}}
-```
-
-需要完整目标字段时继续该next_call；已取得目标片段即可推进。offset是字符偏移；covered_by表示当前活动上下文已保留的原文区间，segments只给新增范围，按原evidence_id引用，不重复搬运。视图不包含的内容保持未核实。
-
-### 控制台批量诊断
-
-已确认有spark时调用`mc_console_send {"commands":["list","spark tps","spark health"]}`：
-
-```json
-{"ok":true,"data":{"status":"sent","session_id":"S","cursor":501,"commands":[{"command":"list","status":"sent"},{"command":"spark tps","status":"sent"},{"command":"spark health","status":"sent"}]},"next_call":{"name":"mc_console_read","arguments":{"cursor":501,"session_id":"S"}}}
-```
-
-sent仅表示发送；先解释本次已返回的新输出，再沿next_call读后续，不重发命令。若一行过长，mc_console_read返回该行seq/next_offset，并给出如`{"name":"mc_console_line","arguments":{"session_id":"S","seq":502,"offset":12000}}`；mc_console_line返回text/complete及可选next_call。session变化或行淘汰时按具体错误换查MC日志。
-
-### 参数纠错与执行不确定
-
-`mc_files {"mode":"read"}`会返回`{"ok":false,"data":{},"error":{"code":"invalid_arguments","message":"缺少path","path":["path"],"execution_state":"not_executed"}}`，自行补为`mc_files {"mode":"read","path":"server.properties"}`。缺steps.0.command则补该步骤实际命令，不向管理员追问工具格式。
-
-failed可能已有部分效果；unknown先按next_call或`mc_operation_read {"operation_id":"O"}`核实原操作，脚本日志按其next_call续读。不能换编号重跑。
-
-### 修改提案与诊断脚本
-
-`mc_propose {"summary":"发送公告并添加Steve白名单；在线命令无恢复备份","steps":[{"action":"command","command":"say Maintenance at 22:00"},{"action":"command","command":"whitelist add Steve"}]}`返回`{"ok":true,"data":{"status":"awaiting_approval","plan_id":"P","approval_command":"/mcaiapply 任务名"}}`。结束本轮待一次批准，之后核实效果。
-
-多轮方案示例：`mc_propose {"summary":"按维护阶段发送已确认公告；在线命令无恢复备份","continuation":{"scope":"仅向当前实例发送已确认的维护阶段公告，依据服务端结果选择下一阶段","completion":"最后阶段公告已发送并核对控制台"},"steps":[{"action":"command","command":"say Maintenance phase 1"}]}`。批准后，核对实际结果，再以`mc_propose {"plan_id":"P","summary":"已确认上一阶段，发送下一阶段公告；在线命令无恢复备份","steps":[{"action":"command","command":"say Maintenance phase 2"}]}`续批；审核通过返回`queued`及本批`operation_id`，执行结果随后回到任务。续批不填写`continuation`。结果已结算且条件满足后，调用`mc_plan_finish {"plan_id":"P","summary":"已核对最后阶段公告，方案执行结束"}`，再用final说明结果并请求验收。
-
-内联诊断如`mc_exec {"script":"Get-Content -LiteralPath './server.properties' -TotalCount 30"}`。引用外部脚本如`mc_exec {"script":"& './diagnose.ps1'","script_files":["diagnose.ps1"],"script_encoding":"utf-8-sig"}`，程序读取实际正文审核；无需review。返回后台结果后采用上述续读入口。
-
-### 等待补充与暂停
-
-`mc_say {"text":"请用/mcaisay 任务名 内容补充实际报错时间"}`返回`{"ok":true,"data":{"status":"queued"}}`，表示入发件箱，送达由平台记录确认。结束本轮等待。
-
-确无路径才调用`mc_pause {"reason":"托管窗口未打开，需要管理员在服务端目录运行mcai tm"}`，返回`{"ok":true,"data":{"status":"paused","resume_command":"/mcairesume 任务名"}}`；说明实际阻塞与续接命令。
+控制台命令、通用脚本、Probe、验证与修改提案的详细示例通过mc_tools读取。修改、启停和保存继续使用mc_propose；预览查询只提供依据。独立审核、一次管理员批准、文件修改前停服备份、多轮授权范围和失败后重新提案按前文执行。

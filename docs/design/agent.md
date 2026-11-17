@@ -17,18 +17,14 @@
 | `mc_inventory` | 本地MOD／插件／数据包元数据、嵌套JAR、哈希、依赖与历史清单差异 |
 | `mc_download` | URL、可选文件名及SHA-256；下载到B暂存目录 |
 | `mc_status` | 实例状态、主机指标、进程树、实际Java与世界发现 |
-| `mc_diagnostics` | 实例内进程CPU／I/O增量与JVM参数、堆概要、连续线程快照 |
+| `mc_query` | 参数数组形式的查询CLI；文件、日志、NBT／区域、方块、扫描、导出与进程／JVM诊断 |
+| `mc_tools` | 按名称批量加载工具，返回对应说明与示例；加载集合随任务持久化 |
 | `mc_verify` | 固定只读的配置解析、文本／NBT断言、就绪观察与本机端口检查 |
 | `mc_players`、`mc_metrics` | 探针玩家与近期现场、全服及维度耗时 |
 | `mc_objects`、`mc_profile`、`mc_inspect` | 已加载对象普查、短时热点、按UUID／位置检查目标 |
 | `mc_chunks`、`mc_runtime` | 已加载区块与ticket、实际运行组件与生效状态 |
-| `mc_files` | `find/read/tail/stat/search/preview_patch`；文件属性、SHA-256、检索与保留编码的补丁预览 |
-| `mc_logs` | 文件/glob、字面量/正则、时间、编码和上下文 |
 | `mc_console_read`、`mc_console_line`、`mc_console_send` | 分别读取新输出、续读长行、批量发送受审诊断命令 |
 | `mc_exec` | PowerShell诊断脚本、实例内工作子目录与超时 |
-| `mc_nbt` | 文件、NBT路径、摘要/值、子项分页；修改值使用带类型SNBT |
-| `mc_region_nbt`、`mc_region_blocks` | 前者read/select/preview_batch查询区块NBT；后者read/search读取或统计已保存方块 |
-| `mc_region_check`、`mc_region_export`、`mc_region_scan` | 区域／点检查、原始区块导出、世界数据扫描 |
 | `mc_job_read`、`mc_job_wait`、`mc_job_cancel` | 后台输出分页、有界等待、取消 |
 | `mc_artifact_read`、`mc_artifact_find` | 同一job_id内长字段字符续读与定位 |
 | `mc_operation_read`、`mc_context_history` | 原操作与脚本日志；当前任务压缩前原文，不是已验收经验 |
@@ -37,7 +33,9 @@
 | `mc_say` | 缺少用户信息时的必要提问；结论使用final |
 | `mc_pause` | 保存进度并暂停 |
 
-共41个工具。模型注册和执行端使用同一份完整schema，保留oneOf、分支必填及额外参数限制；重复复杂结构使用工具内部$defs/$ref，分支共享类型声明，保留每个分支允许的键。Chat／Responses工具显式strict:false，避免默认严格化改变可选参数；程序仍执行完整校验。工具调用通过`tool_call/open_step`持久化，断线沿原编号恢复。
+共34个模型工具，首次只注册15个基础工具，另19个通过mc_tools按需加载。基础集合包含实例、状态、经验、交流、后台与历史续读，以及mc_query/mc_tools。新加载工具使用完整schema，保留oneOf、分支必填及额外参数限制；Chat／Responses显式strict:false。任务内不自动卸载，暂停、重启恢复loaded_tools。预算和请求身份每次使用实际暴露集合。
+
+九类查询的完整契约留在程序内校验，由共享CLI参数解析器转成原查询名称和参数；argv不经过shell解释。AI入口复用原HTTPS操作通道，安装CLI使用同一解析器；无需额外进程转发或系统PATH。原argv和解析结果一起持久化，恢复使用原参数及操作编号，审核证据使用程序保存的真实查询语义。帮助在本地返回，不创建远程操作。查询自身的分页建议转换为mc_query参数，后台与产物仍沿原工具续读。详见[查询命令](../usage/queries.md)。
 
 模型入口参数与续读建议共用`tool_arguments.py`的命名表；转换只处理声明字段，NBT键、用户正文、B传输与已持久化操作参数保持各自含义。模型不提供旧参数别名。
 
@@ -88,11 +86,11 @@ B在审核材料采集时将原步骤展开为实际执行顺序，包含必要�
 
 批准正文从实际步骤生成关键动作、路径、启停、备份及验证，再附模型摘要，审核员同时核对该正文。只有实际启动的批次读取并绑定start.bat；配置完整展示，仅Java选择和停服命令这类实际执行内容的变化使审核失效，超时和控制台编码等运行参数不另设审核门槛。协议为mcai-5，A、B和托管窗口须配套；已提交操作仍按原编号结算。
 
-局部文本修改使用 `patch_text`：提供 `path`、原文件 `sha256`、`edits: [{old, new}]`，非UTF-8无BOM文本同时指定 `encoding`。先用 `mc_files stat` 获取哈希，再用 `preview_patch` 查看差异；预览不写入。原文必须唯一匹配，执行时文件哈希变化则失败。保留原BOM、编码、未修改部分及换行形式；仍走文件修复的停服和备份。`write_text`继续用于明确提交整份新内容。
+局部文本修改使用 `patch_text`：提供 `path`、原文件 `sha256`、`edits: [{old, new}]`，非UTF-8无BOM文本同时指定 `encoding`。先用 `mc_query files stat` 获取哈希，再用 `preview_patch` 查看差异；预览不写入。原文必须唯一匹配，执行时文件哈希变化则失败。保留原BOM、编码、未修改部分及换行形式；仍走文件修复的停服和备份。`write_text`继续用于明确提交整份新内容。
 
-`mc_files search`限定文本glob，支持字面量／正则和`lines/files/count`；编码错误逐文件明确报告。`tail`读取末尾，`stat`返回大小、修改时间、BOM和SHA-256。`mc_job_wait`默认等10秒、最多25秒，出现输出或任务结束立即返回；等待和检索不创建新诊断进程。
+`mc_query files search`限定文本glob，支持字面量／正则和`lines/files/count`；编码错误逐文件明确报告。`tail`读取末尾，`stat`返回大小、修改时间、BOM和SHA-256。`mc_job_wait`默认等10秒、最多25秒，出现输出或任务结束立即返回；等待和检索不创建新诊断进程。
 
-`mc_logs`默认`view=events`，按完整多行事件归组，只归一化事件头的出现时间，保留对象差异、代表栈、次数和起止位置。常见及罕见组进入有界结果，全部组和出现区间保存为既有job的`log-events.json`产物。`view=value`沿原精确行查询，前后文行数仅用于该模式；`mc_files search`语义保持不变。
+`mc_query logs search`默认`view=events`，按完整多行事件归组，只归一化事件头的出现时间，保留对象差异、代表栈、次数和起止位置。常见及罕见组进入有界结果，全部组和出现区间保存为既有job的`log-events.json`产物。`view=value`沿原精确行查询，前后文行数仅用于该模式；`mc_query files search`语义保持不变。
 
 `mc_artifact_read`和带entry的`mc_context_history`默认`view=summary`，使用执行和审核共用的确定性有界结构投影，保留原文体积、校验和与JSON路径索引；缺省项不表示不存在。`result_path`是JSON键／下标数组，可收窄到必要字段；`view=value`或明确offset才按字符读原文，`mc_artifact_find`返回原文偏移。结构视图不用于重写NBT。执行侧只对活动上下文中相同来源、交叠正文完全一致的范围去重，以covered_by和segments保留原范围及证据引用；历史压缩后可再次读取原文。原始result与已经入史的model_result不改写。
 
@@ -100,7 +98,7 @@ B在审核材料采集时将原步骤展开为实际执行顺序，包含必要�
 
 审核从相同持久原始记录独立投影，不使用主模型自由摘要代替证据，去除相同结果及重叠文本，续批只保留一份上一批观测。实际步骤、脚本和授权约束仍完整送审。本地预算不足回主模型自动调整；API明确报上下文超限时逐次缩小证据视图，缩减无进展则返回context_capacity，避免相同载荷空转。原编号与已提交操作沿原恢复机制核实，不重放。容量预检以既有字符基础裕量加最近16次实测输入超额上界校准，避免把小请求的固定差额按高比例外推到大请求；分批尺寸仍保留最近16次比例裕量。校准随实际usage更新，不引入本地分词器。
 
-`mc_diagnostics`是固定只读查询：`process`记录实例托管树内目标的CPU／I/O增量、内存和线程数，`jvm`使用实际JVM同目录的`jcmd.exe`读取参数、堆概要并连续采集线程快照。默认3个样本、间隔1秒，最多5个、间隔最多10秒；采集进程受原辅助内存额度与取消机制约束，MC不在该Job内。Oracle javapath包装进程按父子关系识别，以叶子JVM作为目标；多个独立JVM不能自动选择。缺JDK工具或采集失败明确返回错误，原始输出保留。
+`mc_query diagnostics`是固定只读查询：`process`记录实例托管树内目标的CPU／I/O增量、内存和线程数，`jvm`使用实际JVM同目录的`jcmd.exe`读取参数、堆概要并连续采集线程快照。默认3个样本、间隔1秒，最多5个、间隔最多10秒；采集进程受原辅助内存额度与取消机制约束，MC不在该Job内。Oracle javapath包装进程按父子关系识别，以叶子JVM作为目标；多个独立JVM不能自动选择。缺JDK工具或采集失败明确返回错误，原始输出保留。
 
 卡死恢复使用方案第一步`force_stop`，必须提交`mc_status.java_processes`中的`pid/created`和窗口`session_id`（步骤字段为`process_created`）。同样整组审核、一次批准；执行前保存控制台和状态证据，窗口重新核对身份，先结束BAT重启链及Java包装进程，再结束所选JVM及其子进程，保留托管PowerShell。可以接同一方案的文件备份／修复。普通`stop`超时不自动强制结束；同编号仍只查询持久控制结果，新会话不重放。
 

@@ -1247,3 +1247,67 @@ TOOLS = [
     )
     for name, description, schema in TOOLS
 ]
+
+# These contracts remain authoritative behind the query CLI, not model functions.
+QUERY_TOOLS = {
+    name: (description, schema)
+    for name, description, schema in TOOLS
+    if name
+    in {
+        "mc_files",
+        "mc_logs",
+        "mc_nbt",
+        "mc_region_nbt",
+        "mc_region_blocks",
+        "mc_region_check",
+        "mc_region_export",
+        "mc_region_scan",
+        "mc_diagnostics",
+    }
+}
+TOOLS = [tool for tool in TOOLS if tool[0] not in QUERY_TOOLS]
+TOOLS.extend(
+    [
+        (
+            "mc_query",
+            "执行当前实例的MCAI查询CLI。argv是参数数组，从类别开始，不含mcai、query、实例或shell。"
+            '例如["files","read","--path","server.properties","--line-count","30"]。'
+            "类别：files(find/read/tail/stat/search/preview-patch)、logs(search)、nbt/region-nbt(read/select/preview-batch)、"
+            "region-blocks(read/search)、region-check、region-export、region-scan、diagnostics(process/jvm)。"
+            '常用尾读["files","tail","--path","logs/latest.log","--line-count","30"]；'
+            '单轮JVM["diagnostics","jvm","--samples","1"]。'
+            '已知格式直接执行；陌生参数直接读["类别","子命令","--help"]，独立帮助同轮调用，不逐级重复查看。'
+            '顶层["--help"]用于不知道命令时。复杂参数用JSON字符串；布尔开关可用--选项/--no-选项。'
+            "查询返回原结果及next_call；修改预览不写入，实际修改仍用mc_propose。",
+            contract(
+                {"argv": {"type": "array", "minItems": 1, "items": STRING}},
+                ("argv",),
+            ),
+        ),
+        (
+            "mc_tools",
+            "按名称批量加载工具，下一次模型请求起可调用，并返回用法及示例。"
+            "当前任务保留已加载工具，暂停重启后恢复；重复调用可重读帮助。"
+            "只加载当前需要的能力，名称见系统能力目录。",
+            contract(
+                {
+                    "names": {
+                        "type": "array",
+                        "minItems": 1,
+                        "uniqueItems": True,
+                        "items": {
+                            "type": "string",
+                            "enum": [tool[0] for tool in TOOLS],
+                        },
+                    }
+                },
+                ("names",),
+            ),
+        ),
+    ]
+)
+BASE_TOOLS = frozenset(
+    "mc_instances mc_select_instance mc_status mc_history mc_say mc_pause "
+    "mc_job_read mc_job_wait mc_job_cancel mc_artifact_read mc_artifact_find "
+    "mc_operation_read mc_context_history mc_query mc_tools".split()
+)
