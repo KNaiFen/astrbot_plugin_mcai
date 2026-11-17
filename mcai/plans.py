@@ -24,6 +24,11 @@ FILE_ACTIONS = {
 
 
 def effective_steps(steps, running, target_lists):
+    from .verification import validate_checks
+
+    for step in steps:
+        if step["action"] == "verify":
+            validate_checks(step["checks"])
     originally_running = running
     explicit = any(
         step["action"] in ("start", "stop", "restart", "force_stop") for step in steps
@@ -126,7 +131,7 @@ def plan_text(plan):
         if kind in labels:
             detail = labels[kind]
         elif kind == "force_stop":
-            detail = f"强制停止服务端，PID {step['pid']}，会话 {step['session_id']}"
+            detail = f"强制停止服务端及其自动重启启动链，保留托管窗口；Java PID {step['pid']}，会话 {step['session_id']}"
         elif kind == "snapshot":
             detail = "备份：" + "、".join(step["paths"])
         elif kind == "command":

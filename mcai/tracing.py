@@ -65,29 +65,54 @@ class TraceStream:
     def __init__(self, stream, record, finish):
         self.stream, self.record, self.finish = stream, record, finish
         self.closed = False
+        self.status = "incomplete"
 
     async def __aiter__(self):
-        status = "incomplete"
+        finish_reasons = {}
         try:
             async for event in self.stream:
                 self.record("api_chunk", data=event)
+                kind = getattr(event, "type", "")
+                if kind in (
+                    "response.completed",
+                    "response.incomplete",
+                    "response.failed",
+                    "error",
+                ):
+                    self.status = "failed" if kind == "error" else kind.split(".")[1]
+                    await self.close()
+                for choice in getattr(event, "choices", []):
+                    if choice.finish_reason is not None:
+                        finish_reasons[choice.index] = choice.finish_reason
+                    else:
+                        finish_reasons.setdefault(choice.index, None)
+                if finish_reasons:
+                    self.status = (
+                        "completed"
+                        if all(
+                            reason in ("stop", "tool_calls", "function_call")
+                            for reason in finish_reasons.values()
+                        )
+                        else "incomplete"
+                    )
                 yield event
-            status = "completed"
         except asyncio.CancelledError:
-            status = "cancelled"
+            self.status = "cancelled"
             raise
         except Exception as exc:
-            status = "failed"
+            self.status = "failed"
             self.record("api_error", error=f"{type(exc).__name__}: {exc}")
             raise
         finally:
-            self.finish(status)
             await self.close()
 
     async def close(self):
         if not self.closed:
             self.closed = True
-            await self.stream.close()
+            try:
+                await self.stream.close()
+            finally:
+                self.finish(self.status)
 
     async def __aenter__(self):
         return self
@@ -210,7 +235,19 @@ def traced_provider(provider, store, task, stage):
             if kwargs.get("stream"):
                 return TraceStream(result, record, finish)
             record("api_response", data=result)
-            finish("completed")
+            if hasattr(result, "status"):
+                status = result.status or "incomplete"
+            else:
+                status = (
+                    "incomplete"
+                    if any(
+                        choice.finish_reason
+                        not in ("stop", "tool_calls", "function_call")
+                        for choice in getattr(result, "choices", [])
+                    )
+                    else "completed"
+                )
+            finish(status)
             return result
 
         return call
@@ -219,16 +256,14 @@ def traced_provider(provider, store, task, stage):
     if kind in ("openai_responses", "openai_chat_completion") and hasattr(
         provider, "client"
     ):
-        client = copy.copy(provider.client)
+        client = provider.client.with_options(max_retries=0)
         if kind == "openai_responses":
-            client.responses = SimpleNamespace(
-                create=wrap(provider.client.responses.create, "responses")
-            )
+            create = client.responses.create
+            client.responses = SimpleNamespace(create=wrap(create, "responses"))
         else:
+            create = client.chat.completions.create
             client.chat = SimpleNamespace(
-                completions=SimpleNamespace(
-                    create=wrap(provider.client.chat.completions.create, "chat")
-                )
+                completions=SimpleNamespace(create=wrap(create, "chat"))
             )
         selected.client = client
     else:
@@ -324,9 +359,10 @@ def export_diagnostics(store, *, start=0, end=None, task_ids=None):
                 f"- {stamp} | {row.get('task') or '未关联任务'} | {row.get('kind', row.get('topic', ''))} | {row.get('stage', '')} {row.get('request_id', '')}"
             )
         archive.writestr("timeline.md", "\n".join(timeline) + "\n")
-        rules = store.directory / "AGENTS.md"
-        if rules.exists():
-            archive.write(rules, "rules-current.md")
+        for name in ("AGENTS.md", "REVIEW_AGENTS.md", "SUMMARY_AGENTS.md"):
+            rules = store.directory / name
+            if rules.exists():
+                archive.write(rules, f"rules/{name}")
     return {
         "filename": path.name,
         "path": str(path),

@@ -1,6 +1,8 @@
 """Codex standalone alpha/search, using the selected AstrBot provider transport."""
 
+import re
 import uuid
+from urllib.parse import urlsplit
 
 from .review import digest
 
@@ -76,6 +78,44 @@ async def task_search(tasks, job, provider, arguments, call_id):
         tasks.agent.attempts,
         pause_on_error=False,
     )
+    sources = session.setdefault("sources", {})
+    for source in result["results"]:
+        if source.get("ref_id") and urlsplit(source.get("url", "")).scheme in (
+            "http",
+            "https",
+        ):
+            sources[source["ref_id"]] = {
+                "url": source["url"],
+                "title": source.get("title", ""),
+            }
+    tasks.store.save("search_session", job["id"], session)
     tasks.store.save("search_result", call_id, result)
     tasks.log(job, "alpha_search", arguments=arguments, result=result)
     return result
+
+
+def render_citations(store, task, text):
+    if "cite" not in text:
+        return text
+    sources = (store.get("search_session", task) or {}).get("sources", {})
+    used = {}
+
+    def replace(match):
+        labels = []
+        for reference in match.group(1).split(""):
+            source = sources.get(reference)
+            if source is None:
+                labels.append(f"[来源未解析：{reference}]")
+                continue
+            url = source["url"]
+            if url not in used:
+                used[url] = (len(used) + 1, source["title"])
+            labels.append(f"[来源{used[url][0]}]")
+        return "".join(dict.fromkeys(labels))
+
+    text = re.sub(r"cite(.*?)", replace, text)
+    if used:
+        text += "\n来源：\n" + "\n".join(
+            f"[{number}] {title} {url}" for url, (number, title) in used.items()
+        )
+    return text

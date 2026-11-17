@@ -13,6 +13,8 @@ def model_result(name, arguments, result, operation_id=None):
         }
         if "path" in data:
             error["path"] = data["path"]
+        if "error_details" in data:
+            error["details"] = data["error_details"]
         details = {}
         if operation_id:
             details["operation_id"] = operation_id
@@ -33,7 +35,9 @@ def model_result(name, arguments, result, operation_id=None):
     output = {"ok": True, "data": data}
     if not isinstance(data, dict):
         return output
-    if operation_id:
+    if name == "mc_operation_read":
+        data["operation_id"] = arguments["operation_id"]
+    elif operation_id:
         data["operation_id"] = operation_id
     if "next_offset" in data:
         data["complete"] = data["next_offset"] is None
@@ -45,7 +49,9 @@ def model_result(name, arguments, result, operation_id=None):
         for row in data["items"]:
             body = row["body"]
             if {"reference", "characters", "preview"} <= body.keys():
-                body["message"] = "使用mc_artifact_read按字符读取完整内容。"
+                body["message"] = (
+                    "先看overview；mc_artifact_read默认结构概览，result_path定向展开，view=value或offset读取原文。"
+                )
         if data["next_cursor"] is not None:
             next_name = (
                 "mc_job_wait"
@@ -115,10 +121,6 @@ def model_result(name, arguments, result, operation_id=None):
     elif data.get("next_cursor") is not None:
         next_args["after"] = data["next_cursor"]
     else:
-        if name == "mc_operation_read":
-            data["operation_id"] = data["operation"]["id"]
         return output
-    if name == "mc_operation_read":
-        data["operation_id"] = data["operation"]["id"]
     output["next_call"] = {"name": next_name, "arguments": next_args}
     return output

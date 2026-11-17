@@ -41,13 +41,20 @@ class MCAI(Star):
             Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_mcai"
         )
         rules_path = self.store.directory / "AGENTS.md"
-        if not rules_path.exists():
-            rules_path.write_text(
-                (Path(__file__).parent / "mcai/agent_rules.md").read_text(
-                    encoding="utf-8"
-                ),
-                encoding="utf-8",
-            )
+        review_rules_path = self.store.directory / "REVIEW_AGENTS.md"
+        summary_rules_path = self.store.directory / "SUMMARY_AGENTS.md"
+        for target, source in (
+            (rules_path, "agent_rules.md"),
+            (review_rules_path, "review_rules.md"),
+            (summary_rules_path, "summary_rules.md"),
+        ):
+            if not target.exists():
+                target.write_text(
+                    (Path(__file__).parent / "mcai" / source).read_text(
+                        encoding="utf-8"
+                    ),
+                    encoding="utf-8",
+                )
         self.tasks = Tasks(
             self.store,
             HostClient(
@@ -60,9 +67,10 @@ class MCAI(Star):
                 config.get("provider_id", ""),
                 config.get("max_steps", 40),
                 rules_path=rules_path,
+                review_rules_path=review_rules_path,
+                summary_rules_path=summary_rules_path,
                 review_provider_id=config.get("review_provider_id", ""),
                 review_reasoning_effort=config.get("review_reasoning_effort", ""),
-                model_max_attempts=config.get("model_max_attempts", 3),
                 forward_progress=config.get("forward_progress", False),
                 enable_web_search=config.get("enable_web_search", True),
                 web_search_tool_type=config.get("web_search_tool_type", "web_search"),
@@ -73,8 +81,17 @@ class MCAI(Star):
         )
         from .mcai.settings import Settings
 
-        self.settings = Settings(self, rules_path)
+        self.settings = Settings(
+            self, rules_path, review_rules_path, summary_rules_path
+        )
 
+        # Providers are loaded after plugins during a cold start, but already
+        # exist when a running AstrBot installs or reloads this plugin.
+        if context.get_all_providers():
+            await self.tasks.start()
+
+    @filter.on_astrbot_loaded()
+    async def on_astrbot_loaded(self):
         await self.tasks.start()
 
     async def notify(self, origin, text, mention):
@@ -86,6 +103,9 @@ class MCAI(Star):
     @filter.command("mcaihelp", alias=COMMANDS - {"mcaihelp"}, priority=100)
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=100)
     async def commands(self, event: AstrMessageEvent):
+        # A live install with no configured providers still needs its outbox
+        # and must report configuration errors when a command arrives.
+        await self.tasks.start()
         text = event.get_message_str().strip()
         command, *arguments = text.split(maxsplit=1)
         tail = arguments[0] if arguments else ""

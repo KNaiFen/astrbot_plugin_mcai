@@ -12,8 +12,11 @@ from .tracing import export_diagnostics
 
 
 class Settings:
-    def __init__(self, plugin, rules_path):
-        self.plugin, self.rules_path = plugin, rules_path
+    def __init__(self, plugin, rules_path, review_rules_path, summary_rules_path):
+        self.plugin = plugin
+        self.rules_path = rules_path
+        self.review_rules_path = review_rules_path
+        self.summary_rules_path = summary_rules_path
         self.worker = None
         self.result = plugin.store.get("capability_test", "latest")
         for route, handler, methods in (
@@ -133,15 +136,10 @@ class Settings:
             async with plugin.tasks.create_lock:
                 if (
                     not 1
-                    <= fields.get(
-                        "model_max_attempts", plugin.config.get("model_max_attempts", 3)
-                    )
-                    <= 10
-                    or not 1
                     <= fields.get("max_steps", plugin.config.get("max_steps", 40))
                     <= 200
                 ):
-                    raise ValueError("重试次数为 1–10，模型步数为 1–200")
+                    raise ValueError("模型步数为 1–200")
                 if (
                     plugin.tasks.workers
                     or plugin.tasks.archive_workers
@@ -161,10 +159,11 @@ class Settings:
                     config.get("provider_id", ""),
                     config.get("max_steps", 40),
                     rules_path=self.rules_path,
+                    review_rules_path=self.review_rules_path,
+                    summary_rules_path=self.summary_rules_path,
                     review_provider_id=config.get("review_provider_id", ""),
                     review_reasoning_effort=config.get("review_reasoning_effort", ""),
                     reasoning_effort=config.get("reasoning_effort", ""),
-                    model_max_attempts=config.get("model_max_attempts", 3),
                     forward_progress=config.get("forward_progress", False),
                     enable_web_search=config.get("enable_web_search", True),
                     web_search_tool_type=config.get(

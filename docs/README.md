@@ -12,7 +12,7 @@
 
 - 使用文档描述当前可用行为；设计文档解释已经采用的方案与约束；验证记录说明实际测过什么。
 - 初期讨论过的方案和后续修订以[设计决策](design/README.md#设计决策)为准，不能把早期设想当成当前实现。
-- 仓库根 `AGENTS.md` 约束开发工作；A 插件数据目录的 `AGENTS.md` 约束运行时排障与审核模型。两者用途不同。
-- 详细文档放在 `docs/`。代码目录的 `mcai/agent_rules.md` 是随包安装的运行时模板，第三方许可和测试数据来源随组件保留。
+- 仓库根 `AGENTS.md` 约束开发工作；A 插件数据目录的 `AGENTS.md`、`REVIEW_AGENTS.md` 和 `SUMMARY_AGENTS.md` 分别约束执行、审核及历史整理模型。三者用途不同。
+- 详细文档放在 `docs/`。代码目录的 `mcai/agent_rules.md`、`mcai/review_rules.md` 和 `mcai/summary_rules.md` 分别是执行、审核及历史整理模型的运行时模板，第三方许可和测试数据来源随组件保留。
 
 文档描述对应 0.14.0。配置字段以 `_conf_schema.json`、`host.example.json` 和 `instances.example.json` 为入口，工具参数以 `mcai/tool_schemas.py` 为准。

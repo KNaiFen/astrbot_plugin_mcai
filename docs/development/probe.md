@@ -16,11 +16,15 @@
 
 构建执行clean，排除测试负载，检查产物不得包含Fixture类或spark／API类，并清理本次构建目标的旧版JAR与旧源码ZIP。各目标编译Java17／21，独立生成JAR及sources，`dist/probe/`附完整源码ZIP、LICENSE、NOTICE。源码包保留构建脚本与协议文档；游戏二进制、测试世界和缓存不分发。
 
-1.19.2 Forge产物为`dist/probe/mcai-probe-1.19.2-forge-0.4.0.jar`，沿用协议1；既有v0.11.1公开附件仍为旧Probe。完整本地发行构建将七目标放入B包，A／B配套升级。该目标复用Forge生命周期和诊断逻辑，`game1192`适配注册表及实体世界接口，资源包格式使用9。
+1.19.2 Forge当前产物为`dist/probe/mcai-probe-1.19.2-forge-0.4.1.jar`，沿用协议1；既有v0.11.1公开附件仍为旧Probe。完整本地发行构建将七目标放入B包，A／B配套升级。该目标复用Forge生命周期和诊断逻辑，`game1192`适配注册表及实体世界接口，资源包格式使用9。
 
 spark API仅作编译依赖。构建脚本通过同一代理下载官方仓库的固定快照`0.1-20260912.112908-2`，SHA-256为`e4856b0d2ba56db652ca340821a5b40ad0bdd192cf77707ba0f4557eeb5cb63d`，缓存在`runtime/probe-build/`并在每次构建校验；不把API JAR嵌入MOD。直接调用Gradle前先运行构建脚本准备依赖。来源和许可记录在Probe的NOTICE。
 
 Forge1.21.1使用官方运行时映射，关闭reobf并移除SRG refmap；开发环境让metadata与classes共用目录，固定jopt-simple5.0.4。MixinExtras common仅用于编译／注解处理，loader组件嵌入JAR，避免Java21重复模块。安装版验证实际映射和Jar-in-Jar；Forge52.0.28实测停服后仍遗留上游非daemon线程，本轮固定52.1.2完成正常退出验收。
+
+## 模拟玩家清理整改（2026-11-17，开发态）
+
+死亡／移除／断开统一完成原服务端离线清理后再删除模拟会话；旧Netty伪连接补发送完成回调，kick可正常结束连接，同名重新创建可从保存的零生命值恢复。共享实服脚本加入死亡、kick、同名重入。七目标clean构建通过，JAR检查不含Fixture；GTNH2.6.1和DeceasedCraft5.10.17实服通过存活移除、死亡、kick、原版列表一致性及带活动模拟玩家正常停服，两次JVM／BAT退出且托管窗口保留。详见[整改证据与边界](two-servers-fixes-2026-11-17.md#r02模拟玩家完整离线清理)，本轮未重跑其他五目标实服。
 
 ## 0.14.0发行（Probe 0.4.0，2026-11-16）
 

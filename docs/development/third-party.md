@@ -19,6 +19,8 @@
 
 ## 审核与重试设计参考
 
+上下文计数复用AstrBot的字符估算，以真实API输入用量校准；不附加分词运行库或词表。基准样本和适用边界见[272K整改记录](context-272k-fixes-2026-11-17.md)。
+
 本轮审核整改参考本地Codex固定提交69231e119b：guardian/review_request.rs的真实输入版本与审核失效判断、guardian-reviewer/approval_request_json.rs的原始动作序列化，以及shell-command中使用PowerShell原生AST的解析方式。MCAI以现有Python、持久记录和PowerShell实现对应能力，不引入Codex运行依赖。
 
 参考 DeepSeek Harness 固定提交 `e8f7b93a344964de3dca1ace9e72b6e4d6de87cb` 的 [auto-review](https://github.com/deepseek-ai/deepseek-harness/tree/e8f7b93a344964de3dca1ace9e72b6e4d6de87cb/packages/experimental/auto-review)、user-approval 和 llm-retry：工具执行前独立审核、决定绑定单次调用、审核事件不进入主模型对话，以及从持久步骤恢复。实现继续使用 AstrBot 原生 runner，没有引入该 harness 的运行时或复制其权限策略。

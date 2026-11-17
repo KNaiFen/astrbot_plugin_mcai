@@ -2,6 +2,8 @@
 
 import copy
 
+from .tool_arguments import CHECK, describe_arguments, field_names, model_schema
+
 STRING = {"type": "string"}
 INTEGER = {"type": "integer", "minimum": 0}
 NBT_PATH = {"$ref": "#/$defs/nbt_path"}
@@ -187,6 +189,10 @@ CHECK_SCHEMA = variants(
             {
                 "pattern": STRING,
                 "forbid": STRING,
+                "regex": {
+                    "type": "boolean",
+                    "description": "默认false按字面量匹配；true才使用正则，提案前校验语法。",
+                },
                 "after": INTEGER,
                 "session_id": STRING,
                 "timeout": {
@@ -653,10 +659,11 @@ TOOLS = [
     ),
     (
         "mc_logs",
-        "搜索普通或 gzip 日志，返回文件/行号/事件时间/调用栈上下文。时间为实例本地时间 ISO 格式，无日期的 latest.log 时间未知；后台任务使用 mc_job_read 续读。",
+        "搜索普通或gzip日志，默认view=events按完整多行事件归组，给次数、起止范围、代表栈和罕见组索引，保留UUID/坐标/路径。原文用view=value，before_lines/after_lines仅用于原文模式。时间为实例本地ISO；后台用next_call读取。",
         contract(
             {
                 "query": STRING,
+                "view": {"enum": ["events", "value"]},
                 "pattern": STRING,
                 "regex": {"type": "boolean"},
                 "case_sensitive": {"type": "boolean"},
@@ -671,7 +678,7 @@ TOOLS = [
     ),
     (
         "mc_console_read",
-        "读取已绑定实例当前托管窗口的新输出，不发送命令。data含items/cursor/session_id/gap；events_complete只表示事件页结束，pending_reads列出本页每条长行尾部与下一事件页的完整调用，须全部续读，各调用自己的complete不清空其他待办。next_call优先给第一条长行。用cursor作为下次after，更早的内容用mc_logs。",
+        "读取当前窗口新输出。data含items/cursor/session_id/gap；pending_reads列长行尾部及后续页，完整页须全部续读，单条complete不清空其他待办。当前决定证据已足够可保留未读状态，complete不是任务验收门槛。next_call优先长行，用cursor续读，旧内容查mc_logs。",
         contract({**PAGE, "session_id": STRING}),
     ),
     (
@@ -766,11 +773,11 @@ TOOLS = [
     ),
     (
         "mc_region_blocks",
-        "查询实例已保存的方块。get使用全局block_x/y/z读取一处状态及方块实体；search使用全局区块x/z检索或统计，可按name/legacy_id筛选。返回完整SNBT可用于后续block_set提案；不代表未保存的现场。",
+        "查询实例已保存的方块。read使用全局block_x/y/z读取一处状态及方块实体；search使用全局区块x/z检索或统计，可按name/legacy_id筛选。返回完整SNBT可用于后续block_set提案；不代表未保存的现场。GTNH等扩展数字ID的block_set未获支持，不能仅凭此读取结果提案修改。",
         variants(
             "mode",
             {
-                "get": (
+                "read": (
                     {
                         "path": STRING,
                         "block_x": {"type": "integer"},
@@ -874,9 +881,15 @@ TOOLS = [
     ),
     (
         "mc_artifact_read",
-        "按字符读取后台任务中的长字段原文。job_id与reference都取自同一后台结果；data.text为本页正文，next_call继续余下字符。不接受网页或搜索来源引用。",
+        "读取后台产物，默认summary给有界结构。result_path为JSON键/下标数组，定向取必要字段；view=value或明确offset按字符读原文。勿顺序搬运整块NBT，优先原NBT工具的children/selector/nbt_path。不接受网页引用。",
         contract(
-            {"job_id": STRING, "reference": STRING, "offset": INTEGER},
+            {
+                "job_id": STRING,
+                "reference": STRING,
+                "offset": INTEGER,
+                "view": {"enum": ["summary", "value"]},
+                "result_path": NBT_PATH,
+            },
             ("job_id", "reference"),
         ),
     ),
@@ -898,19 +911,27 @@ TOOLS = [
     ),
     (
         "mc_operation_read",
-        "查询当前实例原操作的实际状态、参数、结果、部分进度及修复脚本日志，不重新执行。operation_id来自原调用或任务持久记录；失败/结果不确定时先查此记录。脚本日志可沿next_call续读。",
-        contract({"operation_id": STRING, "offset": INTEGER}, ("operation_id",)),
+        "查询当前实例原操作，不重新执行。operation_id沿用原编号；result_path按JSON键/下标定向取原值，如[operation,status]、[operation,current_step]或[operation,error]，避免整份记录送审。省略路径返回完整操作及脚本日志；日志沿next_call续读。",
+        contract(
+            {"operation_id": STRING, "offset": INTEGER, "result_path": NBT_PATH},
+            ("operation_id",),
+        ),
     ),
     (
         "mc_context_history",
-        "查询当前任务被压缩的原始对话证据，不是已验收经验库。省略entry列索引；entry取索引body.entry，offset续读该段原文。已验收经验使用mc_history。",
+        "读取当前任务压缩原文或外置结果；省略entry列索引，entry默认summary有界概览，result_path按JSON键/下标定位，可直接穿过content/text内的JSON字符串，view=value或offset续读必要原文。不重新执行工具；已验收经验用mc_history。",
         {
             "type": "object",
             "properties": {},
             "oneOf": [
                 contract({"after": INTEGER}),
                 contract(
-                    {"entry": {"type": "integer", "minimum": 1}, "offset": INTEGER},
+                    {
+                        "entry": {"type": "integer", "minimum": 1},
+                        "offset": INTEGER,
+                        "view": {"enum": ["summary", "value"]},
+                        "result_path": NBT_PATH,
+                    },
                     ("entry",),
                 ),
             ],
@@ -918,7 +939,7 @@ TOOLS = [
     ),
     (
         "mc_propose",
-        "提交方案或已批准方案的下一批具体步骤。首次可用continuation声明允许范围与完成条件，审核后返回awaiting_approval、plan_id和批准命令；管理员批准一次后，续批填写plan_id，审核通过即queued，无需重复批准。续批不能修改continuation。文件修改仍停服备份；command可在线执行，无恢复备份须在summary说明；script声明全部备份路径。",
+        "提交方案或已批准方案的下一批具体步骤。首次可用continuation声明允许范围与完成条件，审核后返回awaiting_approval、plan_id和批准命令；管理员批准一次后，续批填写plan_id，审核通过即queued，无需重复批准。续批不能修改continuation。文件修改仍停服备份；snapshot由程序自动插入，不可作为公开action提交。command可在线执行，无恢复备份须在summary说明；script声明全部备份路径。",
         {
             **contract(
                 {
@@ -945,7 +966,7 @@ TOOLS = [
     ),
     (
         "mc_plan_finish",
-        "当前批次结果已结算后，结束已批准多轮方案的执行资格并记录实际结果；不代替管理员验收。summary说明验证依据和未确定事项，随后用final报告并请求/mcaidone验收。",
+        "当前批次结果已结算后，结束带continuation的已批准多轮方案，记录实际结果。单次方案完成后直接报告；不调用本工具。不代替管理员验收，summary说明验证依据和未确定事项，随后用final报告并请求/mcaidone验收。",
         contract(
             {
                 "plan_id": {"type": "string", "minLength": 1},
@@ -1213,6 +1234,16 @@ def complete_schema(schema, tool):
 
 
 TOOLS = [
-    (name, description, complete_schema(schema, name))
+    (
+        name,
+        describe_arguments(
+            description,
+            {
+                **(CHECK if name in ("mc_verify", "mc_propose") else {}),
+                **field_names(name),
+            },
+        ),
+        model_schema(complete_schema(schema, name), name),
+    )
     for name, description, schema in TOOLS
 ]

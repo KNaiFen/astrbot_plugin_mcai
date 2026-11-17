@@ -13,6 +13,8 @@ from .plans import plan_identity, plan_text
 from .review import digest
 from .web import WebPages
 
+MESSAGE_RETRY_DELAYS = (2, 4)
+
 
 def message_parts(text):
     offset = 0
@@ -41,6 +43,7 @@ class Tasks:
         self.archive_workers = {}
         self.create_lock = asyncio.Lock()
         self.workers = {}
+        self.model_requests = {}
         self.outbox_worker = None
         self.closing = False
 
@@ -65,6 +68,8 @@ class Tasks:
         return matches[0]
 
     async def start(self):
+        if self.outbox_worker is not None:
+            return
         self.outbox_worker = asyncio.create_task(self.deliver())
         for job in self.jobs.values():
             if job.get("archive_state") in ("pending", "ready"):
@@ -72,24 +77,30 @@ class Tasks:
             if job.get("cancel_pending"):
                 self.wake(job)
             elif job["state"] == "running":
-                job["pending"].append(
-                    {
-                        "sender": "system",
-                        "text": "插件重启，请根据已保存的上下文和操作结果继续排查。",
-                    }
-                )
+                if not job.get("model_retry"):
+                    job["pending"].append(
+                        {
+                            "sender": "system",
+                            "text": "插件重启，请根据已保存的上下文和操作结果继续排查。",
+                        }
+                    )
                 self.save(job)
                 self.wake(job)
             elif job["state"] == "applying":
                 self.wake(job)
 
-    def message(self, job, text, mention=None):
+    def message(self, job, text, mention=None, *, identity=None):
+        from .search import render_citations
+
+        text = render_citations(self.store, job["id"], text)
         text = re.sub(r"\n\s*\n(?=[^\n]*/mcai[a-z]+\b)", "\n", text.strip())
         if not text:
             return
         self.log(job, "group_message", text=text)
         for offset, part in message_parts(text):
-            key = uuid.uuid4().hex
+            key = f"{identity}-{offset}" if identity else uuid.uuid4().hex
+            if self.store.get("outbox", key):
+                continue
             self.store.save(
                 "outbox",
                 key,
@@ -113,7 +124,9 @@ class Tasks:
         if not forward:
             self.store.save("progress", key, {"id": key})
             return
-        display = progress_text(text)
+        from .search import render_citations
+
+        display = progress_text(render_citations(self.store, job["id"], text))
         for offset, part in message_parts(display):
             item_id = f"progress-{key}-{offset}"
             if not self.store.get("outbox", item_id):
@@ -164,9 +177,8 @@ class Tasks:
         self.wake(job)
 
     async def deliver(self):
-        delay = 1
         while True:
-            failed = False
+            delay = 1
             for item in self.store.pending_outbox():
                 if (
                     item.get("progress_task")
@@ -175,18 +187,31 @@ class Tasks:
                     item.update(sent=True, discarded=True)
                     self.store.save("outbox", item["id"], item)
                     continue
+                item["attempts"] = item.get("attempts", 0) + 1
+                self.store.save("outbox", item["id"], item)
                 try:
                     await self.notify(item["origin"], item["text"], item["mention"])
-                except Exception:
+                except Exception as exc:
+                    item.update(
+                        error=f"{type(exc).__name__}: {exc}",
+                        failed=item["attempts"] >= 3,
+                    )
+                    self.store.save("outbox", item["id"], item)
                     self.store.log(
                         "message_delivery_error",
                         task=item.get("task"),
+                        outbox=item["id"],
+                        attempts=item["attempts"],
+                        exhausted=item["failed"],
                         text=item["text"],
                         traceback=traceback.format_exc(),
                     )
-                    failed = True
+                    if item["failed"]:
+                        continue
+                    delay = MESSAGE_RETRY_DELAYS[item["attempts"] - 1]
                     break
                 item["sent"] = True
+                item.pop("error", None)
                 self.store.save("outbox", item["id"], item)
                 self.store.log(
                     "group_message_sent",
@@ -194,7 +219,6 @@ class Tasks:
                     text=item["text"],
                     outbox=item["id"],
                 )
-            delay = min(delay * 2, 15) if failed else 1
             await asyncio.sleep(delay)
 
     async def create(self, group, origin, name, instance, sender, report):
@@ -236,7 +260,13 @@ class Tasks:
             "instance": instance,
             "admin": sender,
             "state": "running",
-            "pending": [{"sender": sender, "text": report}],
+            "pending": [
+                {
+                    "sender": sender,
+                    "is_admin": True,
+                    "text": "【管理员创建任务】\n" + report,
+                }
+            ],
             "messages": [],
             "plan": None,
             "operation": None,
@@ -421,6 +451,20 @@ class Tasks:
         if sender not in job["participants"]:
             job["participants"].append(sender)
         if job["state"] != "applying":
+            if job["plan"]:
+                job["proposal_invalidated"] = {
+                    "id": job["plan"].get("id"),
+                    "reason": "收到新的用户补充",
+                    "time": time.time(),
+                }
+                job["pending"].append(
+                    {
+                        "sender": "system",
+                        "event": "proposal_invalidated",
+                        **job["proposal_invalidated"],
+                        "text": "程序已使原待批准方案失效，当前没有待批准方案。请结合补充重新判断；仍需修改时重新调用mc_propose，只有返回awaiting_approval后才可提示批准。已批准多轮方案的状态以程序记录为准。",
+                    }
+                )
             job["plan"] = None
         self.log(job, "feedback", **feedback)
         self.save(job)
@@ -481,6 +525,7 @@ class Tasks:
             return
         self.end_plan(job, "replaced", "已提交替代方案，等待重新批准")
         job["plan"] = plan
+        job.pop("proposal_invalidated", None)
         self.save(job)
         self.log(job, "plan", plan=job["plan"])
         hints = f"\n管理员批准：“/mcaiapply {job['name']}”\n需补充或调整：“/mcaisay {job['name']} 内容”"
@@ -597,6 +642,9 @@ class Tasks:
             "管理员验收" if done else "管理员中止",
         )
         self.agent.stop(job["id"])
+        request = self.model_requests.get(job["id"])
+        if request:
+            request.cancel()
         job["plan"] = None
         if job["id"] not in self.workers:
             job["state"] = "done" if done else "stopped"
@@ -610,13 +658,16 @@ class Tasks:
         self.wake(job)
 
     def pause_requested(self, job):
-        if job["state"] == "applying":
+        if job["state"] == "applying" and job["id"] not in self.model_requests:
             job["pause_after_operation"] = True
             self.save(job)
             self.message(job, "当前修复操作完成后暂停，进度会保留。")
         else:
             self.agent.stop(job["id"])
             self.pause(job, "管理员手动暂停")
+            request = self.model_requests.get(job["id"])
+            if request:
+                request.cancel()
             worker = self.workers.get(job["id"])
             if worker:
                 worker.cancel()

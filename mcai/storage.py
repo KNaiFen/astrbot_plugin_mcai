@@ -34,7 +34,9 @@ class Store:
     def save(self, kind, key, body):
         with self.db:
             self.db.execute(
-                "INSERT OR REPLACE INTO records VALUES (?, ?, ?)",
+                "INSERT INTO records VALUES (?, ?, ?) ON CONFLICT(kind,id) DO UPDATE SET body=excluded.body"
+                if kind == "outbox"
+                else "INSERT OR REPLACE INTO records VALUES (?, ?, ?)",
                 (kind, key, json.dumps(body, ensure_ascii=False)),
             )
 
@@ -73,7 +75,7 @@ class Store:
         return [
             json.loads(row[0])
             for row in self.db.execute(
-                "SELECT body FROM records WHERE kind='outbox' AND json_extract(body, '$.sent')=0 ORDER BY rowid LIMIT ?",
+                "SELECT body FROM records WHERE kind='outbox' AND json_extract(body, '$.sent')=0 AND COALESCE(json_extract(body, '$.attempts'),0)<3 ORDER BY rowid LIMIT ?",
                 (limit,),
             )
         ]
