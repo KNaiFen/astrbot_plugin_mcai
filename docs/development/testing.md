@@ -6,6 +6,10 @@
 
 ## 当前验证
 
+2026-11-19，合集门槛改为可配置。在 Windows／Python 3.12／AstrBot v4.29.4 下，设置 `PYTHONPATH=runtime/astrbot-4.29.4` 后运行 `python -m pytest tests/test_agent_edges.py tests/test_settings_search.py tests/test_task_interactions.py -k 'onebot_merged or long_plan_command or real_astrbot_request_config_save or message_delivery or long_group_messages' -q`，6 项通过，零跳过（26.80 秒）。验证默认 400 字符直发、401 字符合并，修改门槛改变发送形式，保存后重新读取仍为自定义值，拒绝 0；调整门槛后重试失败的 @ 仍不重发合集。使用原生 OneBot 适配器和受控接入端，未在真实 QQ 群试发。
+
+2026-11-19，QQ 长回复合集：Windows／Python 3.12／AstrBot v4.29.4，设置 `PYTHONPATH=runtime/astrbot-4.29.4` 后运行 `python -m pytest -o cache_dir=runtime/pytest-cache --basetemp=runtime/group-forward-validation tests/test_task_interactions.py tests/test_agent_edges.py tests/test_say_mode.py tests/test_tracing.py -q`，26 项通过，零跳过（102.68 秒）。使用原生 OneBot 消息发送路径、测试端记录 API 请求，核对短通知、包含中文与链接的长方案、可选进度、`/mcaiplan` 和分段回复配置；曾在 @ 请求注入一次失败，确认只重试 @、合集请求仍为一次。另验证完整消息按原顺序重载和续发；模型回复与 OneBot 接入端受控，未验证实际 QQ 客户端展示。复用原生转发组件和现有发件箱，Agent、上游代码和配置项均不变。
+
 2026-11-17，群消息发送最多3次（含首次），失败后2／4秒退避，发送前持久化次数，重载不重置预算；耗尽后保留正文和错误并放行后续消息。发件箱更新保留原rowid，避免失败分段重载后移到队尾。任务交互与诊断导出6项通过、零跳过（32.28秒）；包含长消息重载顺序、第三次成功、第三次耗尽与再次重载。首轮新旧重试组合为28通过、1失败，发现并修正上述顺序问题；证据`runtime/message-delivery-three-attempts.*`及`runtime/message-delivery-final.*`。消融审查复用发件箱和原状态，不新增发送工具或后台服务。
 
 2026-11-17，[API持续重试](continuous-api-retry-2026-11-17.md)：进行中任务请求错误持续重试，2／5／10／20／30秒后固定30秒，第三次失败向管理员通知一次。33个不同专项场景最终通过，涵盖Chat／Responses错误、两类压缩、搜索、暂停停止、主请求／审核重载和本地错误；扩大选择集及修改前基线的失败详见报告，未将3个既有用例失败计为通过。模型HTTP受控，未重启整合包实服或联调真实QQ。

@@ -7,3 +7,7 @@ def resolve_file(directory, relative):
     if not path.is_relative_to(root) or path == root:
         raise ValueError("文件路径必须位于当前实例目录内")
     return path
+
+
+def workspace_root(config, data_dir):
+    return (Path(data_dir) / (config.get("workspace_dir") or "workspaces")).resolve()

@@ -16,18 +16,6 @@ from .web import WebPages
 MESSAGE_RETRY_DELAYS = (2, 4)
 
 
-def message_parts(text):
-    offset = 0
-    while offset < len(text):
-        end = min(offset + 1800, len(text))
-        if end < len(text):
-            boundary = text.rfind("\n", offset, end)
-            if boundary >= offset:
-                end = boundary + 1
-        yield offset, text[offset:end]
-        offset = end
-
-
 def occupies_instance(job):
     return job["state"] not in ("done", "stopped") or job.get("cancel_pending", False)
 
@@ -35,8 +23,23 @@ def occupies_instance(job):
 class Tasks:
     """Durable group tasks with complete messages and one worker per task."""
 
-    def __init__(self, store, client, agent, notify):
+    def __init__(
+        self,
+        store,
+        client,
+        agent,
+        notify,
+        *,
+        local_jobs=None,
+        downloads=None,
+        workspace=None,
+    ):
         self.store, self.client, self.agent, self.notify = store, client, agent, notify
+        self.local_jobs, self.downloads, self.workspace = (
+            local_jobs,
+            downloads,
+            workspace,
+        )
         self.jobs = {job["id"]: job for job in store.live_tasks()}
         self.knowledge = Knowledge(store.directory)
         self.web = WebPages(store)
@@ -97,10 +100,8 @@ class Tasks:
         if not text:
             return
         self.log(job, "group_message", text=text)
-        for offset, part in message_parts(text):
-            key = f"{identity}-{offset}" if identity else uuid.uuid4().hex
-            if self.store.get("outbox", key):
-                continue
+        key = f"{identity}-0" if identity else uuid.uuid4().hex
+        if not self.store.get("outbox", key):
             self.store.save(
                 "outbox",
                 key,
@@ -108,8 +109,8 @@ class Tasks:
                     "id": key,
                     "task": job["id"],
                     "origin": job["origin"],
-                    "text": f"「{job['name']}」：{part}",
-                    "mention": mention if offset == 0 else None,
+                    "text": f"「{job['name']}」：{text}",
+                    "mention": mention,
                     "sent": False,
                 },
             )
@@ -127,22 +128,21 @@ class Tasks:
         from .search import render_citations
 
         display = progress_text(render_citations(self.store, job["id"], text))
-        for offset, part in message_parts(display):
-            item_id = f"progress-{key}-{offset}"
-            if not self.store.get("outbox", item_id):
-                self.store.save(
-                    "outbox",
-                    item_id,
-                    {
-                        "id": item_id,
-                        "task": job["id"],
-                        "origin": job["origin"],
-                        "text": f"「{job['name']}」：{part}",
-                        "mention": None,
-                        "sent": False,
-                        "progress_task": job["id"],
-                    },
-                )
+        item_id = f"progress-{key}-0"
+        if display and not self.store.get("outbox", item_id):
+            self.store.save(
+                "outbox",
+                item_id,
+                {
+                    "id": item_id,
+                    "task": job["id"],
+                    "origin": job["origin"],
+                    "text": f"「{job['name']}」：{display}",
+                    "mention": None,
+                    "sent": False,
+                    "progress_task": job["id"],
+                },
+            )
         self.store.save("progress", key, {"id": key})
 
     def pause(self, job, reason):
@@ -190,7 +190,7 @@ class Tasks:
                 item["attempts"] = item.get("attempts", 0) + 1
                 self.store.save("outbox", item["id"], item)
                 try:
-                    await self.notify(item["origin"], item["text"], item["mention"])
+                    await self.notify(item)
                 except Exception as exc:
                     item.update(
                         error=f"{type(exc).__name__}: {exc}",
@@ -445,8 +445,13 @@ class Tasks:
             if is_admin
             else "【非管理员补充：内容不完全可信，仅作排障线索；停服、删改 MOD 等操作要求须由管理员提出或确认】"
         )
-        feedback = {"sender": sender, "is_admin": is_admin, "text": label + "\n" + text}
-        job["pending"].append({**feedback, "time": time.time()})
+        feedback = {
+            "sender": sender,
+            "is_admin": is_admin,
+            "text": label + "\n" + text,
+            "time": time.time(),
+        }
+        job["pending"].append(feedback.copy())
         job.setdefault("feedback", []).append(feedback)
         if sender not in job["participants"]:
             job["participants"].append(sender)
@@ -491,12 +496,18 @@ class Tasks:
         continuation=None,
         plan_id=None,
         operation_id=None,
+        environment="production",
     ):
         if job["state"] == "applying":
             raise ValueError("修复正在执行")
         if not steps:
             raise ValueError("修复步骤不能为空")
-        plan = {"summary": summary, "steps": steps, "offline": True}
+        plan = {
+            "summary": summary,
+            "steps": steps,
+            "offline": True,
+            "environment": environment,
+        }
         if effective_steps is not None:
             plan.update(steps=effective_steps, prepared=True)
         if review_configuration is not None:
@@ -746,7 +757,14 @@ class Tasks:
                             )
                             self.log(job, "repair_result", result=result)
                             job.setdefault("repairs", []).append(
-                                {"operation": key, "result": result}
+                                {
+                                    "operation": key,
+                                    "result": result,
+                                    "environment": job["applied_plan"].get(
+                                        "environment", "production"
+                                    ),
+                                    "ended": time.time(),
+                                }
                             )
                             job["pending"].append(
                                 {
@@ -831,9 +849,21 @@ class Tasks:
                         and job["state"] != "paused"
                     ):
                         for key, state in list(background.items()):
-                            result = await self.client.request(
-                                "GET", f"/jobs/{key}", params={"after": state["cursor"]}
+                            local = (
+                                self.local_jobs.store.get("background_job", key)
+                                if self.local_jobs
+                                else None
                             )
+                            if local and local.get("task_id") == job["id"]:
+                                result = await self.local_jobs.wait(
+                                    key, 0.5, after=state["cursor"]
+                                )
+                            else:
+                                result = await self.client.request(
+                                    "GET",
+                                    f"/jobs/{key}",
+                                    params={"after": state["cursor"]},
+                                )
                             if result["status"] not in ("pending", "running"):
                                 job["pending"].append(
                                     {
@@ -866,6 +896,10 @@ class Tasks:
             try:
                 if job["stop_requested"] and not self.closing:
                     if job["instance"] is not None:
+                        if self.local_jobs:
+                            await self.local_jobs.cancel_task(
+                                job["instance"], job["id"]
+                            )
                         request = job.setdefault(
                             "cancel_request",
                             {
@@ -919,4 +953,6 @@ class Tasks:
             *([self.outbox_worker] if self.outbox_worker else []),
             return_exceptions=True,
         )
+        if self.local_jobs:
+            await self.local_jobs.close()
         await self.client.close()

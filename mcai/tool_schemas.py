@@ -227,6 +227,21 @@ STEP_SCHEMA = variants(
         "start": ({}, ()),
         "stop": ({}, ()),
         "restart": ({}, ()),
+        "prepare_test": (
+            {
+                "paths": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": STRING,
+                    "description": "除 start.bat 外只复制这里列出的路径。先核对绑定服目录，列全实际存在的启动 JAR、运行库、MOD、配置、EULA 等依赖；不要填写不存在的可选文件。",
+                }
+            },
+            ("paths",),
+        ),
+        "copy_test_world": (
+            {"paths": {"type": "array", "minItems": 1, "items": STRING}},
+            ("paths",),
+        ),
         "force_stop": (
             {
                 "pid": {"type": "integer", "minimum": 1},
@@ -596,7 +611,7 @@ TOOLS = [
     ),
     (
         "mc_download",
-        "将明确 HTTP/HTTPS 直链下载到 B 任务暂存区，不安装不执行。可提供 sha256。后台结果用 mc_job_read；安装需 install_download 方案批准。",
+        "由 A 端将明确 HTTP/HTTPS 直链下载到当前任务暂存区，不安装不执行。可提供 sha256。后台结果用 mc_job_read；安装需 install_download 方案批准。",
         contract(
             {
                 "url": STRING,
@@ -605,6 +620,52 @@ TOOLS = [
             },
             ("url",),
         ),
+    ),
+    (
+        "mc_workspace",
+        "A 端 MOD 源码修复与构建工作区：pull 从绑定服取文件，use_download 取用任务下载文件；可列文件、读文本。exec 在已批准的多轮方案内经独立审核后台执行 PowerShell 7.3+。stage 在 A 登记构建制品并返回 download_id；提交 install_download 时才传到 B 暂存。",
+        variants(
+            "mode",
+            {
+                "list": ({"path": STRING}, ()),
+                "read": (
+                    {
+                        "path": STRING,
+                        "offset": INTEGER,
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 24000},
+                        "encoding": STRING,
+                    },
+                    ("path",),
+                ),
+                "exec": (
+                    {
+                        "script": STRING,
+                        "cwd": STRING,
+                        "timeout_seconds": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 3600,
+                        },
+                        **SCRIPT_FILES,
+                    },
+                    ("script",),
+                ),
+                "pull": (
+                    {"path": STRING, "destination": STRING},
+                    ("path", "destination"),
+                ),
+                "stage": ({"path": STRING}, ("path",)),
+                "use_download": (
+                    {"download_id": STRING, "destination": STRING},
+                    ("download_id", "destination"),
+                ),
+            },
+        ),
+    ),
+    (
+        "mc_test_server",
+        "查询当前任务测试副本状态及玩家入口，或打开独立托管终端。先用 mc_propose 提交 prepare_test，从绑定服复制启动文件、MOD 和配置（不填 environment 或填 production）；需要一致世界时追加 copy_test_world。建好后用 environment=test 启停、操作和查询副本。",
+        contract({"mode": {"enum": ["status", "open"]}}, ("mode",)),
     ),
     (
         "mc_status",
@@ -678,20 +739,31 @@ TOOLS = [
     ),
     (
         "mc_console_read",
-        "读取当前窗口新输出。data含items/cursor/session_id/gap；pending_reads列长行尾部及后续页，完整页须全部续读，单条complete不清空其他待办。当前决定证据已足够可保留未读状态，complete不是任务验收门槛。next_call优先长行，用cursor续读，旧内容查mc_logs。",
-        contract({**PAGE, "session_id": STRING}),
+        "读取当前窗口新输出。environment=test时读取当前任务隔离测试服。data含items/cursor/session_id/gap；pending_reads列长行尾部及后续页，完整页须全部续读，单条complete不清空其他待办。当前决定证据已足够可保留未读状态，complete不是任务验收门槛。next_call优先长行，用cursor续读，旧内容查mc_logs。",
+        contract(
+            {
+                **PAGE,
+                "session_id": STRING,
+                "environment": {"enum": ["production", "test"]},
+            }
+        ),
     ),
     (
         "mc_console_line",
-        "续读mc_console_read返回的单条长行。seq和session_id取自原控制台页，offset取该行next_offset；data.text为正文，next_call继续读余下字符。",
+        "续读mc_console_read返回的单条长行。seq和session_id取自原控制台页，offset取该行next_offset；需要时沿用environment=test。data.text为正文，next_call继续读余下字符。",
         contract(
-            {"session_id": STRING, "seq": INTEGER, "offset": INTEGER},
+            {
+                "session_id": STRING,
+                "seq": INTEGER,
+                "offset": INTEGER,
+                "environment": {"enum": ["production", "test"]},
+            },
             ("session_id", "seq"),
         ),
     ),
     (
         "mc_console_send",
-        "向已绑定且运行中的服务端顺序发送诊断命令；整批独立审核，无需人工批准。commands一条也用数组。data.status=sent仅表示发送，逐条状态及新输出保留，next_call读取后续控制台。spark tps等已有诊断可直接使用；修改、强制保存、启停用mc_propose。",
+        "向已绑定且运行中的服务端顺序发送诊断命令；environment=test可选择当前任务测试服。整批独立审核，无需人工批准。commands一条也用数组。data.status=sent仅表示发送，逐条状态及新输出保留，next_call读取后续控制台。spark tps等已有诊断可直接使用；修改、强制保存、启停用mc_propose。",
         contract(
             {
                 "commands": {
@@ -699,6 +771,7 @@ TOOLS = [
                     "minItems": 1,
                     "items": {"type": "string", "minLength": 1},
                 },
+                "environment": {"enum": ["production", "test"]},
                 **SCRIPT_FILES,
             },
             ("commands",),
@@ -957,6 +1030,10 @@ TOOLS = [
                         ("scope", "completion"),
                     ),
                     "plan_id": {"type": "string", "minLength": 1},
+                    "environment": {
+                        "enum": ["production", "test"],
+                        "description": "默认 production 指绑定服；prepare_test 从绑定服创建副本。test 操作已创建的副本。",
+                    },
                     **SCRIPT_FILES,
                 },
                 ("summary", "steps"),
@@ -1035,7 +1112,7 @@ for choice in mod_choices:
 TOOLS.append(
     (
         "mc_mods",
-        "通过Modrinth/CurseForge查询组件：search搜项目、project读说明、versions筛版本、file看依赖、download暂存选定文件。先核实MC/加载器；暂存job_id用于安装提案。",
+        "由 A 端通过Modrinth/CurseForge查询组件：search搜项目、project读说明、versions筛版本、file看依赖、download暂存选定文件。先核实MC/加载器；暂存job_id用于安装提案。",
         {
             "type": "object",
             "properties": mod_properties,
@@ -1280,7 +1357,10 @@ TOOLS.extend(
             '顶层["--help"]用于不知道命令时。复杂参数用JSON字符串；布尔开关可用--选项/--no-选项。'
             "查询返回原结果及next_call；修改预览不写入，实际修改仍用mc_propose。",
             contract(
-                {"argv": {"type": "array", "minItems": 1, "items": STRING}},
+                {
+                    "argv": {"type": "array", "minItems": 1, "items": STRING},
+                    "environment": {"enum": ["production", "test"]},
+                },
                 ("argv",),
             ),
         ),

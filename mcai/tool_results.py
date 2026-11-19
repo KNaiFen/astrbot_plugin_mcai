@@ -49,6 +49,9 @@ def model_result(name, arguments, result, operation_id=None):
     elif "next_cursor" in data:
         data.setdefault("complete", data["next_cursor"] is None)
     next_name, next_args = name, dict(arguments)
+    environment = (
+        {"environment": "test"} if arguments.get("environment") == "test" else {}
+    )
     if {"id", "status", "items"} <= data.keys():
         data["job_id"] = data.pop("id")
         for row in data["items"]:
@@ -85,6 +88,7 @@ def model_result(name, arguments, result, operation_id=None):
                     "session_id": data["session_id"],
                     "seq": row["seq"],
                     "offset": row["next_offset"],
+                    **environment,
                 },
             }
             for row in data["items"]
@@ -113,7 +117,7 @@ def model_result(name, arguments, result, operation_id=None):
             return output
         next_name, next_args = (
             "mc_console_read",
-            {"after": data["cursor"], "session_id": data["session_id"]},
+            {"after": data["cursor"], "session_id": data["session_id"], **environment},
         )
     elif data.get("next_offset") is not None:
         next_args["offset"] = data["next_offset"]

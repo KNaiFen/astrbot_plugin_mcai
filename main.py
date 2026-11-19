@@ -1,17 +1,24 @@
+import asyncio
 import uuid
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
-from astrbot.api.message_components import At, Plain, Reply
+from astrbot.api.message_components import At, Node, Nodes, Plain, Reply
 from astrbot.api.star import Context, Star
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .mcai.astrbot_agent import AstrBotAgent
 from .mcai.client import HostClient
+from .mcai.configuration import powershell_path
+from .mcai.downloads import Downloads
+from .mcai.jobs import Jobs
+from .mcai.memory_job import MemoryJob
+from .mcai.paths import workspace_root
 from .mcai.storage import Store
-from .mcai.tasks import Tasks, message_parts, plan_text
+from .mcai.tasks import Tasks, plan_text
 from .mcai.tracing import trace_event
+from .mcai.workspace import Workspace
 
 COMMANDS = {
     "mcainew",
@@ -27,6 +34,29 @@ COMMANDS = {
     "mcaiplan",
     "mcaipause",
 }
+GROUP_MESSAGE_PART_LIMIT = 1800
+DEFAULT_GROUP_FORWARD_THRESHOLD = 400
+
+
+def message_parts(text):
+    offset = 0
+    while offset < len(text):
+        end = min(offset + GROUP_MESSAGE_PART_LIMIT, len(text))
+        if end < len(text):
+            boundary = text.rfind("\n", offset, end)
+            if boundary >= offset:
+                end = boundary + 1
+        yield text[offset:end]
+        offset = end
+
+
+def forwarded_text(text, bot_id):
+    return Nodes(
+        [
+            Node(uin=str(bot_id), name="MCAI", content=[Plain(part)])
+            for part in message_parts(text)
+        ]
+    )
 
 
 class MCAI(Star):
@@ -40,6 +70,11 @@ class MCAI(Star):
         self.store = Store(
             Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_mcai"
         )
+        powershell = config.get("workspace_powershell_path", "")
+        if powershell:
+            powershell = str((self.store.directory / powershell).resolve())
+        powershell = await asyncio.to_thread(powershell_path, powershell)
+        self.workspace_memory = MemoryJob(8192)
         rules_path = self.store.directory / "AGENTS.md"
         review_rules_path = self.store.directory / "REVIEW_AGENTS.md"
         summary_rules_path = self.store.directory / "SUMMARY_AGENTS.md"
@@ -78,6 +113,19 @@ class MCAI(Star):
                 enable_alpha_search=config.get("enable_alpha_search", False),
             ),
             self.notify,
+            local_jobs=Jobs(self.store),
+            downloads=Downloads(
+                self.store,
+                {
+                    "curseforge_api_key": config.get("curseforge_api_key", ""),
+                    "download_max_bytes": 2 * 1024**3,
+                },
+            ),
+            workspace=Workspace(
+                workspace_root(config, self.store.directory),
+                powershell,
+                self.workspace_memory.name,
+            ),
         )
         from .mcai.settings import Settings
 
@@ -94,11 +142,36 @@ class MCAI(Star):
     async def on_astrbot_loaded(self):
         await self.tasks.start()
 
-    async def notify(self, origin, text, mention):
-        chain = ([At(qq=mention)] if mention else []) + [Plain(text)]
-        result = await self.context.send_message(origin, MessageChain(chain))
-        if result is False:
-            raise RuntimeError("平台暂时无法发送消息")
+    async def notify(self, item):
+        origin, text, mention = item["origin"], item["text"], item["mention"]
+        mentions = [At(qq=mention)] if mention else []
+        sent = item.get("parts_sent", 0)
+        chains = [mentions + [Plain(text)]]
+        threshold = self.config.get(
+            "group_forward_threshold", DEFAULT_GROUP_FORWARD_THRESHOLD
+        )
+        if sent or len(text) > min(threshold, GROUP_MESSAGE_PART_LIMIT):
+            platform = self.context.get_platform_inst(origin.split(":", 1)[0])
+            if platform and platform.meta().name == "aiocqhttp":
+                if sent:
+                    chains = [mentions]
+                elif len(text) > threshold:
+                    login = await platform.get_client().get_login_info()
+                    chains = [[forwarded_text(text, login["user_id"])]]
+                    if mentions:
+                        chains.append(mentions)
+            elif len(text) > GROUP_MESSAGE_PART_LIMIT:
+                chains = [[Plain(part)] for part in message_parts(text)]
+                chains[0][:0] = mentions
+                chains = chains[sent:]
+        for index, chain in enumerate(chains, 1):
+            result = await self.context.send_message(origin, MessageChain(chain))
+            if result is False:
+                raise RuntimeError("平台暂时无法发送消息")
+            if index < len(chains):
+                # 后续分段或 @ 失败时，重试从它开始并使用独立的发送次数。
+                item.update(parts_sent=sent + index, attempts=1)
+                self.store.save("outbox", item["id"], item)
 
     @filter.command("mcaihelp", alias=COMMANDS - {"mcaihelp"}, priority=100)
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=100)
@@ -146,8 +219,19 @@ class MCAI(Star):
             return
         status = "handled"
         send = event.send
+        onebot = event.get_platform_name() == "aiocqhttp"
 
         async def traced_send(message):
+            reply_text = message.get_plain_text()
+            merged = next(
+                (part for part in message.chain if isinstance(part, Nodes)), None
+            )
+            if merged is not None:
+                reply_text = "".join(node.content[0].text for node in merged.nodes)
+                # AstrBot 开启分段回复时会把 @ 移到链首，发出前恢复合集在前。
+                message = message.derive(
+                    sorted(message.chain, key=lambda part: isinstance(part, At))
+                )
             try:
                 result = await send(message)
             except Exception as exc:
@@ -155,7 +239,7 @@ class MCAI(Star):
                     self.store,
                     "command_reply_failed",
                     **trace,
-                    reply=message.get_plain_text(),
+                    reply=reply_text,
                     error=f"{type(exc).__name__}: {exc}",
                 )
                 raise
@@ -163,7 +247,7 @@ class MCAI(Star):
                 self.store,
                 "command_reply_sent",
                 **trace,
-                reply=message.get_plain_text(),
+                reply=reply_text,
             )
             return result
 
@@ -173,6 +257,18 @@ class MCAI(Star):
             trace_event(
                 self.store, "command_reply", **trace, reply=text, status="prepared"
             )
+            if onebot and len(text) > self.config.get(
+                "group_forward_threshold", DEFAULT_GROUP_FORWARD_THRESHOLD
+            ):
+                settings = self.context.get_config(event.unified_msg_origin)[
+                    "platform_settings"
+                ]
+                chain = [
+                    forwarded_text(settings["reply_prefix"] + text, event.get_self_id())
+                ]
+                if settings["reply_with_mention"]:
+                    chain.append(At(qq=sender))
+                return event.chain_result(chain)
             return event.plain_result(text)
 
         try:
@@ -317,8 +413,12 @@ class MCAI(Star):
                             else f"\n执行资格已结束。使用 “/mcaistatus {name}” 查看进度。"
                         )
                     )
-                for _, part in message_parts(text):
-                    yield reply(f"「{name}」：{part}")
+                text = f"「{name}」：{text}"
+                if onebot:
+                    yield reply(text)
+                else:
+                    for part in message_parts(text):
+                        yield reply(part)
             else:
                 say_paused = job.get("say_paused", False)
                 audience = "管理员" if say_paused else "群成员"
@@ -361,4 +461,5 @@ class MCAI(Star):
     async def terminate(self):
         await self.settings.close()
         await self.tasks.close()
+        self.workspace_memory.close()
         self.store.close()

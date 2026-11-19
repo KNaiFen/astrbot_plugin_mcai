@@ -20,6 +20,7 @@ FILE_ACTIONS = {
     "script",
     "restore",
     "install_download",
+    "copy_test_world",
 }
 
 
@@ -75,6 +76,10 @@ def effective_steps(steps, running, target_lists):
             running = True
         elif kind in ("stop", "force_stop"):
             running = False
+        if kind == "copy_test_world" and originally_running and not explicit:
+            # The immutable backup is enough to finish copying after production resumes.
+            prepared.insert(len(prepared) - 1, {"action": "start"})
+            running = True
     if originally_running and not explicit and not running:
         prepared.append({"action": "start"})
     return prepared
@@ -117,6 +122,7 @@ def plan_identity(plan):
                 "steps",
                 "continuation",
                 "plan_id",
+                "environment",
             )
             if key in plan
         }
@@ -124,7 +130,9 @@ def plan_identity(plan):
 
 
 def plan_text(plan):
-    lines = ["实际步骤："]
+    lines = [
+        "测试副本实际步骤：" if plan.get("environment") == "test" else "实际步骤："
+    ]
     labels = {"start": "启动服务端", "stop": "停止服务端", "restart": "重启服务端"}
     for index, step in enumerate(plan["steps"], 1):
         kind = step["action"]
@@ -134,6 +142,10 @@ def plan_text(plan):
             detail = f"强制停止服务端及其自动重启启动链，保留托管窗口；Java PID {step['pid']}，会话 {step['session_id']}"
         elif kind == "snapshot":
             detail = "备份：" + "、".join(step["paths"])
+        elif kind == "prepare_test":
+            detail = "创建隔离测试副本：" + "、".join(step["paths"])
+        elif kind == "copy_test_world":
+            detail = "停服备份后复制测试世界：" + "、".join(step["paths"])
         elif kind == "command":
             detail = "控制台：" + step["command"]
         elif kind == "script":

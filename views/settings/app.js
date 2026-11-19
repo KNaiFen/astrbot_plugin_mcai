@@ -16,6 +16,7 @@ function values() {
     result[element.name] = element.type === 'checkbox' ? element.checked : element.type === 'number' ? Number(element.value) : element.tagName === 'TEXTAREA' ? element.value.split(/[\s,，]+/).filter(Boolean) : element.value;
   }
   if (!result.host_token) delete result.host_token;
+  if (!result.curseforge_api_key) delete result.curseforge_api_key;
   return result;
 }
 async function loadA() {
@@ -32,13 +33,16 @@ async function loadA() {
   }
   form.elements.host_token.value = '';
   form.elements.host_token.placeholder = data.host_token_configured ? '已配置；留空保留' : '填写共享令牌';
+  form.elements.curseforge_api_key.value = '';
+  form.elements.curseforge_api_key.placeholder = data.curseforge_configured ? 'A 已配置；留空保留' : '填写 CurseForge API 密钥';
+  document.querySelector('#curseforge-state').textContent = data.curseforge_configured ? 'A 已保存密钥；不会回传原值。' : 'A 尚未配置 CurseForge 密钥。';
 }
 async function saveA() { await api('POST', 'settings', values()); }
 form.addEventListener('submit', event => { event.preventDefault(); action(event.submitter, async () => { await saveA(); show('A 配置已保存并生效。'); }); });
 document.querySelector('#connection-test').onclick = function () { action(this, async () => { const result = await api('POST', 'connection/test', values()); show(`连接成功，B 配置了 ${result.instances} 个服务端。`); }); };
 function field(container, label, value, key) {
   const wrapper = document.createElement('label'); wrapper.append(document.createTextNode(label));
-  const input = document.createElement('input'); input.value = value ?? ''; input.dataset.key = key; wrapper.append(input); container.append(wrapper); return input;
+  const input = document.createElement('input'); input.type = key === 'test_port' || key === 'stop_timeout' ? 'number' : 'text'; input.value = value ?? ''; input.dataset.key = key; wrapper.append(input); container.append(wrapper); return input;
 }
 function instance(name = '', config = {}, state = {}) {
   const card = document.createElement('article'); card.className = 'instance';
@@ -48,14 +52,13 @@ function instance(name = '', config = {}, state = {}) {
   if (state.configuration_pending) hint.textContent += ' · 配置待生效'; if (state.selectable === false) hint.textContent += ' · 待移除'; card.append(hint);
   field(card, '配置名', name, 'name'); field(card, '说明／群内叫法', config.description, 'description'); field(card, '服务端目录（其中使用 start.bat）', config.directory, 'directory');
   const advanced = document.createElement('details'), summary = document.createElement('summary'); summary.textContent = '高级选项'; advanced.append(summary);
-  for (const [key, label] of Object.entries({ java_path: '实例 Java 路径（可选）', encoding: 'BAT 编码（默认 auto）', stop_timeout: '停服超时秒（默认 120）', stop_command: 'MC 停服命令（默认 stop）', restart_prompt: '自动重启提示（默认约定提示）' })) field(advanced, label, config[key], key);
+  for (const [key, label] of Object.entries({ java_path: '实例 Java 路径（可选）', encoding: 'BAT 编码（默认 auto）', stop_timeout: '停服超时秒（默认 120）', stop_command: 'MC 停服命令（默认 stop）', restart_prompt: '自动重启提示（默认约定提示）', test_address: '测试服可达地址', test_port: '测试服专用端口' })) field(advanced, label, config[key], key);
   card.append(advanced); document.querySelector('#instances').append(card);
 }
 async function loadHost() {
   host = await api('GET', 'host'); document.querySelector('#instances').replaceChildren();
   for (const [name, config] of Object.entries(host.instances)) instance(name, config, host.state.find(item => item.instance === name));
   for (const state of host.state.filter(item => item.selectable === false)) { const p = document.createElement('p'); p.textContent = `${state.instance}：待移除，当前进程与操作仍可管理。`; document.querySelector('#instances').append(p); }
-  document.querySelector('#curseforge-state').textContent = host.curseforge_configured ? 'B 已保存密钥；不会回传原值。' : 'B 尚未配置 CurseForge 密钥。';
   document.querySelector('#powershell-path').value = host.powershell_path; document.querySelector('#world-java').value = host.world_tools.java_path ?? ''; document.querySelector('#operations-memory').value = host.operations_memory_limit_mib ?? 8192;
   if (host.error) show(`实例热重载错误：${host.error}`, true);
   else if (host.restart_required) show(`主机配置已保存，重启 B 后生效。当前运行：PowerShell ${host.effective.powershell_path}；存档 Java 配置 ${host.effective.world_tools.java_path || '默认'}；额度 ${host.effective.operations_memory_limit_mib} MiB。`);
@@ -67,15 +70,14 @@ document.querySelector('#save-instances').onclick = function () {
     if (!host) throw new Error('请先刷新 B 配置。'); const instances = {};
     for (const card of document.querySelectorAll('.instance')) {
       const config = {}; let name = '';
-      for (const input of card.querySelectorAll('input')) { const key = input.dataset.key; if (key === 'name') name = input.value.trim(); else if (input.value.trim()) config[key] = key === 'stop_timeout' ? Number(input.value) : input.value; }
+      for (const input of card.querySelectorAll('input')) { const key = input.dataset.key; if (key === 'name') name = input.value.trim(); else if (input.value.trim()) config[key] = ['stop_timeout', 'test_port'].includes(key) ? Number(input.value) : input.value; }
       if (!name || instances[name]) throw new Error('配置名不能为空或重复。'); instances[name] = config;
     }
     await api('POST', 'host', { instances, revision: host.revision }); await loadHost(); show('服务端配置已保存；运行中的启动变更会等待空闲。');
   });
 };
-document.querySelector('#save-key').onclick = function () { action(this, async () => { const input = document.querySelector('#curseforge-key'); if (!input.value) throw new Error('填写新密钥，或使用清空按钮。'); await api('POST', 'host', { curseforge_api_key: input.value }); input.value = ''; await loadHost(); show('密钥已保存到 B。'); }); };
-document.querySelector('#clear-key').onclick = function () { action(this, async () => { await api('POST', 'host', { curseforge_api_key: '' }); await loadHost(); show('B 的 CurseForge 密钥已清空。'); }); };
-document.querySelector('#test-key').onclick = function () { action(this, async () => { await api('POST', 'host/curseforge/test'); show('CurseForge 凭据可正常访问官方 API。'); }); };
+document.querySelector('#test-key').onclick = function () { action(this, async () => { await api('POST', 'host/curseforge/test'); show('CurseForge 凭据已从 A 端验证。'); }); };
+document.querySelector('#clear-key').onclick = function () { action(this, async () => { const result = values(); result.curseforge_api_key = ''; await api('POST', 'settings', result); await loadA(); show('A 端 CurseForge 密钥已清空。'); }); };
 document.querySelector('#save-host').onclick = function () { action(this, async () => { const result = await api('POST', 'host', { operations_memory_limit_mib: Number(document.querySelector('#operations-memory').value), powershell_path: document.querySelector('#powershell-path').value, world_tools: { java_path: document.querySelector('#world-java').value } }); show(result.restart_required ? '已保存，重启 B 后生效。' : '已保存。'); }); };
 const names = { conversation: '普通对话', stream: '流式响应', function_call: '工具调用与续接', reasoning_effort: '排障思考强度', web_search: 'API 托管搜索', web_search_preview: '兼容托管搜索', alpha_search: '独立搜索', alpha_open: '独立搜索打开网页', alpha_find: '独立搜索页内查找', progress: '执行进度汇报', review_json: '审核模型与 JSON' };
 const statuses = { testing: '测试中', passed: '验证通过', unsupported: '明确不支持', unobserved: '本次未观察到', failed: '请求失败' };

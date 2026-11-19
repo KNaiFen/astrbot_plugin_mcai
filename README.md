@@ -29,9 +29,9 @@
 
 ## 安装前准备
 
-当前插件版本为 **0.15.0**，文件、日志、NBT／区域存档和进程／JVM诊断统一为查询CLI，其他工具按需加载，减少模型请求中的工具定义。群内继续用自然语言提出目标，查询用法见[查询命令与按需帮助](docs/usage/queries.md)。模型API持续重试、群消息最多发送3次等策略沿用0.14.3。配套Probe仍为 **0.4.1**。可通过[插件仓库main](https://github.com/KNaiFen/astrbot_plugin_mcai/tree/main)安装或更新A。本版继续使用`mcai-5`；从0.14.3升级只需更新A即可使用新的AI查询，B的新增本机CLI按需更新，托管窗口和Probe无需更新。**从0.12.0及更早版本升级须配套更新A、B和托管窗口**，不能混用`mcai-4`程序。升级先阅读[更新说明](#更新时保留什么)，能力边界见[运维工具](docs/usage/operations.md#文件存档与故障取证)。
+当前发行版本为 **0.16.0**（[下载与校验和](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.16.0)）。新增A端MOD搜索与下载、任务源码／构建工作区，以及挂在同一生产任务下的B端隔离测试副本；生产替换仍由现有审核、管理员批准、停服备份和验证处理。查询CLI与按需加载沿用0.15.0，Probe仍为 **0.4.1**。本版协议为`mcai-6`，A、B与所有托管窗口须配套更新。CurseForge API密钥改由A保存；测试服需要在B的实例配置中填写玩家可达地址和专用端口。升级前阅读[更新说明](#更新时保留什么)，使用边界见[运维工具](docs/usage/operations.md#文件存档与故障取证)及[配置说明](docs/usage/configuration.md)。
 
-首次部署或更新B时使用配套0.15.0的 `mcai_windows_host.zip`，其中包含七目标Probe0.4.1；可从当前完整源码[构建两端发行包](docs/development/README.md#构建与发行)。既有0.12.0公开附件仍使用`mcai-4`与Probe0.2.1，历史附件按对应版本配套使用。
+首次部署或更新B时使用同版本的 `mcai_windows_host.zip`，发行附件包含八目标Probe 0.4.1，可[构建两端发行包](docs/development/README.md#构建与发行)。公开附件的版本与协议按发布记录配套使用，不混用不同协议的A、B和托管窗口。
 
 ### 软件与版本
 
@@ -274,7 +274,7 @@ Set-Location -LiteralPath 'D:\MCAI'
 
 在 AstrBot **插件管理页**使用 ZIP 安装入口，选择配套的 `astrbot_plugin_mcai.zip`，等待安装依赖并启用插件。找到显示名称为 **“MC 排障助手”**、插件标识为 `astrbot_plugin_mcai` 的插件，打开其**设置视图**，页面标题为“MCAI 设置”。
 
-也可以通过仓库地址安装：[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)，默认main为0.15.0。首次部署或从旧协议升级时，配套更新B和所有托管窗口，确认使用`mcai-5`；已有0.14.0环境按[更新说明](#更新时保留什么)处理，部署步骤见[安装前准备](#安装前准备)。
+也可以通过仓库地址安装：[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)。首次部署或升级到 0.16.0 时，配套更新B和所有托管窗口，确认使用`mcai-6`。部署步骤见[安装前准备](#安装前准备)。
 
 若安装依赖时出现 `WinError 5`，并指向 `charset_normalizer` 或 `__mypyc*.pyd`，完全退出 AstrBot 后，按[安装依赖时拒绝访问](docs/usage/operations.md#安装依赖时拒绝访问)预装依赖，再启动 AstrBot 重试安装。
 
@@ -302,7 +302,7 @@ Set-Location -LiteralPath 'D:\MCAI'
 4. 在 AstrBot 提供商设置中按模型实际容量配置 `max_context_tokens`。插件按这个值控制历史输入，未配置时按 32768 token 估算，长任务会压缩已结算历史。详细行为见[上下文与群消息范围](docs/usage/configuration.md#上下文与群消息范围)。
 5. 点击“**保存并测试、自动配置**”，等待结果区结束，查看“普通对话”“工具调用与续接”“审核模型与 JSON”等结果。
 
-能力测试只发测试模型／搜索请求，会产生少量 API 费用；不会操作 MC，也不会发送群消息。普通对话、工具调用或审核失败时，先核对对应提供商的错误。搜索和执行进度汇报是可选能力：服务商不支持时可关闭对应开关，未观察到汇报也不等于排障功能不可用。执行进度汇报默认关闭，开启后转发中文的工具前说明与工作进展，不按固定时间通知。群内答复完整分段发送。API 托管搜索和 `alpha/search` 独立搜索的区别见[模型与搜索说明](docs/usage/configuration.md#模型搜索与能力测试)。
+能力测试只发测试模型／搜索请求，会产生少量 API 费用；不会操作 MC，也不会发送群消息。普通对话、工具调用或审核失败时，先核对对应提供商的错误。搜索和执行进度汇报是可选能力：服务商不支持时可关闭对应开关，未观察到汇报也不等于排障功能不可用。执行进度汇报默认关闭，开启后转发中文的工具前说明与工作进展，不按固定时间通知。API 托管搜索和 `alpha/search` 独立搜索的区别见[模型与搜索说明](docs/usage/configuration.md#模型搜索与能力测试)。
 
 ### 4. 配置管理员和允许群
 
@@ -371,6 +371,8 @@ Bot 应回复“开始排查”，并附上群成员补充命令 `/mcaisay 主�
 ```
 
 AI可查看日志、文件、存档和在线指标；诊断脚本与发送到控制台的诊断命令会经过独立 AI 审核。排障在后台继续，需要补充信息、批准方案或报告关键结论时，Bot 会主动发到原群，不必再次发送命令才能收到消息；回答追问仍用 `/mcaisay 任务名 内容`。完整结果保存在本地，没有逐条播报工具进度是正常的。
+
+使用 QQ OneBot v11 且接入端支持群合并转发时，插件默认把超过 400 字符的单条回复发成一张合集卡片，点开可读完整正文。原消息需要 @ 成员时，卡片之后单独 @ 一次。门槛可在“MCAI 设置 → 群与管理员 → QQ 长回复合集门槛”修改，点击“保存 A 设置”生效。
 
 ### 3. 查看方案，再决定是否批准
 
@@ -459,8 +461,9 @@ AI可以继续核对日志与现场。确认问题已解决后，管理员再发
 | Fabric 1.20.1 | `mcai-probe-1.20.1-fabric-0.4.1.jar` |
 | Forge 1.21.1（52.x） | `mcai-probe-1.21.1-forge-0.4.1.jar` |
 | Fabric 1.21.1 | `mcai-probe-1.21.1-fabric-0.4.1.jar` |
+| NeoForge 1.21.1（21.1.247+，21.1.x） | `mcai-probe-1.21.1-neoforge-0.4.1.jar` |
 
-Probe 0.4.1随0.15.0的B包交付，也可从当前源码[本地构建](docs/development/probe.md#构建)。更新时正常停服，移走旧Probe后放入对应的新JAR，再启动；首次部署或跨产品协议升级时A、B须配套更新，Probe协议1按能力声明扩展。1.16.5使用Java8；1.7.10已在标准Forge＋lwjgl3ify＋UniMixins上验证Java17／21，GTNH整合包须另测。Forge版不依赖Fabric API；Fabric版需要对应 Fabric API 和 Loader 0.16.14+。不要选择 `sources` 文件；Forge JAR 不用于 NeoForge。临时模拟玩家的创建、删除与参数见[使用说明](docs/usage/probe.md#临时模拟玩家)。
+0.16.0 的 B 包包含 Probe 0.4.1 的八个目标，新增 NeoForge 1.21.1。更新时正常停服，移走旧Probe后放入对应的新JAR，再启动；首次部署或跨产品协议升级时A、B须配套更新，Probe协议1按能力声明扩展。1.16.5使用Java8；1.7.10已在标准Forge＋lwjgl3ify＋UniMixins上验证Java17／21，GTNH整合包须另测。Forge版不依赖Fabric API；Fabric版需要对应 Fabric API 和 Loader 0.16.14+。Forge 与 NeoForge JAR 分开构建，不要交叉安装；不要选择 `sources` 文件。临时模拟玩家的创建、删除与参数见[使用说明](docs/usage/probe.md#临时模拟玩家)。
 
 ## 日常启停、规则与备份
 
@@ -509,7 +512,15 @@ B 窗口按 Ctrl+C 正常退出会等待已接受修复，再结束辅助工作�
 
 ### 更新时保留什么
 
-从 **0.14.3升级到0.15.0** 时，`mcai-5`和B的远程操作格式不变：
+从 **0.15.0升级到0.16.0** 时，协议从`mcai-5`升为`mcai-6`，必须配套更新A、B与托管窗口：
+
+1. 完成或中止活动任务并等待操作收尾；未结算旧工具调用不迁移，历史记录保留。
+2. 关闭AstrBot与B程序，备份并保留插件数据、`host.json`、`instances.json`、B的`data_dir`、证书、备份和经验文档。
+3. 更新A、B及所有托管窗口到0.16.0；按原环境安装B依赖并重启B。已运行的托管窗口须关闭后再用新程序打开，MC目录与`start.bat`保持不变。
+4. 在A设置页配置CurseForge密钥、A工作区目录和PowerShell 7.3+路径；在B实例高级选项填写测试服可达地址及专用端口。按需将B端旧CurseForge密钥迁入A后从B配置中删除。
+5. 启用插件，测试连接和模型能力，再创建只读任务确认正常。现有三份运行时规则保留，按[配置说明](docs/usage/configuration.md#运行时规则)人工合并新版工具说明。
+
+以下是从 **0.14.3升级到0.15.0** 的历史说明：
 
 1. 新版模型查询入口改为`mc_query`，其他复杂工具经`mc_tools`加载。升级前完成或中止活动任务并等待操作收尾；旧任务历史保留，不迁移未结算的旧工具调用。
 2. 停用MCAI插件或退出AstrBot，备份并保留插件配置、任务数据、经验和三份运行时规则，更新A并重载。将`mcai/agent_rules.md`中的新版“工具交互”人工合并到数据目录的`AGENTS.md`，保留自己的服务器约定；审核和摘要模板本版未改。
@@ -522,8 +533,8 @@ B 窗口按 Ctrl+C 正常退出会等待已接受修复，再结束辅助工作�
 
 1. 用`/mcailist`查看活动任务。已验收的任务用`/mcaidone 任务名`结束；其余用`/mcaistop 任务名`中止并等执行收尾。本轮工具名称和结果格式改变，不迁移未结算旧调用，仅暂停不足以完成升级准备。
 2. 停用MCAI插件或退出AstrBot，备份`AstrBot/data/plugin_data/astrbot_plugin_mcai/`及现有插件配置，保留任务历史和经验。
-3. **配套更新B和所有托管窗口到0.15.0**。先正常停服、关闭旧托管窗口，再退出B；用0.15.0主机包更新程序并在原B环境重新执行`.\.venv\Scripts\python.exe -m pip install -e .`。保留`host.json`、`instances.json`、`data_dir`、证书、令牌和备份；安装Probe的服务端同时替换为对应0.4.1 JAR，再打开新托管窗口运行原`start.bat`。
-4. 在AstrBot插件管理中更新MCAI；通过ZIP安装的实例可使用0.15.0插件包更新，或通过上面的仓库地址安装。确认版本为0.15.0，启用插件并重载或重启AstrBot。
+3. **配套更新B和所有托管窗口到0.16.0**。先正常停服、关闭旧托管窗口，再退出B；用0.16.0主机包更新程序并在原B环境重新执行`.\.venv\Scripts\python.exe -m pip install -e .`。保留`host.json`、`instances.json`、`data_dir`、证书、令牌和备份；安装Probe的服务端同时替换为对应0.4.1 JAR，再打开新托管窗口运行原`start.bat`。
+4. 在AstrBot插件管理中更新MCAI；通过ZIP安装的实例可使用0.16.0插件包更新，或通过上面的仓库地址安装。确认版本为0.16.0，启用插件并重载或重启AstrBot。
 5. 已有运行时 `AGENTS.md`、`REVIEW_AGENTS.md` 和 `SUMMARY_AGENTS.md` 会保留。将插件中的三份对应模板分别人工合并，采用[工具升级对照](docs/usage/configuration.md#运行时规则)中的新名称、返回格式、示例及一次批准多轮执行约定，保留自己的服务器约定。
 6. 在插件设置页测试A→B连接及模型能力，再创建一个新的状态查询任务确认正常。历史记录继续保留。
 

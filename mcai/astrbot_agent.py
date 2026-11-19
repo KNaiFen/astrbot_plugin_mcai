@@ -1,6 +1,9 @@
+import asyncio
 import copy
+import hashlib
 import json
 import re
+import shutil
 import uuid
 
 import aiohttp
@@ -45,7 +48,7 @@ from .evidence import (
 from .model_budget import BASELINE_FACTORS, estimated_input, record_usage
 from .plans import plan_identity
 from .query_cli import QueryError, QueryHelp, parse_query, query_argv, query_operation
-from .review import REVIEW_VERSION, digest
+from .review import REVIEW_VERSION, digest, review_material
 from .tool_arguments import argument_error, arguments_for, model_continuations
 from .tool_help import resolved_query, tool_catalog, tool_help
 from .tool_results import model_result
@@ -302,6 +305,17 @@ class AstrBotAgent:
                 else:
                     job.setdefault("background", {}).pop(result["id"], None)
 
+        async def transfer_download(key):
+            downloaded = tasks.store.get("download", key)
+            if downloaded is None or downloaded.get("transferred_to_b"):
+                return
+            downloaded, source = await tasks.downloads.verify(
+                key, job["instance"], job["id"]
+            )
+            await tasks.client.import_download(downloaded, source)
+            downloaded["transferred_to_b"] = True
+            tasks.store.save("download", key, downloaded)
+
         async def remote(record, action, arguments):
             if job.get("directory") and "operation" not in record:
                 arguments = {**arguments, "expected_directory": job["directory"]}
@@ -311,7 +325,7 @@ class AstrBotAgent:
             record["instance"] = job["instance"]
             record["directory"] = job.get("directory")
             tasks.store.save("tool_call", record["id"], record)
-            result = await tasks.client.call(
+            return await tasks.client.call(
                 job["instance"],
                 action,
                 arguments,
@@ -319,8 +333,6 @@ class AstrBotAgent:
                 task_id=job["id"],
                 stopped=lambda: job["stop_requested"],
             )
-            track(result)
-            return result
 
         async def execute(record):
             if record.get("state") == "completed":
@@ -364,6 +376,7 @@ class AstrBotAgent:
                         record,
                         arguments_for(name, clean_arguments(arguments), internal=True),
                     )
+                    track(result)
                 except QueryError as exc:
                     result = {
                         "not_executed": True,
@@ -499,6 +512,9 @@ class AstrBotAgent:
                     tasks.store.save("tool_call", record["id"], record)
                 name, public_arguments = resolved_query(record)
                 action, query_arguments = query_operation(name, public_arguments)
+                query_arguments["environment"] = arguments.get(
+                    "environment", "production"
+                )
                 return await remote(record, action, query_arguments)
             if name == "mc_tools":
                 for requested in arguments["names"]:
@@ -532,6 +548,8 @@ class AstrBotAgent:
                 return tasks.knowledge.query(arguments, job.get("directory"))
             if name == "mc_web":
                 return await tasks.web.call(job["id"], arguments)
+            if name == "mc_test_server":
+                return await remote(record, "test_server", arguments)
             if name == "mc_search":
                 if not self.enable_alpha_search:
                     raise ValueError("独立搜索尚未启用，请在插件设置中测试并开启")
@@ -554,6 +572,7 @@ class AstrBotAgent:
             if name == "mc_plan_finish":
                 return tasks.finish_plan(job, **arguments)
             approved = None
+            workspace_exec = name == "mc_workspace" and arguments.get("mode") == "exec"
             if name == "mc_propose" and arguments.get("plan_id"):
                 # A crash after queueing must recover this batch, not queue it again.
                 if (
@@ -574,8 +593,50 @@ class AstrBotAgent:
                 ):
                     tasks.end_plan(job, "invalidated", "运行规则已变化")
                     raise ValueError("运行规则已变化，请重新提案等待批准")
+            elif workspace_exec:
+                scope = tasks.active_plan(job)
+                if scope is None:
+                    raise ValueError("工作区脚本需要先批准当前多轮方案")
+                approved = tasks.require_plan(job, scope["snapshot"]["plan"]["id"])
+            if (
+                name == "mc_propose"
+                and arguments.get("environment", "production") == "production"
+            ):
+                for step in arguments["steps"]:
+                    if step["action"] != "install_download":
+                        continue
+                    key = step["download_id"]
+                    staged = tasks.store.get("download", key)
+                    if staged is None or staged.get("source") != "workspace":
+                        continue
+                    tested = next(
+                        (
+                            repair
+                            for repair in reversed(job.get("repairs", []))
+                            if repair.get("environment") == "test"
+                            and not repair.get("result", {}).get("cancelled")
+                            and any(
+                                item.get("download_id") == key
+                                for item in repair.get("result", {}).get("steps", [])
+                            )
+                        ),
+                        None,
+                    )
+                    if (
+                        not approved
+                        or tested is None
+                        or not any(
+                            feedback.get("time", 0) > tested["ended"]
+                            for feedback in job.get("feedback", [])
+                        )
+                    ):
+                        raise ValueError(
+                            "发布工作区制品需要原多轮方案、同一制品的测试服安装记录，以及安装后收到的 SAY 测试反馈"
+                        )
             approved_hash = approved["identity"] if approved else None
-            needs_review = name in ("mc_exec", "mc_propose", "mc_console_send")
+            needs_review = (
+                name in ("mc_exec", "mc_propose", "mc_console_send") or workspace_exec
+            )
             decision = record.get("decision")
             if (
                 needs_review
@@ -601,39 +662,64 @@ class AstrBotAgent:
                     if name == "mc_console_send"
                     else [arguments["script"]]
                 )
-                material = await tasks.client.call(
-                    job["instance"],
-                    "review_material",
-                    {
-                        "cwd": arguments.get("cwd", "."),
-                        "script_files": metadata["script_files"],
-                        "encoding": metadata.get("encoding", "utf-8-sig"),
-                        "commands": commands,
-                        "diagnostic": name == "mc_exec",
-                        **(
-                            {"steps": arguments["steps"]}
-                            if name == "mc_propose"
-                            else {}
-                        ),
-                        "download_ids": [
-                            step["download_id"]
-                            for step in arguments.get("steps", [])
-                            if step["action"] == "install_download"
-                        ],
-                        "export_ids": [
-                            step["export_id"]
-                            for step in arguments.get("steps", [])
-                            if step["action"] == "region_restore"
-                        ],
-                        **(
-                            {"expected_directory": job["directory"]}
-                            if job.get("directory")
-                            else {}
-                        ),
-                    },
-                    task_id=job["id"],
-                    operation_id=record["id"],
-                )
+                if name == "mc_workspace":
+                    directory = tasks.workspace.directory(job["id"])
+                    directory.mkdir(parents=True, exist_ok=True)
+                    material = await asyncio.to_thread(
+                        review_material,
+                        directory,
+                        {
+                            "cwd": arguments.get("cwd", "."),
+                            "script_files": metadata["script_files"],
+                            "encoding": metadata.get("encoding", "utf-8-sig"),
+                            "commands": [arguments["script"]],
+                            "powershell_path": tasks.workspace.powershell_path,
+                        },
+                    )
+                    material["status"] = {"environment": "A 工作区"}
+                    material["configuration"] = {
+                        "workspace": str(directory),
+                        "powershell_path": tasks.workspace.powershell_path,
+                    }
+                else:
+                    if name == "mc_propose":
+                        for step in arguments.get("steps", []):
+                            if step["action"] == "install_download":
+                                await transfer_download(step["download_id"])
+                    material = await tasks.client.call(
+                        job["instance"],
+                        "review_material",
+                        {
+                            "cwd": arguments.get("cwd", "."),
+                            "environment": arguments.get("environment", "production"),
+                            "script_files": metadata["script_files"],
+                            "encoding": metadata.get("encoding", "utf-8-sig"),
+                            "commands": commands,
+                            "diagnostic": name == "mc_exec",
+                            **(
+                                {"steps": arguments["steps"]}
+                                if name == "mc_propose"
+                                else {}
+                            ),
+                            "download_ids": [
+                                step["download_id"]
+                                for step in arguments.get("steps", [])
+                                if step["action"] == "install_download"
+                            ],
+                            "export_ids": [
+                                step["export_id"]
+                                for step in arguments.get("steps", [])
+                                if step["action"] == "region_restore"
+                            ],
+                            **(
+                                {"expected_directory": job["directory"]}
+                                if job.get("directory")
+                                else {}
+                            ),
+                        },
+                        task_id=job["id"],
+                        operation_id=record["id"],
+                    )
                 try:
                     decision = await self.reviewer.decide(
                         tasks,
@@ -641,6 +727,7 @@ class AstrBotAgent:
                         record,
                         review_rules,
                         material,
+                        approved=approved,
                         rules_hash=self.rules_hash(),
                     )
                 except ReviewCapacityError as exc:
@@ -729,6 +816,85 @@ class AstrBotAgent:
                     job["state"] = "waiting"
                     tasks.save(job)
                 return {"status": "queued"}
+            if name == "mc_workspace":
+                mode = arguments["mode"]
+                if mode == "list":
+                    return tasks.workspace.list(job["id"], arguments)
+                if mode == "read":
+                    return tasks.workspace.read(job["id"], arguments)
+                if mode == "pull":
+                    target = tasks.workspace.path(job["id"], arguments["destination"])
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    size = await tasks.client.download_instance_file(
+                        job["instance"], arguments["path"], target, record["id"]
+                    )
+                    return {"path": arguments["destination"], "bytes": size}
+                if mode == "stage":
+                    source = tasks.workspace.path(job["id"], arguments["path"])
+                    key = record["id"]
+                    staged = tasks.store.get("download", key)
+                    if staged is None:
+                        target = tasks.store.directory / "downloads" / key / "content"
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        await asyncio.to_thread(shutil.copy2, source, target)
+                        with target.open("rb") as stream:
+                            checksum = await asyncio.to_thread(
+                                hashlib.file_digest, stream, "sha256"
+                            )
+                        staged = {
+                            "id": key,
+                            "task_id": job["id"],
+                            "instance": job["instance"],
+                            "source": "workspace",
+                            "filename": source.name,
+                            "size": target.stat().st_size,
+                            "sha256": checksum.hexdigest(),
+                        }
+                        tasks.store.save("download", key, staged)
+                    return {"download_id": key, "filename": staged["filename"]}
+                if mode == "use_download":
+                    _, source = await tasks.downloads.verify(
+                        arguments["download_id"], job["instance"], job["id"]
+                    )
+                    target = tasks.workspace.path(job["id"], arguments["destination"])
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    await asyncio.to_thread(shutil.copy2, source, target)
+                    return {
+                        "path": arguments["destination"],
+                        "bytes": target.stat().st_size,
+                    }
+                tasks.require_plan(job, approved["snapshot"]["plan"]["id"])
+                record.setdefault("operation", record["id"])
+                record["state"] = "submitted"
+                tasks.store.save("tool_call", record["id"], record)
+                return await tasks.local_jobs.start(
+                    {
+                        "id": record["operation"],
+                        "instance": job["instance"],
+                        "task_id": job["id"],
+                        "action": "workspace",
+                    },
+                    lambda key: tasks.workspace.execute(
+                        tasks.local_jobs, key, job["id"], arguments
+                    ),
+                )
+            if name in ("mc_mods", "mc_download"):
+                if name == "mc_mods" and arguments["mode"] != "download":
+                    return await tasks.downloads.mods(arguments)
+                record.setdefault("operation", record["id"])
+                record["state"] = "submitted"
+                tasks.store.save("tool_call", record["id"], record)
+                return await tasks.local_jobs.start(
+                    {
+                        "id": record["operation"],
+                        "instance": job["instance"],
+                        "task_id": job["id"],
+                        "action": "download",
+                    },
+                    lambda key: tasks.downloads.download(
+                        tasks.local_jobs, key, arguments
+                    ),
+                )
             if name == "mc_pause":
                 tasks.pause(job, arguments["reason"])
                 return {
@@ -752,6 +918,34 @@ class AstrBotAgent:
                 "mc_operation_read",
                 "mc_context_history",
             ):
+                local_job = tasks.local_jobs.store.get(
+                    "background_job", arguments.get("job_id", "")
+                )
+                if local_job and local_job.get("task_id") == job["id"]:
+                    key = arguments["job_id"]
+                    if name == "mc_job_read":
+                        return tasks.local_jobs.page(
+                            key, arguments.get("after", 0), arguments.get("limit", 100)
+                        )
+                    if name == "mc_job_wait":
+                        return await tasks.local_jobs.wait(
+                            key,
+                            arguments.get("wait_seconds", 10),
+                            arguments.get("after", 0),
+                            arguments.get("limit", 100),
+                        )
+                    if name == "mc_job_cancel":
+                        return await tasks.local_jobs.cancel(key)
+                    if name == "mc_artifact_read":
+                        return tasks.local_jobs.artifact(
+                            key,
+                            arguments["reference"],
+                            arguments.get("offset", 0),
+                            view=arguments.get("view", "summary"),
+                            result_path=arguments.get("result_path", []),
+                        )
+                    if name == "mc_artifact_find":
+                        return tasks.local_jobs.find(key, arguments)
                 if name == "mc_context_history":
                     if "entry" not in arguments:
                         rows = tasks.store.events(
@@ -846,8 +1040,6 @@ class AstrBotAgent:
                     "mc_verify": "verify",
                     "mc_inventory": "inventory",
                     "mc_exec": "exec",
-                    "mc_download": "download",
-                    "mc_mods": "mods",
                 }[name],
                 arguments,
             )
@@ -949,7 +1141,12 @@ class AstrBotAgent:
                         arguments={
                             "argv": query_argv(
                                 next_call["name"], next_call["arguments"]
-                            )
+                            ),
+                            **(
+                                {"environment": "test"}
+                                if record["arguments"].get("environment") == "test"
+                                else {}
+                            ),
                         },
                     )
                 record["model_result"]["evidence_id"] = record["id"]

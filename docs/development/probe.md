@@ -12,15 +12,36 @@
 .\.venv\Scripts\python.exe scripts/build_probe.py forge1192
 ```
 
-脚本使用代理下载固定Temurin17.0.21+9（SHA-256校验），用于1.19.2／1.20.1；使用JDK21构建1.21.1；1.16.5运行时使用Java8，1.7.10已验证Java17／21运行，由RetroFuturaGradle使用独立JDK25构建。默认代理 `http://127.0.0.1:7890`，可用 `--proxy` 或 `HTTPS_PROXY` 覆盖。Gradle固定8.8，Fabric Loom1.7.4，ForgeGradle6.0.36，MixinGradle0.7.38，MixinExtras0.4.1。Forge目标固定36.2.42（1.16.5）／43.5.0（1.19.2）／47.3.0（1.20.1）／52.1.2（1.21.1），Fabric Loader0.16.14，API0.92.2／0.116.1。
+脚本使用代理下载固定Temurin17.0.21+9（SHA-256校验），用于1.19.2／1.20.1；使用JDK21构建1.21.1；1.16.5运行时使用Java8，1.7.10已验证Java17／21运行，由RetroFuturaGradle使用独立JDK25构建。默认代理 `http://127.0.0.1:7890`，可用 `--proxy` 或 `HTTPS_PROXY` 覆盖。Gradle固定8.8，Fabric Loom1.7.4，ForgeGradle6.0.36，MixinGradle0.7.38，ModDevGradle2.0.148，MixinExtras0.4.1。Forge目标固定36.2.42（1.16.5）／43.5.0（1.19.2）／47.3.0（1.20.1）／52.1.2（1.21.1），NeoForge基线21.1.247，Fabric Loader0.16.14，API0.92.2／0.116.1。
 
 构建执行clean，排除测试负载，检查产物不得包含Fixture类或spark／API类，并清理本次构建目标的旧版JAR与旧源码ZIP。各目标编译Java17／21，独立生成JAR及sources，`dist/probe/`附完整源码ZIP、LICENSE、NOTICE。源码包保留构建脚本与协议文档；游戏二进制、测试世界和缓存不分发。
 
-1.19.2 Forge当前产物为`dist/probe/mcai-probe-1.19.2-forge-0.4.1.jar`，沿用协议1；既有v0.11.1公开附件仍为旧Probe。完整本地发行构建将七目标放入B包，A／B配套升级。该目标复用Forge生命周期和诊断逻辑，`game1192`适配注册表及实体世界接口，资源包格式使用9。
+1.19.2 Forge当前产物为`dist/probe/mcai-probe-1.19.2-forge-0.4.1.jar`，沿用协议1；既有v0.11.1公开附件仍为旧Probe。完整本地发行构建将八目标放入B包，A／B配套升级。该目标复用Forge生命周期和诊断逻辑，`game1192`适配注册表及实体世界接口，资源包格式使用9。
 
 spark API仅作编译依赖。构建脚本通过同一代理下载官方仓库的固定快照`0.1-20260912.112908-2`，SHA-256为`e4856b0d2ba56db652ca340821a5b40ad0bdd192cf77707ba0f4557eeb5cb63d`，缓存在`runtime/probe-build/`并在每次构建校验；不把API JAR嵌入MOD。直接调用Gradle前先运行构建脚本准备依赖。来源和许可记录在Probe的NOTICE。
 
 Forge1.21.1使用官方运行时映射，关闭reobf并移除SRG refmap；开发环境让metadata与classes共用目录，固定jopt-simple5.0.4。MixinExtras common仅用于编译／注解处理，loader组件嵌入JAR，避免Java21重复模块。安装版验证实际映射和Jar-in-Jar；Forge52.0.28实测停服后仍遗留上游非daemon线程，本轮固定52.1.2完成正常退出验收。
+
+## NeoForge 1.21.1接入（2026-11-18）
+
+新增独立`neoforge1211`构建目标，使用ModDevGradle2.0.148、NeoForge21.1.247和Java21。生命周期、命令和玩家事件通过NeoForge事件总线接入，游戏查询复用`game`／`game1211`及Java8核心；发行文件名为`mcai-probe-1.21.1-neoforge-0.4.1.jar`。MixinExtras0.5.3仅作为编译API，运行时使用NeoForge自带组件，使用官方映射而不生成SRG refmap。元数据下限为21.1.247，范围限定21.1.x；Probe不复用Forge的TicketOwner Mixin，因此NeoForge的直接ticket不返回Forge owner声明。
+
+```powershell
+.\.venv\Scripts\python.exe scripts/build_probe.py neoforge1211
+.\.venv\Scripts\python.exe scripts/setup_probe_test_servers.py neoforge1211
+.\.venv\Scripts\python.exe scripts/test_probe_servers.py neoforge1211 --installed --fake-player --io-check --expect-spark absent
+.\.venv\Scripts\python.exe scripts/test_probe_servers.py neoforge1211 --installed --fake-player --io-check --spark-profile --expect-spark present
+```
+
+2026-11-18在Windows x64／Java21.0.7+8-LTS-245的全新NeoForge21.1.247／FML4.0.43隔离服完成发行JAR验证。无spark时，`metrics`的10秒窗口采到200 tick、20 TPS；普通实体／方块NBT、区块ticket、运行时清单、1MiB SNBT限制与玩家模拟流程通过。加入测试服内的spark1.10.124 JAR（SHA-256 `647e8a81afbe414dba1df4ba15fd06c5d32d4cb544e68828405e8e074c2e16db`）后，15秒采样报告完整，300 tick、14.98秒采样权重，解析结果`partial=false`；现有后台采样被拒绝覆盖，手动采样期间的Probe请求也明确报告未能确认空闲且未启动新采样，取消及迟到回执检查通过。模拟玩家覆盖多玩家、跨维度、非法名称与坐标、死亡、kick、同名重建、停服及重启不恢复。两组命令均以0退出。保留结果于`runtime/probe-build/neoforge1211-absent-validation.json`、`neoforge1211-present-validation.json`及对应`*-server.log`。测试服运行的spark关闭`backgroundProfiler`以维持可重复的空闲起始状态；未运行ATM10完整MOD组合。
+
+### ATM10 8.0整合包实测（2026-11-18）
+
+按用户要求直接在`runtime/test-servers/atm10`现有用户包解压测试服的`mods/`加入发行Probe，未复制或改动服务端启动配置。ATM10 8.0运行NeoForge21.1.247／Minecraft1.21.1，使用原`user_jvm_args.txt`与`win_args.txt`，Temurin Java25.0.1，测试端口25586。启动日志显示NeoForge `Done (3.307s)`及Probe0.4.1 ready；没有Probe Mixin应用错误。`runtime`识别18个维度，模组清单492项并包含`mcai_probe`、`neoforge`、`mekanism`、`ae2`；`ping`、spark1.10.124指标、加载实体普查（188个对象、31组、partial=false）、既有出生点周围9区块查询及出生点`productivebees:stone_nest`方块实体检查均完成。随后控制台`stop`正常退出（exit code 0），端口关闭。
+
+启动日志还记录Just Dire Things 1.5.7在MineColonies计算装备护甲属性时，于配置加载前读取ModConfigSpec的重复NeoForge EventBus错误；随后服务端仍到达Done并完成Probe初始化。本轮未改动或验证该第三方问题。
+
+启动后的首个10秒指标窗口记录32 tick、3.66 TPS、最大tick 1586ms；采样紧随大型整合包启动和现有多维度区块初始化，不能作为稳定性能基线。服内保留了用户要求加入的Probe JAR及该服务端生成的`.mcai-probe`会话／请求记录；验证汇总和完整启动／停服日志为`runtime/probe-build/atm10-probe-validation.json`、`atm10-probe-server.log`。本轮不代表长期压力、玩家并发或全部模组功能兼容验收。
 
 ## 模拟玩家清理整改（2026-11-17，开发态）
 

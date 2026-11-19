@@ -4,7 +4,7 @@
 
 MCAI Probe 只安装在服务端，让 AI 获取当前玩家位置、全服与维度指标、已加载对象数量和短时实体热点。客户端不需要安装，也不新增端口或密钥。
 
-当前Probe为0.4.1，修正模拟玩家死亡／断开后的清理，并在开始spark采样前核对已有采样。另提供区块加载／tick状态和可核实的ticket来源、普通方块状态、实体骑乘关系，以及实际已加载模组、启用数据包和生效设置。AI通过`mc_chunks`、`mc_inspect`、`mc_runtime`读取，仍只查询已加载现场；直接ticket与有效加载等级分别解释。Forge标准强加载所有者可核实时返回，未知模组来源不会推测。
+当前Probe为0.4.1，修正模拟玩家死亡／断开后的清理，并在开始spark采样前核对已有采样。另提供区块加载／tick状态和可核实的ticket来源、普通方块状态、实体骑乘关系，以及实际已加载模组、启用数据包和生效设置。AI通过`mc_chunks`、`mc_inspect`、`mc_runtime`读取，仍只查询已加载现场；直接ticket与有效加载等级分别解释。Forge标准强加载所有者可核实时返回，NeoForge保留直接ticket但不推断owner，未知模组来源不会推测。
 
 安装0.4.1后，`mc_verify`的启动就绪检查会自动确认服务端主线程能够处理本次请求；即使Java仍在、日志曾出现Done，主线程未响应也不会通过。未安装Probe时只报告日志就绪。已安装旧Probe但缺少响应能力时需配套更新，不能把旧日志或上次进程的能力文件当成本次响应。检查不设置TPS／MSPT性能基线。
 
@@ -21,8 +21,9 @@ MCAI Probe 只安装在服务端，让 AI 获取当前玩家位置、全服与�
 | 1.20.1 | Fabric | `mcai-probe-1.20.1-fabric-0.4.1.jar` | 17 |
 | 1.21.1 | Forge 52.x | `mcai-probe-1.21.1-forge-0.4.1.jar` | 21 |
 | 1.21.1 | Fabric | `mcai-probe-1.21.1-fabric-0.4.1.jar` | 21 |
+| 1.21.1 | NeoForge 21.1.247+（21.1.x） | `mcai-probe-1.21.1-neoforge-0.4.1.jar` | 21 |
 
-Probe 0.4.1随0.14.3的B包交付，也可从当前源码[本地构建](../development/probe.md#构建)。更新时正常停服，移走旧Probe后放入对应的新JAR，再启动；A、B须配套更新，Probe协议1按能力声明扩展。Forge版不依赖Fabric API；Fabric版需要对应版本的 Fabric API 和 Loader 0.16.14+。Forge 包内包含 MixinExtras；不要安装 `sources` 源码包。1.21.1 Forge JAR 不能用于 NeoForge。1.7.10 当前基线是标准 Forge + lwjgl3ify + UniMixins；GTNH隔离测试结果见[实服报告](../development/two-servers-e2e-2026-11-17.md)。
+0.16.0 的 B 包包含 Probe 0.4.1 的八个目标，新增 NeoForge 1.21.1。更新时正常停服，移走旧Probe后放入对应的新JAR，再启动；A、B须配套更新，Probe协议1按能力声明扩展。Forge版不依赖Fabric API；Fabric版需要对应版本的 Fabric API 和 Loader 0.16.14+。Forge 包含 MixinExtras，NeoForge使用加载器自带的 MixinExtras；不要安装 `sources` 源码包。Forge、NeoForge和Fabric版本按表中加载器分别选择。NeoForge按21.1.247基线构建并验证，其他NeoForge 21.1.x仅声明兼容范围。1.7.10 当前基线是标准 Forge + lwjgl3ify + UniMixins；GTNH隔离测试结果见[实服报告](../development/two-servers-e2e-2026-11-17.md)。
 
 1.16.5当前源码将Forge下限修正为36.2.39，已验证CatServer `1.16.5-1d8d6313`（官方23.05.26发行，Forge36.2.39／Java11.0.21）和标准Forge36.2.39；构建基线仍为36.2.42。v0.14.0已发布的原始Probe0.4.0附件仍声明36.2.42下限，遇到版本门槛报错需使用包含此修复的构建。混合端验证仅覆盖上述版本的隔离Probe／spark环境，其他插件及整合包组合需另测。
 

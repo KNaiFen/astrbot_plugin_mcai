@@ -2,6 +2,9 @@
   "host_url": {"description": "MC 控制程序 HTTPS 地址，如 https://公网IP:映射端口", "type": "string", "default": "https://127.0.0.1:18765"},
   "host_token": {"description": "控制程序共享令牌", "type": "string", "secret": true},
   "host_fingerprint": {"description": "B 启动时显示的证书 SHA-256 指纹", "type": "string", "default": ""},
+  "curseforge_api_key": {"description": "CurseForge 官方 API 密钥；只在 A 端访问外网", "type": "string", "secret": true, "default": ""},
+  "workspace_dir": {"description": "A 端 Agent 工作区根目录，留空使用插件数据目录下的 workspaces", "type": "string", "default": ""},
+  "workspace_powershell_path": {"description": "A 端 PowerShell 7.3+ 路径，留空自动查找 pwsh.exe", "type": "string", "default": ""},
   "provider_id": {"description": "排障模型（仅支持 OpenAI 兼容 Chat／Responses，先在 AstrBot 模型页配置）", "type": "string", "default": "", "_special": "select_provider"},
   "reasoning_effort": {"description": "排障模型思考强度，留空继承提供商；支持自定义值", "type": "string", "default": ""},
   "enable_alpha_search": {"description": "启用提供商 alpha/search 独立搜索，可在插件设置视图测试并自动配置", "type": "bool", "default": false},
@@ -12,5 +15,6 @@
   "forward_progress": {"description": "转发主模型 Responses commentary 执行进度汇报，要求简短中文；默认关闭，推理摘要和审核内容不转发", "type": "bool", "default": false},
   "admin_ids": {"description": "允许创建、批准、续接和结束任务的 QQ 号", "type": "list", "default": []},
   "group_ids": {"description": "允许使用的群号（留空允许所有群）", "type": "list", "default": []},
+  "group_forward_threshold": {"description": "QQ 长回复合集门槛（字符数）；超过该值时合并转发，填写正整数", "type": "int", "default": 400},
   "max_steps": {"description": "每轮最多模型步骤", "type": "int", "default": 40}
 }

@@ -13,6 +13,8 @@ EXAMPLES = {
     "mc_web": {"mode": "open", "url": "https://example.org/manual"},
     "mc_search": {"mode": "search", "query": "Minecraft watchdog server thread"},
     "mc_download": {"url": "https://example.org/mod.jar", "filename": "mod.jar"},
+    "mc_workspace": {"mode": "list"},
+    "mc_test_server": {"mode": "status"},
     "mc_inventory": {},
     "mc_diagnostics": {"mode": "jvm", "samples": 1},
     "mc_verify": {

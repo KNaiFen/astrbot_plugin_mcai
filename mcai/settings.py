@@ -2,12 +2,15 @@
 
 import asyncio
 import json
+from pathlib import Path
 
 from astrbot.api.web import error_response, file_response, json_response, request
 
 from .astrbot_agent import AstrBotAgent
 from .capabilities import detected_settings, provider_identity, test_capabilities
 from .client import HostClient, RemoteError
+from .configuration import powershell_path
+from .paths import workspace_root
 from .tracing import export_diagnostics
 
 
@@ -91,8 +94,6 @@ class Settings:
         return result
 
     async def diagnostic_file(self):
-        from pathlib import Path
-
         filename = request.query.get("filename", "")
         if (
             Path(filename).name != filename
@@ -111,8 +112,6 @@ class Settings:
             body = await request.json()
             if not isinstance(body, dict):
                 raise ValueError("配置请求必须是 JSON 对象")
-            from pathlib import Path
-
             schema = json.loads(
                 (Path(__file__).parents[1] / "_conf_schema.json").read_text(
                     encoding="utf-8"
@@ -123,6 +122,11 @@ class Settings:
             for key, value in fields.items():
                 if type(value) is not types[schema[key]["type"]]:
                     raise ValueError(f"{key} 类型不正确")
+            if (
+                "group_forward_threshold" in fields
+                and fields["group_forward_threshold"] < 1
+            ):
+                raise ValueError("QQ 长回复合集门槛须为正整数")
             for key in ("provider_id", "review_provider_id"):
                 if fields.get(key):
                     provider = await self.provider(fields[key])
@@ -143,6 +147,7 @@ class Settings:
                 if (
                     plugin.tasks.workers
                     or plugin.tasks.archive_workers
+                    or plugin.tasks.local_jobs.workers
                     or (self.worker and not self.worker.done())
                 ):
                     raise ValueError(
@@ -171,8 +176,19 @@ class Settings:
                     ),
                     enable_alpha_search=config.get("enable_alpha_search", False),
                 )
+                workspace = workspace_root(config, plugin.store.directory)
+                shell = config.get("workspace_powershell_path", "")
+                if shell:
+                    shell = str((plugin.store.directory / shell).resolve())
+                shell = await asyncio.to_thread(powershell_path, shell)
                 if not await plugin.config.save_config_async(fields):
                     raise ValueError("配置已被更新的保存请求替代，请重新读取设置")
+                plugin.tasks.workspace.root = workspace
+                plugin.tasks.workspace.powershell_path = shell
+                if "curseforge_api_key" in fields:
+                    plugin.tasks.downloads.config["curseforge_api_key"] = fields[
+                        "curseforge_api_key"
+                    ]
                 await plugin.tasks.client.close()
                 plugin.tasks.client, plugin.tasks.agent = client, agent
                 return {"saved": True}
@@ -181,9 +197,10 @@ class Settings:
             "config": {
                 key: value
                 for key, value in plugin.config.items()
-                if key != "host_token"
+                if key not in ("host_token", "curseforge_api_key")
             },
             "host_token_configured": bool(plugin.config.get("host_token")),
+            "curseforge_configured": bool(plugin.config.get("curseforge_api_key")),
             "providers": [
                 {
                     "id": provider.provider_config["id"],
@@ -222,9 +239,10 @@ class Settings:
 
     async def curseforge(self):
         async with asyncio.timeout(100):
-            return await self.plugin.tasks.client.request(
-                "POST", "/configuration/test-curseforge"
+            result = await self.plugin.tasks.downloads.request(
+                "https://api.curseforge.com/v1/games/432"
             )
+            return {"ok": True, "game": result["data"]["name"]}
 
     async def cancel_capabilities(self):
         if self.worker and not self.worker.done():

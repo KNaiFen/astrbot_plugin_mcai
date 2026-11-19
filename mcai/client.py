@@ -44,7 +44,7 @@ class HostClient:
         if self.session:
             await self.session.close()
 
-    async def request(self, method, path, *, stopped=None, **kwargs):
+    async def request(self, method, path, *, stopped=None, data_factory=None, **kwargs):
         if self.session is None:
             self.session = aiohttp.ClientSession(
                 headers={"Authorization": f"Bearer {self.token}", **HEADERS},
@@ -55,9 +55,13 @@ class HostClient:
         while True:
             if stopped and stopped():
                 raise SubmissionCancelled
+            stream = data_factory() if data_factory else None
             try:
                 async with self.session.request(
-                    method, self.url + path, allow_redirects=False, **kwargs
+                    method,
+                    self.url + path,
+                    allow_redirects=False,
+                    **({**kwargs, "data": stream} if data_factory else kwargs),
                 ) as response:
                     if response.status in (502, 503, 504):
                         raise aiohttp.ClientConnectionError(f"HTTP {response.status}")
@@ -98,6 +102,9 @@ class HostClient:
                 logger.warning("连接中断，%.1f 秒后重连：%s", delay, exc)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 10)
+            finally:
+                if stream is not None:
+                    stream.close()
 
     async def call(
         self,
@@ -146,3 +153,55 @@ class HostClient:
         if operation["status"] == "failed":
             raise RemoteError(operation["error"], operation=operation)
         return operation["result"]
+
+    async def import_download(self, record, path):
+        key = record["id"]
+        await self.request("POST", f"/downloads/{key}", json=record)
+        await self.request(
+            "PUT",
+            f"/downloads/{key}/content",
+            data_factory=lambda: open(path, "rb"),
+            headers={"Content-Type": "application/octet-stream"},
+            timeout=aiohttp.ClientTimeout(
+                total=None, connect=35, sock_connect=35, sock_read=35
+            ),
+        )
+
+    async def download_instance_file(self, instance, path, destination, operation_id):
+        if self.session is None:
+            await self.request("GET", "/instances")
+        temporary = destination.with_name(operation_id + ".part")
+        try:
+            for attempt in range(2):
+                try:
+                    async with self.session.get(
+                        f"{self.url}/instances/{instance}/files",
+                        params={"path": path},
+                        allow_redirects=False,
+                    ) as response:
+                        if response.headers.get("X-MCAI-Protocol") != PROTOCOL:
+                            raise RemoteError("A/B 产品协议不匹配")
+                        if response.status >= 400:
+                            raise RemoteError(
+                                f"HTTP {response.status}: {await response.text()}"
+                            )
+                        size = 0
+                        with temporary.open("wb") as output:
+                            async for chunk in response.content.iter_chunked(262144):
+                                output.write(chunk)
+                                size += len(chunk)
+                    temporary.replace(destination)
+                    return size
+                except (aiohttp.ServerFingerprintMismatch, aiohttp.ClientSSLError):
+                    raise
+                except (
+                    aiohttp.ClientConnectionError,
+                    aiohttp.ClientPayloadError,
+                    asyncio.TimeoutError,
+                ):
+                    if attempt:
+                        raise
+                    logger.warning("拉取 B 端文件时连接中断，0.5 秒后从头重传")
+                    await asyncio.sleep(0.5)
+        finally:
+            temporary.unlink(missing_ok=True)
