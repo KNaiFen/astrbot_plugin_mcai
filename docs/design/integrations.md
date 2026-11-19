@@ -87,7 +87,7 @@ A通过Modrinth v2及CurseForge官方API查询项目、说明、版本、加载�
 
 从B拉取文件中途遇到连接中断或响应未传完时，A沿同一调用从文件头重传一次，完整接收后才替换工作区目标文件；再次失败会返回错误并移除未完成文件。
 
-管理员可在B实例配置`test_address`和不冲突的`test_port`。`prepare_test`在B任务工作区只复制`start.bat`和`paths`指定的路径，并改写测试端口。列全实际存在的启动和运行依赖；源路径不存在时在审核材料阶段明确返回缺失路径，执行时也会复核。`copy_test_world`通过正式服停服、快照、恢复运行后复制所选世界路径。`mc_test_server`打开B独立托管窗口；状态、查询、控制台和提案用`environment=test`访问测试副本。测试服是原任务的子环境，生产实例仍是唯一任务目标。地址和端口无效或被占用时明确失败，不自动更换目标或端口。完整Windows端到端验收状态见[开发验证记录](../development/mod-repair-implementation-2026-11-19.md)。
+管理员可在B实例配置`test_address`和不冲突的`test_port`。`prepare_test` 在 B 任务工作区复制 `start.bat` 与显式 `paths` 或实例 `test_copy_paths` 指定的路径，并改写测试端口。列全实际存在的启动和运行依赖；源路径不存在时在审核材料阶段明确返回缺失路径，执行时也会复核。`copy_test_world`通过正式服停服、快照、恢复运行后复制所选世界路径。`mc_test_server`打开B独立托管窗口；状态、查询、控制台和提案用`environment=test`访问测试副本。测试服是原任务的子环境，生产实例仍是唯一任务目标。地址和端口无效或被占用时明确失败，不自动更换目标或端口。操作步骤见[试服试玩与正式发布](../usage/operations.md#mod-试服试玩与正式发布)。
 
 ## 批准安装
 

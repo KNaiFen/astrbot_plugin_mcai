@@ -13,6 +13,8 @@ from pathlib import Path
 from .environment import canonical_directory
 
 RESTART_PROMPT = "Start server in 10 seconds. Press ctrl+c to stop right now."
+DEFAULT_INCIDENT_RESTART_WINDOW = 120
+DEFAULT_INCIDENT_CAPACITY = 256
 
 
 def launcher_identity(config):
@@ -212,6 +214,18 @@ def normalize_instances(values, base, shell):
     return result
 
 
+def incident_restart_window(value):
+    if type(value) is not int or value < 1:
+        raise ValueError("启动失败统计窗口须为正整数秒")
+    return value
+
+
+def incident_capacity(value):
+    if type(value) is not int or not 64 <= value <= 4096:
+        raise ValueError("主动留证容量须为 64 至 4096 MiB 的整数")
+    return value
+
+
 def load_host(path):
     path = Path(path).resolve()
     config = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -223,6 +237,12 @@ def load_host(path):
     if type(memory) is not int or memory < 64:
         raise ValueError("operations_memory_limit_mib 必须是至少 64 的整数")
     config["operations_memory_limit_mib"] = memory
+    config["incident_restart_window_seconds"] = incident_restart_window(
+        config.get("incident_restart_window_seconds", DEFAULT_INCIDENT_RESTART_WINDOW)
+    )
+    config["incident_capacity_mib"] = incident_capacity(
+        config.get("incident_capacity_mib", DEFAULT_INCIDENT_CAPACITY)
+    )
     shell = powershell_path(
         str((path.parent / config["powershell_path"]).resolve())
         if config.get("powershell_path")

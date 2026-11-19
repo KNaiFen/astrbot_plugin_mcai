@@ -1,6 +1,19 @@
 const bridge = window.AstrBotPluginView;
 await bridge.ready();
 const form = document.querySelector('#a-settings'), notice = document.querySelector('#notice');
+const restartWindow = document.querySelector('#incident-restart-window');
+const incidentCapacity = document.querySelector('#incident-capacity');
+const incidentForm = document.querySelector('#incident-settings');
+const sections = document.querySelectorAll('.settings-nav a');
+function markSection() {
+  const current = Array.from(sections).find(link => link.hash === location.hash) ?? sections[0];
+  for (const link of sections) {
+    if (link === current) link.setAttribute('aria-current', 'location');
+    else link.removeAttribute('aria-current');
+  }
+}
+markSection();
+window.addEventListener('hashchange', markSection);
 let host = null, poll = null;
 function show(text, error = false) { notice.textContent = text; notice.classList.toggle('error', error); }
 async function api(method, path, data) {
@@ -46,16 +59,30 @@ function field(container, label, value, key) {
 }
 function instance(name = '', config = {}, state = {}) {
   const card = document.createElement('article'); card.className = 'instance';
-  const heading = document.createElement('header'), title = document.createElement('strong'), remove = document.createElement('button');
-  title.textContent = name || '新服务端'; remove.type = 'button'; remove.className = 'secondary'; remove.textContent = '移除配置'; remove.onclick = () => card.remove(); heading.append(title, remove); card.append(heading);
-  const hint = document.createElement('p'); hint.className = 'hint'; hint.textContent = state.state_unknown ? '状态待确认' : state.running ? '运行中' : '已停服'; if (!state.window_online) hint.textContent += ' · 无托管连接';
-  if (state.configuration_pending) hint.textContent += ' · 配置待生效'; if (state.selectable === false) hint.textContent += ' · 待移除'; card.append(hint);
-  field(card, '配置名', name, 'name'); field(card, '说明／群内叫法', config.description, 'description'); field(card, '服务端目录（其中使用 start.bat）', config.directory, 'directory');
-  const advanced = document.createElement('details'), summary = document.createElement('summary'); summary.textContent = '高级选项'; advanced.append(summary);
-  for (const [key, label] of Object.entries({ java_path: '实例 Java 路径（可选）', encoding: 'BAT 编码（默认 auto）', stop_timeout: '停服超时秒（默认 120）', stop_command: 'MC 停服命令（默认 stop）', restart_prompt: '自动重启提示（默认约定提示）', test_address: '测试服可达地址', test_port: '测试服专用端口' })) field(advanced, label, config[key], key);
+  const heading = document.createElement('header'), identity = document.createElement('div');
+  heading.className = 'instance-heading';
+  const title = document.createElement('strong'), status = document.createElement('span'), remove = document.createElement('button');
+  title.textContent = name || '新服务端';
+  status.className = 'instance-state';
+  status.textContent = !name ? '未保存' : state.state_unknown ? '状态待确认' : state.running ? '运行中' : '已停服';
+  if (name && !state.window_online) status.textContent += ' · 无托管连接';
+  if (state.configuration_pending) status.textContent += ' · 配置待生效';
+  if (state.selectable === false) status.textContent += ' · 待移除';
+  status.classList.toggle('running', !!state.running && !state.state_unknown);
+  remove.type = 'button'; remove.className = 'quiet'; remove.textContent = '移除配置'; remove.onclick = () => card.remove();
+  identity.append(title, status); heading.append(identity, remove); card.append(heading);
+  const basics = document.createElement('div'); basics.className = 'columns'; card.append(basics);
+  field(basics, '配置名', name, 'name'); field(basics, '说明／群内叫法', config.description, 'description');
+  field(card, '服务端目录（其中使用 start.bat）', config.directory, 'directory');
+  const advanced = document.createElement('details'), summary = document.createElement('summary');
+  const body = document.createElement('div'), options = document.createElement('div');
+  summary.textContent = '高级选项'; body.className = 'details-body'; options.className = 'columns';
+  advanced.append(summary, body); body.append(options);
+  for (const [key, label] of Object.entries({ java_path: '实例 Java 路径（可选）', encoding: 'BAT 编码（默认 auto）', stop_timeout: '停服超时秒（默认 120）', stop_command: 'MC 停服命令（默认 stop）', restart_prompt: '自动重启提示（默认约定提示）', test_address: '测试服可达地址', test_port: '测试服专用端口' })) field(options, label, config[key], key);
   const paths = document.createElement('label'); paths.append('试服复制清单（每行一个相对路径）');
-  const list = document.createElement('textarea'); list.dataset.key = 'test_copy_paths'; list.value = (config.test_copy_paths ?? []).join('\n'); paths.append(list); advanced.append(paths);
-  const watch = document.createElement('label'); const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.dataset.key = 'incident_watch'; toggle.checked = config.incident_watch ?? false; watch.append(toggle, '主动保留故障现场'); advanced.append(watch);
+  const list = document.createElement('textarea'); list.dataset.key = 'test_copy_paths'; list.value = (config.test_copy_paths ?? []).join('\n'); paths.append(list); body.append(paths);
+  const watch = document.createElement('label'); watch.className = 'toggle';
+  const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.dataset.key = 'incident_watch'; toggle.checked = config.incident_watch ?? false; watch.append(toggle, '主动保留故障现场'); body.append(watch);
   card.append(advanced); document.querySelector('#instances').append(card);
 }
 async function loadHost() {
@@ -63,6 +90,7 @@ async function loadHost() {
   for (const [name, config] of Object.entries(host.instances)) instance(name, config, host.state.find(item => item.instance === name));
   for (const state of host.state.filter(item => item.selectable === false)) { const p = document.createElement('p'); p.textContent = `${state.instance}：待移除，当前进程与操作仍可管理。`; document.querySelector('#instances').append(p); }
   document.querySelector('#powershell-path').value = host.powershell_path; document.querySelector('#world-java').value = host.world_tools.java_path ?? ''; document.querySelector('#operations-memory').value = host.operations_memory_limit_mib ?? 8192;
+  showIncidentSettings(host);
   if (host.error) show(`实例热重载错误：${host.error}`, true);
   else if (host.restart_required) show(`主机配置已保存，重启 B 后生效。当前运行：PowerShell ${host.effective.powershell_path}；存档 Java 配置 ${host.effective.world_tools.java_path || '默认'}；额度 ${host.effective.operations_memory_limit_mib} MiB。`);
 }
@@ -81,7 +109,47 @@ document.querySelector('#save-instances').onclick = function () {
 };
 document.querySelector('#test-key').onclick = function () { action(this, async () => { await api('POST', 'host/curseforge/test'); show('CurseForge 凭据已从 A 端验证。'); }); };
 document.querySelector('#clear-key').onclick = function () { action(this, async () => { const result = values(); result.curseforge_api_key = ''; await api('POST', 'settings', result); await loadA(); show('A 端 CurseForge 密钥已清空。'); }); };
-document.querySelector('#save-host').onclick = function () { action(this, async () => { const result = await api('POST', 'host', { operations_memory_limit_mib: Number(document.querySelector('#operations-memory').value), powershell_path: document.querySelector('#powershell-path').value, world_tools: { java_path: document.querySelector('#world-java').value } }); show(result.restart_required ? '已保存，重启 B 后生效。' : '已保存。'); }); };
+document.querySelector('#save-host').onclick = function () {
+  action(this, async () => {
+    if (!host) throw new Error('请先刷新 B 配置。');
+    const data = {};
+    const memory = Number(document.querySelector('#operations-memory').value);
+    const powerShell = document.querySelector('#powershell-path').value;
+    const java = document.querySelector('#world-java').value;
+    if (memory !== (host.operations_memory_limit_mib ?? 8192)) data.operations_memory_limit_mib = memory;
+    if (powerShell !== host.powershell_path) data.powershell_path = powerShell;
+    if (java !== (host.world_tools.java_path ?? '')) data.world_tools = { java_path: java };
+    if (!Object.keys(data).length) { show('主机设置没有改动。'); return; }
+    const result = await api('POST', 'host', data);
+    Object.assign(host, data);
+    show(result.restart_required
+      ? '主机设置已保存。PowerShell、存档 Java 或内存额度需重启 B 后生效。'
+      : '主机设置已保存并生效。');
+  });
+};
+function showIncidentSettings(data, loadValues = true) {
+  if (loadValues) {
+    restartWindow.value = data.incident_restart_window_seconds;
+    incidentCapacity.value = data.incident_capacity_mib;
+  }
+  incidentForm.querySelector('[type=submit]').disabled = false;
+  document.querySelector('#incident-usage').textContent =
+    `留证数据库已用 ${(data.incident_db_bytes / 1048576).toFixed(2)} / ${data.incident_capacity_mib} MiB`;
+}
+incidentForm.addEventListener('submit', event => {
+  event.preventDefault();
+  action(event.submitter, async () => {
+    await api('POST', 'host', {
+      incident_restart_window_seconds: Number(restartWindow.value || restartWindow.placeholder),
+      incident_capacity_mib: Number(incidentCapacity.value || incidentCapacity.placeholder),
+    });
+    showIncidentSettings(await api('GET', 'host'));
+    show('主动留证设置已保存并生效。');
+  });
+});
+document.querySelector('#refresh-incident-usage').onclick = function () {
+  action(this, async () => showIncidentSettings(await api('GET', 'host'), !host));
+};
 const names = { conversation: '普通对话', stream: '流式响应', function_call: '工具调用与续接', reasoning_effort: '排障思考强度', web_search: 'API 托管搜索', web_search_preview: '兼容托管搜索', alpha_search: '独立搜索', alpha_open: '独立搜索打开网页', alpha_find: '独立搜索页内查找', progress: '执行进度汇报', review_json: '审核模型与 JSON' };
 const statuses = { testing: '测试中', passed: '验证通过', unsupported: '明确不支持', unobserved: '本次未观察到', failed: '请求失败' };
 async function readTest() {

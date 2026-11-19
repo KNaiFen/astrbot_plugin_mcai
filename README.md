@@ -29,9 +29,9 @@
 
 ## 安装前准备
 
-当前发行版本为 **0.17.0**（[下载与校验和](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.17.0)）。MOD 修复只需批准一次：实际试玩后用自然语言回复，通过则先关试服，再备份正式服、安装同一份制品并验证。验收后自动归档和清理任务临时文件。正式服还可单独开启故障留证，默认关闭。本版协议为 `mcai-7`，A、B 与所有托管窗口须配套更新；已安装的 Probe **0.4.1** 无需替换。升级前阅读[更新说明](#更新时保留什么)，具体选项见[配置说明](docs/usage/configuration.md)。
+当前发行版为 **0.18.0**（[下载与校验和](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.18.0)），A、B 和托管窗口均使用 `mcai-8`，须安装配套版本。已有部署请先看[升级步骤](#更新时保留什么)。
 
-首次部署或更新B时使用同版本的 `mcai_windows_host.zip`，发行附件包含八目标Probe 0.4.1，可[构建两端发行包](docs/development/README.md#构建与发行)。公开附件的版本与协议按发布记录配套使用，不混用不同协议的A、B和托管窗口。
+B 使用 `mcai_windows_host.zip`，其中附带可选的 Probe 0.5.0；A 使用 `astrbot_plugin_mcai.zip`。需要从源码安装时，见[构建说明](docs/development/README.md#构建与发行)。
 
 ### 软件与版本
 
@@ -40,6 +40,7 @@
 | A | Windows 本机运行的 AstrBot，**最低 v4.29.4**；Python **3.12+** | 在 AstrBot 管理界面或启动日志查看版本；插件依赖安装到 AstrBot 自己使用的 Python 环境 |
 | A | 已连接 QQ 的消息适配器，支持引用消息和主动发消息 | 先确认 Bot 能收到群消息，并能在该群回复；创建任务要能取得被引用消息的文字 |
 | A | 支持 OpenAI 兼容 Chat／Responses 的排障模型与审核模型 API，排障模型须支持工具调用 | 在 AstrBot 模型页配置，之后用插件设置页测试；两者可使用同一提供商，但审核独立请求 |
+| A（仅 MOD 源码修复） | PowerShell **7.3+ 的 7.x**，以及构建该 MOD 所需的 JDK | PowerShell 路径可在 A 设置指定；[试玩与发布](docs/usage/operations.md#mod-试服试玩与正式发布)使用 A 构建制品 |
 | B | Windows **10 1809 或更新版本／Windows 11**，建议 x64；Python **3.12+** | 在 Windows“设置 → 系统 → 关于”查看版本和系统类型，再执行下方 Python 检查 |
 | B | PowerShell **7.3+ 的 7.x** | 执行 `$PSVersionTable.PSVersion`；程序是 `pwsh.exe`，Windows 自带的 PowerShell 5.1 不符合要求 |
 | B | 存档辅助工具使用的 Java **21+** 运行环境 | 执行所选 `java.exe -version`；安装发行包只需运行 JAR，无需自行编译 |
@@ -47,7 +48,7 @@
 
 AstrBot 的安装版本声明为 `>=4.29.4`，不设最高版本。本项目目前的集成验证基线为 v4.29.4；使用更新版时，安装后先完成下文的连接与模型能力测试，再创建一次任务确认。后续版本的验证结果会另行记录。
 
-A、B 可以共用一台 Windows 电脑，也可以分开。本文按 Windows 本机部署说明；B 的托管窗口依赖 Windows ConPTY，Linux、WSL 或 Linux Docker 容器不能运行该托管流程。A 只装插件时不需要安装 B 的 PowerShell、存档 Java 或服务端；B 不需要安装 AstrBot。若 A、B 同机，则在同一台机器准备两边的环境。
+A、B 可以共用一台 Windows 电脑，也可以分开。本文按 Windows 本机部署说明；B 的托管窗口依赖 Windows ConPTY，Linux、WSL 或 Linux Docker 容器不能运行该托管流程。A 的基础排障不需要 B 的 PowerShell、存档 Java 或服务端环境；B 不需要安装 AstrBot。若 A、B 同机，则在同一台机器准备两边的环境。
 
 **两套 Java 要分开理解：**`host.json` 的 `world_tools.java_path` 指向 Java 21+，供存档辅助工具使用；MC 仍使用原 `start.bat` 或实例配置指定的 Java。例如原整合包要求 Java 17，就保留它，同时另装 Java 21 给存档工具。配置时分别写完整路径，多套 Java 可以共存。
 
@@ -272,13 +273,13 @@ Set-Location -LiteralPath 'D:\MCAI'
 
 在 AstrBot **插件管理页**使用 ZIP 安装入口，选择配套的 `astrbot_plugin_mcai.zip`，等待安装依赖并启用插件。找到显示名称为 **“MC 排障助手”**、插件标识为 `astrbot_plugin_mcai` 的插件，打开其**设置视图**，页面标题为“MCAI 设置”。
 
-也可以通过仓库地址安装：[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)。首次部署或升级到 0.17.0 时，配套更新 B 与所有托管窗口，确认使用 `mcai-7`。部署步骤见[安装前准备](#安装前准备)。
+也可以通过仓库地址安装：[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)。首次部署或升级到 0.18.0 时，配套更新 B 与所有托管窗口，确认使用 `mcai-8`。部署步骤见[安装前准备](#安装前准备)。
 
 若安装依赖时出现 `WinError 5`，并指向 `charset_normalizer` 或 `__mypyc*.pyd`，完全退出 AstrBot 后，按[安装依赖时拒绝访问](docs/usage/operations.md#安装依赖时拒绝访问)预装依赖，再启动 AstrBot 重试安装。
 
 ### 2. 填写并测试 B 连接
 
-在“**连接 MC 主机**”区填写：
+在“**主机连接**”区填写：
 
 | 界面字段 | 对应内容 |
 |---|---|
@@ -297,14 +298,14 @@ Set-Location -LiteralPath 'D:\MCAI'
 1. 在“排障模型”中选择已配置的 OpenAI 兼容 Chat／Responses 提供商；首次建议明确选择，方便一键测试。AstrBot 原生 Gemini 等其他适配器暂不支持完整工具结构，会明确拒绝。
 2. 在“审核模型”中选择一个 OpenAI 兼容 Chat／Responses 提供商。审核模型必须设置，可以与排障模型使用同一个提供商，但审核会独立请求。
 3. 思考强度不确定时先留空，继承提供商设置；只填写该模型支持的值。
-4. 在 AstrBot 提供商设置中按模型实际容量配置 `max_context_tokens`。插件按这个值控制历史输入，未配置时按 32768 token 估算，长任务会压缩已结算历史。详细行为见[上下文与群消息范围](docs/usage/configuration.md#上下文与群消息范围)。
+4. 在 AstrBot 提供商设置中按模型实际容量配置 `max_context_tokens`。插件按这个值控制历史输入，未配置或为 0 时按 272000 tokens 估算，长任务会压缩已结算历史。详细行为见[上下文与群消息范围](docs/usage/configuration.md#上下文与群消息范围)。
 5. 点击“**保存并测试、自动配置**”，等待结果区结束，查看“普通对话”“工具调用与续接”“审核模型与 JSON”等结果。
 
 能力测试只发测试模型／搜索请求，会产生少量 API 费用；不会操作 MC，也不会发送群消息。普通对话、工具调用或审核失败时，先核对对应提供商的错误。搜索和执行进度汇报是可选能力：服务商不支持时可关闭对应开关，未观察到汇报也不等于排障功能不可用。执行进度汇报默认关闭，开启后转发中文的工具前说明与工作进展，不按固定时间通知。API 托管搜索和 `alpha/search` 独立搜索的区别见[模型与搜索说明](docs/usage/configuration.md#模型搜索与能力测试)。
 
 ### 4. 配置管理员和允许群
 
-在“**群与管理员**”区：
+在“**群与通知**”区：
 
 - “管理员 QQ”每行填一个可以创建、批准、暂停和结束任务的 QQ 号。AstrBot 自身识别的管理员也可管理任务。
 - “允许群号”每行填一个使用本插件的 QQ 群号；留空允许所有群。
@@ -370,7 +371,9 @@ Bot 应回复“开始排查”，并附上群成员补充命令 `/mcaisay 主�
 
 AI可查看日志、文件、存档和在线指标；诊断脚本与发送到控制台的诊断命令会经过独立 AI 审核。排障在后台继续，需要补充信息、批准方案或报告关键结论时，Bot 会主动发到原群，不必再次发送命令才能收到消息；回答追问仍用 `/mcaisay 任务名 内容`。完整结果保存在本地，没有逐条播报工具进度是正常的。
 
-使用 QQ OneBot v11 且接入端支持群合并转发时，插件默认把超过 400 字符的单条回复发成一张合集卡片，点开可读完整正文。原消息需要 @ 成员时，卡片之后单独 @ 一次。门槛可在“MCAI 设置 → 群与管理员 → QQ 长回复合集门槛”修改，点击“保存 A 设置”生效。
+开启[主动留证](docs/usage/configuration.md#故障留证与通知)后，服务器重启了也能让 MCAI 查刚才崩溃时的控制台和可取得的性能记录。遇到「跑新图就卡」，可以请 MCAI [做一次区块录制](docs/usage/operations.md#文件存档与故障取证)，收到开录提醒后照常复现，结果会自动回到群里。
+
+使用 QQ OneBot v11 且接入端支持群合并转发时，插件默认把超过 400 字符的单条回复发成一张合集卡片，点开可读完整正文。原消息需要 @ 成员时，卡片之后单独 @ 一次。门槛可在“MCAI 设置 → 群与通知 → QQ 长回复合集门槛”修改，点击“保存 A 设置”生效。
 
 ### 3. 查看方案，再决定是否批准
 
@@ -400,7 +403,9 @@ AI有修复方向时，会发简短方案并提示批准。如果需要重新查
 /mcaisay 主城卡顿 已重新进入主城，观察10分钟未再出现掉TPS，其他玩家也恢复正常
 ```
 
-AI可以继续核对日志与现场。确认问题已解决后，管理员再发：
+AI可以继续核对日志与现场。对涉及源码修复的 MOD，先按[试服试玩和发布流程](docs/usage/operations.md#mod-试服试玩与正式发布)确认实际效果。
+
+确认问题已解决后，管理员再发：
 
 ```text
 /mcaidone 主城卡顿
@@ -433,8 +438,8 @@ AI可以继续核对日志与现场。确认问题已解决后，管理员再发
 | `/mcaisaymode 任务名 true\|false` | 管理员 | `false` 暂停普通成员补充，`true` 恢复；管理员始终可补充 |
 | `/mcaistatus 任务名` | 群成员 | 查看状态 |
 | `/mcailist [页码]` | 群成员 | 查看本群活动任务，例如 `/mcailist 2` |
-| `/mcaiplan 任务名` | 群成员 | 重发当前待批准方案的简短说明 |
-| `/mcaiapply 任务名` | 管理员 | 批准当前修复方案 |
+| `/mcaiplan 任务名` | 群成员 | 重发待批准方案，或查看已批准的多轮方案 |
+| `/mcaiapply 任务名` | 管理员 | 批准当前方案 |
 | `/mcaipause 任务名` | 管理员 | 保存并暂停 |
 | `/mcairesume 任务名` | 管理员 | 从已保存状态续接 |
 | `/mcaistop 任务名` | 管理员 | 中止，不作为已解决案例归档 |
@@ -443,100 +448,25 @@ AI可以继续核对日志与现场。确认问题已解决后，管理员再发
 
 ## 可选：安装服内诊断 Probe
 
-基础部署完成后，可安装 MCAI Probe 提供玩家位置、维度耗时、已加载对象普查和短时实体热点。客户端无需安装，不新增端口。
-
-1. 正常停服。
-2. 从 B 包 `probe/` 选择**一个**与 MC 版本、加载器匹配的文件，放进该服务端 `mods/`。
-3. 正常启动，确认日志出现 `MCAI Probe 0.4.1 ready`。
-4. 照常创建排障任务，在补充中提供游戏名或坐标，AI会使用可用的探针能力。
-
-| 服务端 | 选择的 JAR |
-|---|---|
-| Forge 1.7.10（10.13.4.1614，配套lwjgl3ify 3.1.0与UniMixins 0.3.2） | `mcai-probe-1.7.10-forge-0.4.1.jar` |
-| Forge 1.16.5（36.2.39+，36.x） | `mcai-probe-1.16.5-forge-0.4.1.jar` |
-| Forge 1.19.2（43.x） | `mcai-probe-1.19.2-forge-0.4.1.jar` |
-| Forge 1.20.1（47.x） | `mcai-probe-1.20.1-forge-0.4.1.jar` |
-| Fabric 1.20.1 | `mcai-probe-1.20.1-fabric-0.4.1.jar` |
-| Forge 1.21.1（52.x） | `mcai-probe-1.21.1-forge-0.4.1.jar` |
-| Fabric 1.21.1 | `mcai-probe-1.21.1-fabric-0.4.1.jar` |
-| NeoForge 1.21.1（21.1.247+，21.1.x） | `mcai-probe-1.21.1-neoforge-0.4.1.jar` |
-
-0.16.0 的 B 包包含 Probe 0.4.1 的八个目标，新增 NeoForge 1.21.1。更新时正常停服，移走旧Probe后放入对应的新JAR，再启动；首次部署或跨产品协议升级时A、B须配套更新，Probe协议1按能力声明扩展。1.16.5使用Java8；1.7.10已在标准Forge＋lwjgl3ify＋UniMixins上验证Java17／21，GTNH整合包须另测。Forge版不依赖Fabric API；Fabric版需要对应 Fabric API 和 Loader 0.16.14+。Forge 与 NeoForge JAR 分开构建，不要交叉安装；不要选择 `sources` 文件。临时模拟玩家的创建、删除与参数见[使用说明](docs/usage/probe.md#临时模拟玩家)。
+Probe 提供玩家位置、维度耗时、已加载对象普查和短时实体热点。客户端无需安装，不新增端口。先正常停服，再从 B 包的 `probe/` 目录选择与 Minecraft 版本和加载器匹配的 **一个 JAR** 放入 `mods/`；重启后确认日志出现 `MCAI Probe 0.5.0 ready`。文件名、Java 要求及用法见[Probe 安装表](docs/usage/probe.md#安装)。
 
 ## 日常启停、规则与备份
 
 ### 下次开机怎么启动
 
-不需要重做安装或复制配置。先在 B 的一个 PowerShell 7 窗口运行主机程序，再为每台 MC 打开独立托管窗口，分别启动：
-
-```powershell
-Set-Location -LiteralPath 'D:\MCAI'
-.\.venv\Scripts\python.exe -m mcai host
-```
-
-在另一个新窗口执行下面一条；出现托管提示后，再在里面执行 `start.bat`：
-
-```powershell
-& 'D:\MCAI\.venv\Scripts\mcai.exe' tm -C 'D:\MC\CTI'
-```
-
-A 端照常启动 AstrBot 和 QQ 适配器，插件会使用保存的配置。仅重启 B 时，已经存在的托管窗口继续运行并自动重连，不需要重新开服。
-
-### 本机正常停服与查看
-
-在 B 安装目录另开一个 PowerShell 7，用配置 ID 操作：
-
-```powershell
-Set-Location -LiteralPath 'D:\MCAI'
-.\.venv\Scripts\mcai.exe stop cti
-.\.venv\Scripts\mcai.exe status cti
-```
-
-`stop` 会处理 BAT 自动重启提示，完成后保留托管 PowerShell。需要再开服可执行 `.\.venv\Scripts\mcai.exe start cti`。`attach cti` 提供额外的远程控制台查看／输入入口，输入 `/detach` 只退出查看；人工命令直接执行，不走 AI 审核。任务正在修复时，先核对其状态再做本机操作。
-
-B 窗口按 Ctrl+C 正常退出会等待已接受修复，再结束辅助工作和断开连接，MC 托管窗口继续运行。如果修复仍在进行，等待它收尾；强制结束可能留下未完成修改，后续需要检查现场。
+先[启动 B](#5-启动-b保存连接信息)，再为每个服务端[打开托管窗口并运行 `start.bat`](#6-为每个服务端打开独立托管窗口)。A 端照常启动 AstrBot 和 QQ 适配器。单独重启 B 时，已有托管窗口和 MC 继续运行并自动重连。日常启停、`attach` 和观察状态见[多窗口管理](docs/usage/operations.md#多窗口管理服务端)。
 
 ### 调整 Agent 预设
 
-首次启用在 A 的 `AstrBot/data/plugin_data/astrbot_plugin_mcai/` 生成 `AGENTS.md`、`REVIEW_AGENTS.md` 和 `SUMMARY_AGENTS.md`，分别供执行、审核及历史整理模型读取。想增加自己服务器的运维约定，可先暂停任务，再编辑对应文件，下一轮或续接会重新读取。
-
-升级保留已编辑的规则；需要采用新版预设时，将包内 `mcai/agent_rules.md`、`mcai/review_rules.md` 和 `mcai/summary_rules.md` 分别与现有对应文件人工合并。规则变化会使原待执行方案需要重新审核。具体说明见[运行时规则](docs/usage/configuration.md#运行时规则)。通用脚本使用 B 的运行账号权限执行，AI 审核不能代替系统文件权限。
+自定义约定写入 A 插件数据目录的运行时规则。升级会保留编辑，采纳新版约定时人工合并。三份模板的用途和位置见[运行时规则](docs/usage/configuration.md#运行时规则)。
 
 ### 备份在哪里，如何恢复
 
-按本文示例，B 的文件修复备份在 `D:\MCAI\runtime\host\backups\操作编号\`，包含清单 `manifest.json` 和原文件；脚本输出也在对应备份目录。A 的任务和经验保存在插件数据目录，经验文档位于其中的 `knowledge/`。
-
-需要恢复时，先确认任务记录中的备份操作编号和源服务端目录，再在 B 使用 `mcai restore 配置ID 备份操作编号`。恢复本身会停服并备份当前目标；失败时保留现场。不要仅凭配置名相同就套用其他目录的备份。完整步骤与数据维护见[运行维护](docs/usage/operations.md#数据与备份)。
+B 的文件备份在 `data_dir/backups/操作编号/`。恢复前先核对原实例目录和备份编号，按[备份恢复步骤](docs/usage/operations.md#数据与备份)执行。A 的任务、规则和经验保存在插件数据目录。
 
 ### 更新时保留什么
 
-从 **0.16.0 升级到 0.17.0** 时，协议从 `mcai-6` 升为 `mcai-7`，必须配套更新 A、B 与托管窗口：
-
-1. 完成或中止活动任务并等待操作收尾；未结算旧工具调用不迁移，历史记录保留。
-2. 关闭AstrBot与B程序，备份并保留插件数据、`host.json`、`instances.json`、B的`data_dir`、证书、备份和经验文档。
-3. 在维护窗口正常停服，关闭旧托管窗口与 B，再更新 A、B 及所有托管窗口到 0.17.0。在原 B 环境重新安装依赖，再打开新窗口启动原 `start.bat`。
-4. 保留原测试服地址和专用端口；可在 B 的实例高级选项填写常用复制路径、按需开启故障留证。需要 CurseForge 时，在 A 设置页填写密钥。
-5. 启用插件，测试连接和模型能力，再创建只读任务确认正常。现有三份运行时规则保留，按[配置说明](docs/usage/configuration.md#运行时规则)人工合并新版工具说明。
-
-以下是从 **0.14.3升级到0.15.0** 的历史说明：
-
-1. 新版模型查询入口改为`mc_query`，其他复杂工具经`mc_tools`加载。升级前完成或中止活动任务并等待操作收尾；旧任务历史保留，不迁移未结算的旧工具调用。
-2. 停用MCAI插件或退出AstrBot，备份并保留插件配置、任务数据、经验和三份运行时规则，更新A并重载。将`mcai/agent_rules.md`中的新版“工具交互”人工合并到数据目录的`AGENTS.md`，保留自己的服务器约定；审核和摘要模板本版未改。
-3. **使用新的AI查询只需更新A**，原0.14.3 B继续可用。需要在B本机使用`mcai query`时，再更新0.15.0主机包并在原环境执行`.\.venv\Scripts\python.exe -m pip install -e .`、重启B；原托管窗口和MC可继续运行，Probe0.4.1无需替换。
-4. 在插件设置页测试连接和模型能力，再创建一个新的只读查询任务确认正常。
-
-从 **0.14.0—0.14.2** 升级时，同样先完成或中止活动任务，再更新A；建议同步更新B，并在维护停服时更新托管窗口及Probe0.4.1，包含此前版本的修复。
-
-从 **0.12.0及更早版本** 升级时，按以下完整流程更新两端与托管窗口：
-
-1. 用`/mcailist`查看活动任务。已验收的任务用`/mcaidone 任务名`结束；其余用`/mcaistop 任务名`中止并等执行收尾。本轮工具名称和结果格式改变，不迁移未结算旧调用，仅暂停不足以完成升级准备。
-2. 停用MCAI插件或退出AstrBot，备份`AstrBot/data/plugin_data/astrbot_plugin_mcai/`及现有插件配置，保留任务历史和经验。
-3. **配套更新B和所有托管窗口到0.17.0**。先正常停服、关闭旧托管窗口，再退出B；用0.17.0主机包更新程序并在原B环境重新执行`.\.venv\Scripts\python.exe -m pip install -e .`。保留`host.json`、`instances.json`、`data_dir`、证书、令牌和备份；安装旧版Probe的服务端换为对应0.4.1 JAR，再打开新托管窗口运行原`start.bat`。
-4. 在AstrBot插件管理中更新MCAI；通过ZIP安装的实例可使用0.17.0插件包更新，或通过上面的仓库地址安装。确认版本为0.17.0，启用插件并重载或重启AstrBot。
-5. 已有运行时 `AGENTS.md`、`REVIEW_AGENTS.md` 和 `SUMMARY_AGENTS.md` 会保留。将插件中的三份对应模板分别人工合并，采用[工具升级对照](docs/usage/configuration.md#运行时规则)中的新名称、返回格式、示例及一次批准多轮执行约定，保留自己的服务器约定。
-6. 在插件设置页测试A→B连接及模型能力，再创建一个新的状态查询任务确认正常。历史记录继续保留。
-
-若升级要求更新托管窗口或改变终端协议，先正常停服、关闭旧托管窗口，再用新程序打开并启动；单纯重启 B 不需要关闭服务端。更多细节见[升级说明](docs/usage/operations.md#升级与常见问题)。
+升级到 0.18.0 时配套更新 A、B 和托管窗口。旧 Probe 仍可用于原有查询及兼容的性能留证；慢拍对象筛选和强加载汇总需要 Probe 0.5.0。先完成或中止活动任务，再安排停服及备份。详见[升级步骤和保留清单](docs/usage/operations.md#升级与常见问题)。
 
 ## 常见问题
 
@@ -546,17 +476,11 @@ B 窗口按 Ctrl+C 正常退出会等待已接受修复，再结束辅助工作�
 | 提示 PowerShell 版本不对 | 打开 PowerShell 7，核对 `$PSVersionTable.PSVersion` 及 `host.json` 中的 `powershell_path` |
 | 启动时目录／配置文件不存在 | 核对解压层级、当前目录、文件扩展名及 JSON 路径；B从安装目录启动 |
 | 提示找不到 B 配置位置 | 先在同一 Windows 用户下成功启动一次 B，再打开托管窗口 |
-| A 测试连接超时 | 确认 B 窗口仍运行；先在 B 执行 `list`，再检查 A 的 IP、外部端口和 B 的端口放行／映射 |
-| 令牌或指纹错误 | `token` 与 A 的共享令牌一致；指纹复制 B 的启动输出，不填模型 Key 或证书文件内容 |
-| 提示产品协议不匹配 | 核对 A、B 及托管窗口版本，按同次发行配套更新，再测试连接 |
-| 有服务端配置但显示无托管连接 | 确认 `tm -C` 的目录正确、B地址和端口没变；原来普通窗口中的 MC 不会自动接管 |
-| MC开了但提示目标不明确 | 检查是否在托管窗口、实例根目录内启动 `start.bat`，Java是否前台运行，以及窗口是否改变了目录 |
-| `/mcainew` 提示缺少问题 | 在任务名后填写问题描述，或用 QQ 的“回复”功能引用有文字的问题 |
-| AI没看到我刚发的解释 | 用 `/mcaisay 任务名 内容` 明确补充；普通群聊不进入任务，暂停状态还需管理员续接 |
-| 提示服务端已有任务占用 | 用 `/mcailist` 找到原任务，继续补充；原任务暂停也保留占用，结束后才能开新任务 |
-| 提示没有待批准方案 | 新反馈或规则变化可能使旧方案失效，等待 AI 重新提案后再批准 |
-| 修复停服超时 | 核对 MC 的停服命令、BAT退出提示和倒计时；确认停服前不会继续改文件，详细错误看本地记录 |
-| 辅助操作内存不足 | 查看本地错误和任务状态，缩小扫描／查询范围；设置页可调整共享额度，重启B生效 |
+| A 测试连接失败 | 确认 B 仍在运行；核对实际地址、端口、令牌和证书指纹 |
+| 有服务端配置但显示无托管连接 | 确认 `tm -C` 的目录正确；普通窗口中的 MC 不会被自动接管 |
+| AI 没看到刚发的解释 | 用 `/mcaisay 任务名 内容` 补充；暂停状态下需管理员续接 |
+
+模型、下载、停服和安装依赖等问题见[运行维护常见问题](docs/usage/operations.md#其他常见问题)。
 
 [文档总索引](docs/README.md) · [配置字段与上下文](docs/usage/configuration.md) · [运行维护与备份](docs/usage/operations.md) · [Probe](docs/usage/probe.md) · [开发指南](docs/development/README.md)
 

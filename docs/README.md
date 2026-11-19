@@ -1,6 +1,6 @@
 # 文档索引
 
-[项目简介与快速使用](../README.md)覆盖首次部署和群内操作。按当前目的继续阅读：
+[项目首页](../README.md)提供首次安装、连通性检查和群内操作示例。按用途继续阅读：
 
 | 目的 | 入口 |
 |---|---|
@@ -10,9 +10,8 @@
 
 ## 文档约定
 
-- 使用文档描述当前可用行为；设计文档解释已经采用的方案与约束；验证记录说明实际测过什么。
-- 初期讨论过的方案和后续修订以[设计决策](design/README.md#设计决策)为准，不能把早期设想当成当前实现。
-- 仓库根 `AGENTS.md` 约束开发工作；A 插件数据目录的 `AGENTS.md`、`REVIEW_AGENTS.md` 和 `SUMMARY_AGENTS.md` 分别约束执行、审核及历史整理模型。三者用途不同。
-- 详细文档放在 `docs/`。代码目录的 `mcai/agent_rules.md`、`mcai/review_rules.md` 和 `mcai/summary_rules.md` 分别是执行、审核及历史整理模型的运行时模板，第三方许可和测试数据来源随组件保留。
+- `usage/`：当前配置、命令和操作步骤。
+- `design/`：实际采用的架构、约束和失败处理。
+- `development/`：开发、测试、构建与第三方来源。完整源码的 `docs/development/records/` 另存发行和验证证据；安装包附现行指南。
 
-文档描述对应 0.14.0。配置字段以 `_conf_schema.json`、`host.example.json` 和 `instances.example.json` 为入口，工具参数以 `mcai/tool_schemas.py` 为准。
+当前产品版本为 **0.18.0**，A、B 和托管窗口使用 `mcai-8`；Probe 版本为 **0.5.0**。配置以 A 的 `_conf_schema.json`、B 的 `host.example.json` 和 `instances.example.json` 为入口，模型工具契约由源码中的 `mcai/tool_schemas.py` 定义。安装时的三份[运行时规则](usage/configuration.md#运行时规则)和源码根目录的开发规则各有用途。

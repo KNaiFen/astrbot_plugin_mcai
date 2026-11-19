@@ -18,8 +18,13 @@ QUERY_COMMANDS = {
     "region-export": "mc_region_export",
     "region-scan": "mc_region_scan",
     "diagnostics": "mc_diagnostics",
+    "incidents": "mc_incidents",
 }
 EXAMPLES = {
+    "incidents": [
+        ["incidents", "list"],
+        ["incidents", "console", "--id", "实际故障编号", "--query", "Exception"],
+    ],
     "files": [
         ["files", "read", "--path", "server.properties", "--line-count", "30"],
         ["files", "search", "--glob", "config/**/*.toml", "--query", "timeout"],
@@ -325,6 +330,7 @@ def query_operation(name, arguments):
         "mc_logs": "logs",
         "mc_nbt": "nbt_query",
         "mc_diagnostics": "diagnostics",
+        "mc_incidents": "incidents",
         "mc_region_scan": "region_scan",
         "mc_region_export": "region_export",
     }.get(name, "region_query")

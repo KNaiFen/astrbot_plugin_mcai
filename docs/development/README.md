@@ -4,41 +4,14 @@
 
 | 文档 | 内容 |
 |---|---|
-| [0.17.0发行验证](release-0.17.0.md) | 自然语言试玩确认、同制品发布、验收清理和故障留证 |
-| [0.16.0发行验证](release-0.16.0.md) | 独立安装、OneBot 合集、八目标 Probe 与发布清单 |
-| [0.15.0 全项目审查](code-audit-0.15.0.md) | 跨盘恢复、停止、任务续接、实例配置、NBT、诊断导出与发行流程的复现和验收条件 |
-| [0.15.0发行验证](release-0.15.0.md) | 与0.14.3的差异、组件升级范围、独立安装与发行核对 |
-| [MOD工作区与测试副本实现](mod-repair-implementation-2026-11-19.md) | 历史改动审查、A/B文件传输、工作区、测试环境及未执行验收边界 |
-| [查询CLI与按需加载](query-cli-lazy-tools-2026-11-18.md) | 新命令、动态工具定义、双服真实消息链、输入对比及回归边界 |
-| [测试说明](testing.md) | 测试环境、命令、场景、当前基线和验证边界 |
-| [本地测试数据清理](local-test-cleanup-2026-11-18.md) | 四份保留实例、66GiB清理结果、文件核对与历史证据边界 |
-| [0.14.3发行验证](release-0.14.3.md) | 群消息三次发送、独立安装验证、发行清单与限制 |
-| [API持续重试](continuous-api-retry-2026-11-17.md) | 持续重试、第三次失败通知、暂停停止、重载去重与验证限制 |
-| [GTNH与亡者第二轮实测](two-servers-e2e-2026-11-17.md) | 双服10GiB、持久实体崩溃、存档修复、卡顿、JVM、恢复与工具体验问题 |
-| [第二轮改进建议](two-servers-improvement-plan-2026-11-17.md) | 执行／审核大数据治理、目标驱动决策、RTK参考与实测问题修复方案 |
-| [第二轮问题整改](two-servers-fixes-2026-11-17.md) | 已实施修改、对应集成验证和保留边界 |
-| [修复后双服定向复测](two-servers-postfix-e2e-2026-11-17.md) | 2MiB NBT、34万行日志、48K压缩与审核容量故障的冻结版本结果 |
-| [定向复测问题整改](postfix-remediation-2026-11-17.md) | 结构化容量识别、摘要与证据阅读问题的施工和复验 |
-| [四服务端真实测试](four-servers-e2e-2026-11-17.md) | ATM10、GTNH、DeceasedCraft与Fabric隔离实服的消息、诊断、维护和压缩测试 |
-| [四服问题整改](four-servers-fixes-2026-11-17.md) | F01—F04、O01—O07、统一工具参数、spark保护与回归证据 |
-| [真实端到端测试](live-e2e-2026-11-16.md) | 真实模型、OneBot消息、AstrBot、B端、MC与Probe的测试记录及问题 |
-| [真实测试十项整改](live-e2e-fixes-2026-11-16.md) | F01—F10的修改、回归证据与保留边界 |
-| [272K上下文真实联调](context-272k-live-2026-11-16.md) | 大结果续读、实际越线压缩、断流／暂停／重启恢复与新增问题 |
-| [272K五项整改](context-272k-fixes-2026-11-17.md) | 请求预算、启动恢复、摘要选组、审核输入和归档重试整改与验证 |
-| [0.14.2压缩与请求审查](context-request-audit-2026-11-16.md) | 完成性、拒绝摘要、多Key、say时序、重试及流式留痕的7类问题、11项复现与整改 |
-| [自动化审核专项评估](automation-review-2026-11-15.md) | 审核材料、覆盖范围、实际执行与批准一致性、反馈恢复缺陷及验证边界 |
-| [自动化审核整改](automation-review-remediation-2026-11-15.md) | 原始证据、反馈版本、有效步骤与脚本材料的整改及本轮验证 |
-| [0.11.0 正确性审查](code-audit-2026-11-14.md) | 已确认缺陷、最小复现、验证证据、38工具契约矩阵与覆盖边界 |
-| [正确性审查整改](code-audit-fixes-2026-11-15.md) | R01—R11与U01的核实、最小修改、回归入口与验证边界 |
-| [B端运维能力与验证](maintenance-capabilities.md) | 精确编辑、取证恢复、修复验证、组件清单与存档工具的分批实现和测试 |
-| [0.8.0 架构与行为审查](architecture-review-0.8.0.md) | 已复现问题、性能风险、测试债务与分批改进及验收条件 |
-| [0.8.0 整改与验证](architecture-remediation-0.8.0.md) | 对应R01—R21的当前行为、验收证据与保留边界 |
-| [固定验证环境](dependencies.md) | Windows/Python/AstrBot依赖版本、包哈希及空环境重建 |
-| [第三方组件与来源](third-party.md) | 设计参考、依赖许可、固定JAR和真实存档片段来源 |
-| [探针构建与验证](probe.md) | 八目标构建、真实服务端、测试负载、共存及性能结果 |
-| [Probe 0.3.0压力数据](probe-pressure-030.md) | 126个隔离采集窗口、资源、覆盖率与验证边界 |
+| [测试与复验](testing.md) | 环境要求、按范围选择的测试命令、安装验证与证据边界 |
+| [Probe 构建与复验](probe.md) | 八目标构建、隔离实服准备和测试脚本 |
+| [固定验证环境](dependencies.md) | Windows／Python／AstrBot 环境的依赖锁与重建方式 |
+| [第三方组件与来源](third-party.md) | 依赖许可、固定 JAR 和真实存档片段来源 |
 
-源码仓库根 `AGENTS.md` 定义开发协作规则，先阅读相关专题再修改。用户部署从[README](../../README.md)开始。
+在完整源码中打开 `docs/development/records/README.md`，可查发行核对、历史复盘和实测证据。用户安装从[项目首页](../../README.md)开始。
+
+源码仓库根 `AGENTS.md` 定义开发协作规则，先阅读相关专题再修改。
 
 ## 环境与源码安装
 
@@ -62,12 +35,14 @@ py -3.12 -m venv .venv
 |---|---|
 | 插件命令、初始化与通知 | `main.py`、`_conf_schema.json` |
 | Agent循环、上下文预算、工具schema与结果、模型重试与审核 | `mcai/astrbot_agent.py`、`context_budget.py`、`agent_runtime.py`、`tool_schemas.py`、`tool_results.py`、`review.py` |
-| A任务、发件箱、经验和网页 | `mcai/tasks.py`、`storage.py`、`knowledge.py`、`web.py` |
+| A 任务、发件箱、经验和网页 | `mcai/tasks.py`、`storage.py`、`knowledge.py`、`web.py` |
+| MOD 工作区、试服与试玩发布 | `mcai/workspace.py`、`test_environment.py`、`operation_context.py` |
+| B 故障留证和 A 通知 | `mcai/incidents.py`、`incident_store.py`、`main.py` |
 | 任务私有API及交互记录、诊断导出 | `mcai/tracing.py`、`settings.py` |
 | B接口、共用执行上下文、后台工作与下载 | `mcai/host.py`、`operation_context.py`、`client.py`、`jobs.py`、`downloads.py` |
 | 独立托管窗口与控制台缓冲 | `mcai/terminal.py`、`console.py`、`console_buffer.py`、`remote_terminal.py` |
 | 共享辅助进程与内存额度 | `mcai/execution.py`、`worker.py`、`memory_job.py` |
-| 查询、NBT与区域辅助程序 | `mcai/queries.py`、`world.py`、`world_tools.py`、`java/WorldTool.java` |
+| 查询、NBT、区域与 JFR 辅助程序 | `mcai/queries.py`、`world_tools.py`、`chunk_jfr.py`、`java/` |
 | Windows入口、Java与HTTPS | `mcai/__main__.py`、`environment.py`、`tls.py` |
 | 配置热重载与设置页 | `mcai/configuration.py`、`settings.py`、`views/settings/` |
 | 独立搜索与模型能力测试 | `mcai/search.py`、`capabilities.py` |
@@ -102,17 +77,17 @@ B生命周期使用HostRunner：在aiohttp的pre_shutdown停止WebSocket输入�
 - `astrbot_plugin_mcai.zip`：插件入口、配置schema、A所需模块、依赖清单、运行时规则模板、设置视图、README和分层文档。
 - `mcai_windows_host.zip`：Python项目、基础与实例配置示例、模块、规则模板、JAR与许可、README和分层文档。
 - `probe/`：八目标、各目标sources JAR、完整源码ZIP与许可；B包中同样附带。
-- `mcai-<版本>-source.zip`：完整源码、构建脚本、测试和许可，不含Git历史及被忽略的本地文件。
+- `mcai-<版本>-source.zip`：来自 Git 跟踪清单的源码、构建脚本、测试和许可；未跟踪试验文件、运行数据和 Git 历史不打包。
 
-发行包面向部署，不包含源码测试、开发脚本、上游或开发 `AGENTS.md`。开发文档中的测试、构建命令应在源码仓库执行。JAR随B包部署，运行时不下载。
+A、B 包携带当前使用、设计和开发指南及相关许可。发行验证、历史记录和证据位于完整源码的 `docs/development/records/`。源码测试、开发脚本、上游副本及开发 `AGENTS.md` 不进入 A、B 安装包；指南中的测试和构建命令在完整源码中运行。JAR 随 B 包部署，运行时不下载。
 
-涉及版本发布时同步 `metadata.yaml` 与 `pyproject.toml`。文档整理不必改变功能版本。检查ZIP完整性、模块、模板、许可与文档相对链接；影响安装或构建时，从解压B包构建wheel，在独立环境安装，并从解压插件验证导入与关键流程。
+发行时同步 `metadata.yaml`、`pyproject.toml` 与 `mcai/protocol.py`，Probe 版本单独管理。检查 ZIP 完整性、模块、模板、许可与文档相对链接；影响安装或构建时，从解压 B 包构建 wheel 并独立安装，从解压 A 包验证导入与关键流程。对上传的附件生成 `SHA256SUMS.txt`。
 
 ## Git与文档维护
 
 - 上游、运行数据、私有配置、环境和构建输出由 `.gitignore` 排除。`git status --short`检查本次改动，`git status --short --ignored`检查本地工作产物。
 - `host.example.json`、Java源码、vendor许可证、`tests/fixtures/worlds`的许可与固定片段需要跟踪。不要用过宽的忽略规则隐藏它们。
-- 用户文档维护当前行为；设计文档保留最终方案及明确边界；测试基线标记版本与日期。不要把每次临时失败或开发对话抄进README。
+- 使用文档说明当前操作；设计文档解释实际行为和约束；发行和验证结果进入 `records/`，标注被测版本、环境、命令、结果与限制。历史报告引用的本地证据清理后，在对应记录注明。
 - 完成消融审查、适当验证后创建简短中文commit。默认不推送或替用户部署。
 
 ## 发布仓库

@@ -4,9 +4,9 @@
 
 MCAI Probe 只安装在服务端，让 AI 获取当前玩家位置、全服与维度指标、已加载对象数量和短时实体热点。客户端不需要安装，也不新增端口或密钥。
 
-当前Probe为0.4.1，修正模拟玩家死亡／断开后的清理，并在开始spark采样前核对已有采样。另提供区块加载／tick状态和可核实的ticket来源、普通方块状态、实体骑乘关系，以及实际已加载模组、启用数据包和生效设置。AI通过`mc_chunks`、`mc_inspect`、`mc_runtime`读取，仍只查询已加载现场；直接ticket与有效加载等级分别解释。Forge标准强加载所有者可核实时返回，NeoForge保留直接ticket但不推断owner，未知模组来源不会推测。
+Probe 0.5.0 提供在线玩家、区块加载／tick 状态、对象计时、慢 tick 筛选及直接强加载汇总。直接 ticket 与传播后的有效加载等级分别解释。NeoForge 能核对控制器、所有者及实际注册模组时才显示对应字段。旧 JAR 保留原有能力；新选项以 Probe 的实际能力声明为准。
 
-安装0.4.1后，`mc_verify`的启动就绪检查会自动确认服务端主线程能够处理本次请求；即使Java仍在、日志曾出现Done，主线程未响应也不会通过。未安装Probe时只报告日志就绪。已安装旧Probe但缺少响应能力时需配套更新，不能把旧日志或上次进程的能力文件当成本次响应。检查不设置TPS／MSPT性能基线。
+安装兼容 Probe 后，`mc_verify`的启动就绪检查会自动确认服务端主线程能够处理本次请求；即使Java仍在、日志曾出现Done，主线程未响应也不会通过。未安装Probe时只报告日志就绪。已安装旧Probe但缺少响应能力时需配套更新，不能把旧日志或上次进程的能力文件当成本次响应。检查不设置TPS／MSPT性能基线。
 
 ## 安装
 
@@ -14,20 +14,20 @@ MCAI Probe 只安装在服务端，让 AI 获取当前玩家位置、全服与�
 
 | Minecraft | 加载器 | 文件 | Java |
 |---|---|---|---|
-| 1.7.10 | Forge 10.13.4.1614 + lwjgl3ify 3.1.0 + UniMixins 0.3.2 | `mcai-probe-1.7.10-forge-0.4.1.jar` | 17／21 |
-| 1.16.5 | Forge 36.2.39+（36.x） | `mcai-probe-1.16.5-forge-0.4.1.jar` | 8 |
-| 1.19.2 | Forge 43.x | `mcai-probe-1.19.2-forge-0.4.1.jar` | 17 |
-| 1.20.1 | Forge 47.x | `mcai-probe-1.20.1-forge-0.4.1.jar` | 17 |
-| 1.20.1 | Fabric | `mcai-probe-1.20.1-fabric-0.4.1.jar` | 17 |
-| 1.21.1 | Forge 52.x | `mcai-probe-1.21.1-forge-0.4.1.jar` | 21 |
-| 1.21.1 | Fabric | `mcai-probe-1.21.1-fabric-0.4.1.jar` | 21 |
-| 1.21.1 | NeoForge 21.1.247+（21.1.x） | `mcai-probe-1.21.1-neoforge-0.4.1.jar` | 21 |
+| 1.7.10 | Forge 10.13.4.1614 + lwjgl3ify 3.1.0 + UniMixins 0.3.2 | `mcai-probe-1.7.10-forge-0.5.0.jar` | 17／21 |
+| 1.16.5 | Forge 36.2.39+（36.x） | `mcai-probe-1.16.5-forge-0.5.0.jar` | 8 |
+| 1.19.2 | Forge 43.x | `mcai-probe-1.19.2-forge-0.5.0.jar` | 17 |
+| 1.20.1 | Forge 47.x | `mcai-probe-1.20.1-forge-0.5.0.jar` | 17 |
+| 1.20.1 | Fabric | `mcai-probe-1.20.1-fabric-0.5.0.jar` | 17 |
+| 1.21.1 | Forge 52.x | `mcai-probe-1.21.1-forge-0.5.0.jar` | 21 |
+| 1.21.1 | Fabric | `mcai-probe-1.21.1-fabric-0.5.0.jar` | 21 |
+| 1.21.1 | NeoForge 21.1.247+（21.1.x） | `mcai-probe-1.21.1-neoforge-0.5.0.jar` | 21 |
 
-0.16.0 的 B 包包含 Probe 0.4.1 的八个目标，新增 NeoForge 1.21.1。更新时正常停服，移走旧Probe后放入对应的新JAR，再启动；A、B须配套更新，Probe协议1按能力声明扩展。Forge版不依赖Fabric API；Fabric版需要对应版本的 Fabric API 和 Loader 0.16.14+。Forge 包含 MixinExtras，NeoForge使用加载器自带的 MixinExtras；不要安装 `sources` 源码包。Forge、NeoForge和Fabric版本按表中加载器分别选择。NeoForge按21.1.247基线构建并验证，其他NeoForge 21.1.x仅声明兼容范围。1.7.10 当前基线是标准 Forge + lwjgl3ify + UniMixins；GTNH隔离测试结果见[实服报告](../development/two-servers-e2e-2026-11-17.md)。
+0.18.0 的 B 包包含 Probe 0.5.0 的八个目标。更新时正常停服，移走旧Probe后放入对应的新JAR，再启动；A、B须配套更新，Probe协议1按能力声明扩展。Forge版不依赖Fabric API；Fabric版需要对应版本的 Fabric API 和 Loader 0.16.14+。Forge 包含 MixinExtras，NeoForge使用加载器自带的 MixinExtras；不要安装 `sources` 源码包。Forge、NeoForge和Fabric版本按表中加载器分别选择。NeoForge按21.1.247基线构建并验证，其他NeoForge 21.1.x仅声明兼容范围。1.7.10 当前基线是标准 Forge + lwjgl3ify + UniMixins；GTNH 2.6.1 有隔离服验证记录，其他组合须按实际环境验证。
 
-1.16.5当前源码将Forge下限修正为36.2.39，已验证CatServer `1.16.5-1d8d6313`（官方23.05.26发行，Forge36.2.39／Java11.0.21）和标准Forge36.2.39；构建基线仍为36.2.42。v0.14.0已发布的原始Probe0.4.0附件仍声明36.2.42下限，遇到版本门槛报错需使用包含此修复的构建。混合端验证仅覆盖上述版本的隔离Probe／spark环境，其他插件及整合包组合需另测。
+1.16.5 目标要求 Forge 36.2.39 或更高的 36.x，已验证标准 Forge 36.2.39 与 CatServer `1.16.5-1d8d6313`（Forge 36.2.39／Java 11.0.21）。混合端验证仅覆盖上述版本的隔离Probe／spark环境，其他插件及整合包组合需另测。
 
-B 配置的实例目录应与 BAT 启动 Java 时的工作目录一致。MOD 在工作目录生成 `.mcai-probe/`，B 自动发现，无额外配置。启动日志显示 `MCAI Probe 0.4.1 ready` 后即可使用。
+B 配置的实例目录应与 BAT 启动 Java 时的工作目录一致。MOD 在工作目录生成 `.mcai-probe/`，B 自动发现，无额外配置。启动日志显示 `MCAI Probe 0.5.0 ready` 后即可使用。
 
 ## 使用
 
@@ -55,6 +55,10 @@ mcai_probe player list
 
 AI可依次查询玩家位置、比较维度耗时、普查附近实体，再进行短时采样。默认Probe对象计时10秒、上限30秒；`mc_profile engine=spark`默认30秒、允许15—60秒，可选全部线程或仅慢tick，不能按区块范围过滤调用栈。两种采样每实例共用一个占用；中途反馈仍进入原任务。完整结果保存在B后台记录，群里只发关键问题和结论。
 
+支持新能力的 Probe 可用 `mc_profile engine=probe` 的 `only_ticks_over_ms`。只把整拍耗时严格超过阈值的对象耗时计入榜单；返回命中拍数和每命中拍平均值。没有命中时榜单为空。它回答的是实体和方块实体在慢拍里花了多少时间，不能代表完整主线程耗时。
+
+`mc_chunks view=forced_summary` 按维度和可核实的模组汇总扫描到的直接强加载，分别列出原版与未知归属。直接记录数可大于区块数；同一区块可出现在多个分组，不能把分组相加当作全局总数。扫描不会加载新区块。
+
 spark模式先用`profiler info`确认空闲，再使用已安装spark的限时本地保存功能，B保留原始`.sparkprofile`及线程、热点方法和主要调用路径摘要。已有前台或后台采样时返回占用并保留原采样，可使用既有结果或Probe计时；15秒内未确认空闲则明确失败，不启动采样。采样权重与Probe实测对象耗时分别解释；未知方法来源保持未知。取消后立即停止等待，已开始的spark按原时限自然结束，期间仍占用采样位置；不会发送全局stop／cancel。内部取证的轮询、取消及可自行处理的失败留本地；用户明确要求的诊断会返回必要结果或中断原因。
 
 隔离Forge1.19.2使用的spark1.10.37存在Java引擎慢tick导出缺陷：能确认采样结束，却可能没有本地报告。此时任务明确失败并保留回执，后续诊断可使用默认采样及≥100ms事件线索；不会把缺少报告解释为没有热点。各版本的实际验证边界见[开发记录](../development/probe.md)。
@@ -72,8 +76,6 @@ NBT保持单对象、按指定路径读取。大对象同步保存耗时单独�
 `mc_status` 返回探针版本、加载器、会话和最近更新时间。没有安装时原有诊断仍可使用；AI 不会自动安装探针或重启。
 
 若提示结果未取得，检查服务端是否卡住、控制台是否可用、工作目录是否一致，以及服务端日志。B 会发送取消标记并保存请求编号，不默认重跑。主线程停顿时最后快照可能过时，此时使用已有外部线程栈工具。
-
-旧Probe 0.2.0 Forge版将MixinExtras限制为`[0.4.1,0.5)`，与需要0.5.x的模组共同安装时会触发`VERSION_RESOLUTION_FAILED`。嵌套依赖解析失败后，可能连带显示多项前置缺失；使用Connector的整合包也可能提示`fabric_permissions_api_v0`缺少`fabric-api-base`。先替换为0.2.1再检查启动日志，不按连带报错盲目添加依赖。0.2.1保留内嵌0.4.1，允许Forge在同服依赖中选择兼容的新版本。
 
 两端断线时采样继续，重连查询原任务。MC重启产生新会话，未完成采样中断。B重启后托管窗口按目录／session重连，原辅助工作标记中断，不自动重新执行。任务停止与修复前清理会请求取消；MOD由后台线程读取取消标记，主线程恢复tick后处理取消事实。
 

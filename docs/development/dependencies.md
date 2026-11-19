@@ -1,8 +1,8 @@
 # 固定验证环境与依赖重建
 
-[开发索引](README.md) · [本轮整改](architecture-remediation-0.8.0.md)
+[开发指南](README.md) · [测试命令](testing.md#运行)
 
-`dependencies/windows-py312.lock`记录2026-11-13 Windows x64／Python3.12.14验证环境的精确包版本与SHA-256，包含AstrBot集成和测试依赖。`environment.json`记录平台、可安装存档名、官方AstrBot v4.29.4源码ZIP的哈希，以及523个Python源码文件的比对结果（只归一化CRLF）。完整环境用于重建验证；日常开发仍可使用范围依赖。
+[`windows-py312.lock`](dependencies/windows-py312.lock) 记录2026-11-13 Windows x64／Python3.12.14验证环境的精确包版本与SHA-256，包含AstrBot集成和测试依赖。[`environment.json`](dependencies/environment.json) 记录平台、可安装存档名、官方AstrBot v4.29.4源码ZIP的哈希，以及523个Python源码文件的比对结果（只归一化CRLF）。完整环境用于重建验证；日常开发仍可使用范围依赖。
 
 2026-11-15随Probe0.3.0新增标准Protobuf依赖，固定验证为protobuf7.36.2；重新记录安装来源与SHA-256，其余包版本与既有清单一致，AstrBot523个源码文件重新核对通过。范围声明仅在B的pyproject.toml中，A插件不导入报告解析模块。
 
@@ -26,4 +26,4 @@ aiocqhttp和jieba使用固定源码包；先安装固定build-tools，再禁用�
 .venv/Scripts/python.exe scripts/lock_environment.py --astrbot-archive runtime/astrbot-v4.29.4.zip --astrbot-root runtime/astrbot-4.29.4
 ```
 
-当前开发源码版本为0.16.0，A/B产品协议为mcai-6；此版本的A、B及托管窗口需配套更新。客户端在提交远程工作前读取实例接口核对协议，B在创建操作前校验请求协议。不匹配时给出中文错误，不维护旧接口迁移。
+锁文件重建的是记录中的验证环境。当前安装包使用源码中的 `requirements.txt` 和 `pyproject.toml` 声明依赖范围，发行版本和协议以当次发布为准。

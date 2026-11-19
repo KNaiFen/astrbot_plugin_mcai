@@ -174,7 +174,14 @@ class MCAI(Star):
                                         "task": None,
                                         "origin": origin,
                                         "mention": None,
-                                        "text": f"「{row['instance']}」：{row['summary']}，已保留现场。",
+                                        "text": (
+                                            f"「{row['instance']}」：{row['summary']}，"
+                                            + (
+                                                "已保留现场。"
+                                                if row["console_status"] == "complete"
+                                                else "已记录事件，控制台证据不完整。"
+                                            )
+                                        ),
                                         "sent": False,
                                     },
                                 )

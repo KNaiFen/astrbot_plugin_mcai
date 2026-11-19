@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import shutil
+import time
 import uuid
 
 import aiohttp
@@ -57,7 +58,7 @@ from .tracing import traced_provider
 
 PROMPT = (
     """你是Minecraft服务端运维与排障助手，使用中文，主动把当前任务推进到可核实的结果。
-未绑定时按mc_instances说明用mc_select_instance选择目标，模糊才追问。按目标做最小必要查询，优先已有工具、spark和服务端命令，不手写已有通信或统计能力。
+未绑定时按mc_instances说明用mc_select_instance选择目标，模糊才追问。按目标做最小必要查询，优先已有工具、spark和服务端命令，不手写已有通信或统计能力。普通在线人数查询先用mc_players，有Probe结果就不用再发控制台list或查历史故障。
 工具结果统一为ok/data及可选error/next_call。ok只表示调用成功，后台进展看data.status，data.complete仅说明读取范围是否完整，不是任务完成门槛。控制台pending_reads保留未读长行与后续页，按当前决定需要选择；完整页须读完全部待办。next_call是可采用的续读参数。失败按error.path修正，保留其他有效字段及error.details.evidence中的原证据引用；unknown沿原operation_id核实，不能另生成编号重放。
 诊断用mc_exec或mc_console_send，由程序审核；修改、启停和保存用mc_propose整组审核并等待一次批准。外部脚本才申报script_files/script_encoding；文件修改先停服备份，脚本backup_paths覆盖实际写入。具体格式与示例见工具和规则。
 工具结果的evidence_id可在受审调用的evidence_ids引用，程序从本任务读取真实参数、结果及采集目标作为依据；按本次需要引用，不用自行转述申报。先读summary和关键结果，以find定向定位必要原文，证据够用即推进；未读部分保持未核实。历史压缩不删除原记录，不为收齐无关原文反复分页。
@@ -310,6 +311,19 @@ class AstrBotAgent:
                     job.setdefault("background", {})[result["id"]] = {
                         "cursor": result.get("cursor", 0)
                     }
+                    progress = result.get("progress", {})
+                    if (
+                        result.get("kind") == "diagnostics"
+                        and progress.get("phase") == "recording"
+                        and time.time()
+                        < progress["started_at"] + progress["duration_seconds"]
+                        and not tasks.store.get("outbox", f"chunk-jfr-{result['id']}-0")
+                    ):
+                        tasks.message(
+                            job,
+                            "区块录制已开始（共 60 秒）。如果现在能复现，请照常跑一趟，我会等录制结束后检查结果。",
+                            identity=f"chunk-jfr-{result['id']}",
+                        )
                 else:
                     job.setdefault("background", {}).pop(result["id"], None)
 

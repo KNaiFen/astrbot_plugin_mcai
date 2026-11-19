@@ -27,6 +27,10 @@ AI 通过 `mc_query` 查询当前绑定实例的文件、日志、存档和进�
 | 区域存档／方块查询 | `region-nbt`、`region-blocks` |
 | 区域检查、导出或扫描 | `region-check`、`region-export`、`region-scan` |
 | 实例进程与 JVM 采样 | `diagnostics process`、`diagnostics jvm --samples 1` |
+| 新图生成或区块存盘时卡顿 | `diagnostics chunk-jfr`，边重现边录 60 秒，沿后台结果读取 |
+| 查已留证的故障 | `incidents list`；按返回的事件编号用 `incidents show`、`incidents console` 定向查看 |
+
+群里只需描述问题，例如「生存服刚才崩了」或「一跑新图就卡」。Agent 会自己挑选查询。区块录制实际开始后，群里会收到一条复现提醒；按原操作跑一趟即可，Agent 会继续读取结果，无需回复才能继续。JFR 报告区分不支持、录制期间未观察到和录制不完整。区块生成有实测时长；区域读写只提供时间点、次数与字节数。
 
 例如 AI 的读取参数为：
 

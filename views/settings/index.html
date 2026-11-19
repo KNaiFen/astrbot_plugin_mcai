@@ -1,16 +1,180 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MCAI 设置</title><link rel="stylesheet" href="./style.css"></head>
-<body><main>
-<header><h1>MCAI 设置</h1><p>模型 API 填在 AstrBot 模型页；在这里选择模型、测试能力和管理 MC 主机。</p></header>
-<p id="notice" role="status"></p>
-<form id="a-settings">
-<section><h2>连接 MC 主机</h2><label>B 地址<input name="host_url" type="url" required placeholder="https://公网IP:端口"></label><label>共享令牌<input name="host_token" type="password" autocomplete="new-password" placeholder="留空保留已保存令牌"></label><label>证书 SHA-256 指纹<input name="host_fingerprint"></label><button type="button" id="connection-test">测试连接</button></section>
-<section><h2>模型与能力</h2><p>排障与审核均使用 AstrBot 的 OpenAI 兼容 Chat／Responses 提供商。两种搜索可同时启用，审核独立进行。</p><div class="columns"><label>排障模型<select name="provider_id"></select></label><label>审核模型<select name="review_provider_id"></select></label><label>排障思考强度<input name="reasoning_effort" list="efforts" placeholder="留空继承"></label><label>审核思考强度<input name="review_reasoning_effort" list="efforts" placeholder="留空继承"></label></div><datalist id="efforts"><option value="none"><option value="minimal"><option value="low"><option value="medium"><option value="high"><option value="xhigh"></datalist><div class="checks"><label><input type="checkbox" name="enable_web_search">API 托管搜索</label><label><input type="checkbox" name="enable_alpha_search">alpha/search 独立搜索</label><label><input type="checkbox" name="forward_progress">转发执行进度汇报（默认关闭）</label></div><label>托管搜索格式<select name="web_search_tool_type"><option>web_search</option><option>web_search_preview</option></select></label><div class="actions"><button type="button" id="test-model">保存并测试、自动配置</button><button type="button" id="cancel-test" class="secondary">取消测试</button></div><p class="hint">会产生少量模型与搜索请求。不会执行 MC 操作，也不会发送群消息。执行进度汇报需 Responses commentary；要求简短中文，推理摘要不转发。未观察到汇报不等于不支持。</p><div id="capabilities" aria-live="polite"></div></section>
-<section><h2>群与管理员</h2><label>管理员 QQ，可填多人<textarea name="admin_ids" rows="2" placeholder="每行一个 QQ 号"></textarea></label><label>允许群号，留空允许所有群<textarea name="group_ids" rows="2" placeholder="每行一个群号"></textarea></label><label>QQ 长回复合集门槛（字符数）<input type="number" name="group_forward_threshold" min="1" step="1" required></label><p class="hint">默认 400。单条回复超过此值时发成一张合集卡片。</p><details><summary>高级设置</summary><div class="columns"><label>每轮模型步数<input type="number" name="max_steps" min="1" max="200"></label><label>A 端 Agent 工作区<input name="workspace_dir" placeholder="留空使用插件数据目录/workspaces"></label><label>A 端 PowerShell 7.3+ 路径<input name="workspace_powershell_path" placeholder="留空自动查找 pwsh.exe"></label><label>CurseForge API 密钥<input name="curseforge_api_key" type="password" autocomplete="new-password" placeholder="留空保留已保存密钥"></label></div><p id="curseforge-state" class="hint"></p><div class="actions"><button type="button" id="test-key" class="secondary">测试 A 端凭据</button><button type="button" id="clear-key" class="secondary">清空密钥</button></div></details></section>
-<label>故障通知（每行一个实例和通知群）<textarea name="incident_routes" rows="2" placeholder="示例：survival=onebot:GroupMessage:123456"></textarea></label>
-<button type="submit">保存 A 设置</button></form>
-<section><h2>服务端</h2><div class="actions"><button id="load-host" type="button" class="secondary">刷新 B 配置</button><button id="add-instance" type="button">添加服务端</button></div><p class="hint">只填服务端目录，在独立窗口运行 mcai tm，再执行 .\start.bat。自动重启循环保留。运行中的启动配置变更将在空闲后生效。</p><div id="instances"></div><button id="save-instances" type="button">保存服务端列表</button></section>
-<section><h2>主机</h2><label>PowerShell 7 路径<input id="powershell-path" placeholder="留空自动查找 pwsh.exe"></label><label>存档工具 Java 21+ 路径<input id="world-java" placeholder="留空从 PATH 查找"></label><label>全部辅助操作共享内存上限（MiB）<input id="operations-memory" type="number" min="64" value="8192"></label><button id="save-host" type="button">保存主机设置</button><p class="hint">PowerShell、存档 Java 与内存额度修改后需重启 B（托管窗口继续运行）。B 不访问外部网站；MOD 搜索、下载与构建在 A 完成。</p></section>
-<section><h2>诊断导出</h2><p class="hint">导出用户插件命令、模型请求与响应、执行进度汇报、审核、工具结果和消息记录。包含未成功创建任务的命令；B 离线也可导出本地已保存内容。</p><div class="columns"><label>开始时间<input id="diagnostics-start" type="datetime-local"></label><label>结束时间<input id="diagnostics-end" type="datetime-local"></label></div><label>任务（可多选，留空导出时间范围内全部记录）<select id="diagnostics-tasks" multiple size="4"></select></label><div class="actions"><button id="refresh-diagnostics" type="button" class="secondary">刷新任务</button><button id="export-diagnostics" type="button">导出 ZIP</button></div><p id="diagnostics-result" class="hint"></p></section>
-</main><script type="module" src="./app.js"></script></body></html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MCAI 设置</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<main class="settings-page">
+  <header class="page-heading">
+    <h1>MCAI 设置</h1>
+    <p>配置排障模型、群通知和 Minecraft 服务端。</p>
+  </header>
+  <div class="settings-layout">
+    <nav class="settings-nav" aria-label="设置分类">
+      <a href="#connection" aria-current="location"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>主机连接</a>
+      <a href="#models"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 3v3m6-3v3m-6 12v3m6-3v3M3 9h3m-3 6h3m12-6h3m-3 6h3"/></svg>模型与能力</a>
+      <a href="#groups"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11.5a7.5 7.5 0 0 1-7.5 7.5H5l1.6-3.1A7.5 7.5 0 1 1 21 11.5Z"/><path d="M9 11.5h6"/></svg>群与通知</a>
+      <a href="#servers"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="7" rx="2"/><rect x="4" y="13" width="16" height="7" rx="2"/><path d="M8 7.5h.01M8 16.5h.01"/></svg>服务端</a>
+      <a href="#host"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16m-4-14v4m-8 2v4m5 2v4"/></svg>B 主机</a>
+      <a href="#incidents"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s7-3 7-9V5l-7-3-7 3v8c0 6 7 9 7 9zm0-15v5m0 3h.01"/></svg>主动留证</a>
+      <a href="#diagnostics"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9zm0 0v6h6M9 13h6m-6 4h6"/></svg>诊断导出</a>
+    </nav>
+    <div class="settings-content">
+      <p id="notice" role="status"></p>
+      <form id="a-settings">
+        <section id="connection" class="settings-section" aria-labelledby="connection-title">
+          <header class="section-heading">
+            <h2 id="connection-title">主机连接</h2>
+            <p>连接运行 Minecraft 托管程序的 B 主机。</p>
+          </header>
+          <div class="panel">
+            <label>B 地址<input name="host_url" type="url" required placeholder="https://公网IP:端口"></label>
+            <div class="columns">
+              <label>共享令牌<input name="host_token" type="password" autocomplete="new-password" placeholder="留空保留已保存令牌"></label>
+              <label>证书 SHA-256 指纹<input name="host_fingerprint" spellcheck="false"></label>
+            </div>
+            <div class="actions">
+              <button type="button" id="connection-test" class="secondary">测试连接</button>
+              <button type="submit">保存 A 设置</button>
+            </div>
+          </div>
+        </section>
+        <section id="models" class="settings-section" aria-labelledby="models-title">
+          <header class="section-heading">
+            <h2 id="models-title">模型与能力</h2>
+            <p>在 AstrBot 模型页添加 OpenAI 兼容 Chat／Responses 提供商，再在这里选择排障和独立审核模型。</p>
+          </header>
+          <div class="panel">
+            <div class="columns">
+              <label>排障模型<select name="provider_id"></select></label>
+              <label>审核模型<select name="review_provider_id"></select></label>
+              <label>排障思考强度<input name="reasoning_effort" list="efforts" placeholder="留空继承"></label>
+              <label>审核思考强度<input name="review_reasoning_effort" list="efforts" placeholder="留空继承"></label>
+            </div>
+            <datalist id="efforts"><option value="none"><option value="minimal"><option value="low"><option value="medium"><option value="high"><option value="xhigh"></datalist>
+            <div class="checks">
+              <label class="toggle"><input type="checkbox" name="enable_web_search">API 托管搜索</label>
+              <label class="toggle"><input type="checkbox" name="enable_alpha_search">alpha/search 独立搜索</label>
+              <label class="toggle"><input type="checkbox" name="forward_progress">转发执行进度汇报</label>
+            </div>
+            <label>托管搜索格式<select name="web_search_tool_type"><option>web_search</option><option>web_search_preview</option></select></label>
+            <details>
+              <summary>A 端高级设置</summary>
+              <div class="details-body">
+                <div class="columns">
+                  <label>每轮模型步数<input type="number" name="max_steps" min="1" max="200"></label>
+                  <label>A 端 Agent 工作区<input name="workspace_dir" placeholder="留空使用插件数据目录/workspaces"></label>
+                  <label>A 端 PowerShell 7.3+ 路径<input name="workspace_powershell_path" placeholder="留空自动查找 pwsh.exe"></label>
+                  <label>CurseForge API 密钥<input name="curseforge_api_key" type="password" autocomplete="new-password" placeholder="留空保留已保存密钥"></label>
+                </div>
+                <p id="curseforge-state" class="hint"></p>
+                <div class="actions">
+                  <button type="button" id="test-key" class="secondary">测试 A 端凭据</button>
+                  <button type="button" id="clear-key" class="quiet">清空密钥</button>
+                </div>
+              </div>
+            </details>
+            <div class="actions">
+              <button type="button" id="test-model">保存并测试、自动配置</button>
+              <button type="button" id="cancel-test" class="secondary">取消测试</button>
+            </div>
+            <p class="hint">测试会发送少量模型与搜索请求，不执行 MC 操作或发群消息。执行进度汇报需 Responses commentary，默认关闭；未观察到汇报不等于不支持。</p>
+            <div id="capabilities" aria-live="polite"></div>
+          </div>
+        </section>
+        <section id="groups" class="settings-section" aria-labelledby="groups-title">
+          <header class="section-heading">
+            <h2 id="groups-title">群与通知</h2>
+            <p>管理群内权限、回复形式和故障提醒。</p>
+          </header>
+          <div class="panel">
+            <div class="columns">
+              <label>管理员 QQ<textarea name="admin_ids" rows="2" placeholder="每行一个 QQ 号"></textarea></label>
+              <label>允许群号<textarea name="group_ids" rows="2" placeholder="每行一个群号，留空允许所有群"></textarea></label>
+            </div>
+            <label>故障通知群<textarea name="incident_routes" rows="2" placeholder="示例：survival=onebot:GroupMessage:123456"></textarea></label>
+            <p class="hint">每行指定一个实例及通知群；留空只在 B 主机保存故障现场。</p>
+            <label>QQ 长回复合集门槛（字符数）<input type="number" name="group_forward_threshold" min="1" step="1" required></label>
+            <p class="hint">默认 400。单条回复超过此值时发成一张合集卡片。</p>
+            <div class="actions"><button type="submit">保存 A 设置</button></div>
+          </div>
+        </section>
+      </form>
+      <section id="servers" class="settings-section" aria-labelledby="servers-title">
+        <header class="section-heading">
+          <h2 id="servers-title">服务端</h2>
+          <p>管理正式服、试服配置和每个实例的故障留证开关。</p>
+        </header>
+        <div class="panel">
+          <div class="actions">
+            <button id="load-host" type="button" class="secondary">刷新 B 配置</button>
+            <button id="add-instance" type="button" class="secondary">添加服务端</button>
+          </div>
+          <p class="hint">新实例可以只填写配置名和服务端目录。托管窗口仍使用原来的 start.bat；运行中的启动配置变更会等待空闲。</p>
+          <div id="instances"></div>
+          <div class="actions"><button id="save-instances" type="button">保存服务端列表</button></div>
+        </div>
+      </section>
+      <section id="host" class="settings-section" aria-labelledby="host-title">
+        <header class="section-heading">
+          <h2 id="host-title">B 主机</h2>
+          <p>适用于这台主机上的所有服务端。</p>
+        </header>
+        <div class="panel">
+          <div class="columns">
+            <label>PowerShell 7 路径<input id="powershell-path" placeholder="留空自动查找 pwsh.exe"></label>
+            <label>存档工具 Java 21+ 路径<input id="world-java" placeholder="留空从 PATH 查找"></label>
+            <label>辅助操作共享内存上限（MiB）<input id="operations-memory" type="number" min="64" step="1" value="8192"></label>
+          </div>
+          <div class="actions"><button id="save-host" type="button">保存主机设置</button></div>
+          <p class="hint">PowerShell、存档 Java 与内存额度修改后需重启 B；托管窗口可继续运行。</p>
+        </div>
+      </section>
+      <section id="incidents" class="settings-section" aria-labelledby="incidents-title">
+        <header class="section-heading">
+          <h2 id="incidents-title">主动留证</h2>
+          <p>对已经开启留证的正式服生效；通知群在「群与通知」中配置。</p>
+        </header>
+        <div class="panel">
+          <form id="incident-settings" class="details-body">
+            <div class="columns">
+              <label>启动失败统计窗口（秒）<input id="incident-restart-window" type="number" min="1" step="1" placeholder="120" aria-describedby="incident-window-hint"></label>
+              <label>留证数据库上限（MiB）<input id="incident-capacity" type="number" min="64" max="4096" step="1" placeholder="256"></label>
+            </div>
+            <p id="incident-window-hint" class="hint">窗口内观测到 3 次启动失败时留证。留空恢复默认值（120 秒、256 MiB）。</p>
+            <p id="incident-usage" class="hint" aria-live="polite"></p>
+            <p class="hint">保存后立即生效。超过容量时按时间清理最早的整起事故，不影响任务记录和正式服备份。</p>
+            <div class="actions">
+              <button type="submit" disabled>保存留证设置</button>
+              <button type="button" id="refresh-incident-usage" class="secondary">刷新用量</button>
+            </div>
+          </form>
+        </div>
+      </section>
+      <section id="diagnostics" class="settings-section" aria-labelledby="diagnostics-title">
+        <header class="section-heading">
+          <h2 id="diagnostics-title">诊断导出</h2>
+          <p>按时间和任务导出命令、模型、审核、工具及消息记录。B 离线时仍可导出 A 已保存的记录。</p>
+        </header>
+        <div class="panel">
+          <div class="columns">
+            <label>开始时间<input id="diagnostics-start" type="datetime-local"></label>
+            <label>结束时间<input id="diagnostics-end" type="datetime-local"></label>
+          </div>
+          <label>任务（可多选，留空导出全部）<select id="diagnostics-tasks" multiple size="4"></select></label>
+          <div class="actions">
+            <button id="refresh-diagnostics" type="button" class="secondary">刷新任务</button>
+            <button id="export-diagnostics" type="button">导出 ZIP</button>
+          </div>
+          <p id="diagnostics-result" class="hint" role="status"></p>
+        </div>
+      </section>
+    </div>
+  </div>
+</main>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
