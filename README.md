@@ -29,7 +29,7 @@
 
 ## 安装前准备
 
-当前发行版本为 **0.16.0**（[下载与校验和](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.16.0)）。新增A端MOD搜索与下载、任务源码／构建工作区，以及挂在同一生产任务下的B端隔离测试副本；生产替换仍由现有审核、管理员批准、停服备份和验证处理。查询CLI与按需加载沿用0.15.0，Probe仍为 **0.4.1**。本版协议为`mcai-6`，A、B与所有托管窗口须配套更新。CurseForge API密钥改由A保存；测试服需要在B的实例配置中填写玩家可达地址和专用端口。升级前阅读[更新说明](#更新时保留什么)，使用边界见[运维工具](docs/usage/operations.md#文件存档与故障取证)及[配置说明](docs/usage/configuration.md)。
+当前发行版本为 **0.17.0**（[下载与校验和](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.17.0)）。MOD 修复只需批准一次：实际试玩后用自然语言回复，通过则先关试服，再备份正式服、安装同一份制品并验证。验收后自动归档和清理任务临时文件。正式服还可单独开启故障留证，默认关闭。本版协议为 `mcai-7`，A、B 与所有托管窗口须配套更新；已安装的 Probe **0.4.1** 无需替换。升级前阅读[更新说明](#更新时保留什么)，具体选项见[配置说明](docs/usage/configuration.md)。
 
 首次部署或更新B时使用同版本的 `mcai_windows_host.zip`，发行附件包含八目标Probe 0.4.1，可[构建两端发行包](docs/development/README.md#构建与发行)。公开附件的版本与协议按发布记录配套使用，不混用不同协议的A、B和托管窗口。
 
@@ -66,9 +66,9 @@ A、B 可以共用一台 Windows 电脑，也可以分开。本文按 Windows �
 | A → B | B 的 HTTPS 地址和 TCP 端口，默认 `18765` | 控制程序和查询结果；跨网络时要配置可达地址与端口映射 |
 | A、B → Python 包源 | 安装所需依赖的包源或可用镜像 | 首次安装和更新依赖 |
 | A → 网页／独立搜索 API | 所查询的网页或已配置的搜索服务 | 启用相应查询功能时 |
-| B → Modrinth／CurseForge 及文件下载站 | 对应 API 和下载地址 | 搜索或暂存下载 MOD 时；CurseForge 还需配置 API Key |
+| A → Modrinth／CurseForge 及文件下载站 | 对应 API 和下载地址 | 搜索或下载 MOD 时；CurseForge API Key 填在 A 插件设置 |
 
-同机部署时 A 使用本机地址即可，不需要为了 A→B 连接配置公网入口；异机地址的具体填法见后面的[连接地址表](#5-启动-b保存连接信息)。模型托管搜索由模型服务商访问网络。需要代理时，A 的模型代理、A／B 的网页与下载代理分别按[代理说明](docs/usage/configuration.md#下载代理与-https)配置。
+同机部署时 A 使用本机地址即可，不需要为了 A→B 连接配置公网入口；异机地址的具体填法见后面的[连接地址表](#5-启动-b保存连接信息)。模型托管搜索由模型服务商访问网络。需要代理时，A 的模型代理、A 的网页与下载代理分别按[代理说明](docs/usage/configuration.md#下载代理与-https)配置。
 
 ### 安装并检查基础软件
 
@@ -130,7 +130,6 @@ notepad .\host.json
   "world_tools": {
     "java_path": "C:/Program Files/Java/jdk-21/bin/java.exe"
   },
-  "curseforge_api_key": "",
   "operations_memory_limit_mib": 8192
 }
 ```
@@ -143,7 +142,6 @@ notepad .\host.json
 | `powershell_path` | PowerShell 7 的 `pwsh.exe` 完整路径；留空时自动查找 |
 | `world_tools.java_path` | Java 21+ 的 `java.exe` 完整路径；供存档工具使用 |
 | `data_dir` | 可保留示例；备份、证书、操作记录保存在这里，不要放进 MC 存档目录 |
-| `curseforge_api_key` | 首次可留空；需要 CurseForge 搜索／下载时再配置 |
 | `operations_memory_limit_mib` | 默认 `8192` MiB，即全部辅助操作共享 8 GiB，MC 服务端不计入该额度 |
 
 需要生成令牌时，在 B 安装目录执行下面这条命令，把输出保存到 `token`：
@@ -274,7 +272,7 @@ Set-Location -LiteralPath 'D:\MCAI'
 
 在 AstrBot **插件管理页**使用 ZIP 安装入口，选择配套的 `astrbot_plugin_mcai.zip`，等待安装依赖并启用插件。找到显示名称为 **“MC 排障助手”**、插件标识为 `astrbot_plugin_mcai` 的插件，打开其**设置视图**，页面标题为“MCAI 设置”。
 
-也可以通过仓库地址安装：[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)。首次部署或升级到 0.16.0 时，配套更新B和所有托管窗口，确认使用`mcai-6`。部署步骤见[安装前准备](#安装前准备)。
+也可以通过仓库地址安装：[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)。首次部署或升级到 0.17.0 时，配套更新 B 与所有托管窗口，确认使用 `mcai-7`。部署步骤见[安装前准备](#安装前准备)。
 
 若安装依赖时出现 `WinError 5`，并指向 `charset_normalizer` 或 `__mypyc*.pyd`，完全退出 AstrBot 后，按[安装依赖时拒绝访问](docs/usage/operations.md#安装依赖时拒绝访问)预装依赖，再启动 AstrBot 重试安装。
 
@@ -392,7 +390,7 @@ AI有修复方向时，会发简短方案并提示批准。如果需要重新查
 
 支持根据结果分批维护：方案会说明允许范围和完成条件。批准一次后，AI执行一批、读取效果，再决定下一批；范围内的具体操作每批仍经过独立审核，无需重复批准。用 `/mcaiplan 任务名` 查看已批准方案和状态。普通线索补充保留原批准；改变目标、扩大范围或失败后提出新的修复方案，需要重新批准。达到完成条件后AI停止后续操作并请求验收。
 
-如果暂时不同意，先不要批准，用 `/mcaisay` 说明需要调整的地方。新反馈会使尚未执行的方案失效，由 AI 重新判断；新方案仍需再次批准。下载 MOD 只进入 B 暂存区，安装也要走方案批准；CurseForge 凭据可在“下载与主机”区填写，Modrinth 公开下载无需令牌。
+如果暂时不同意，先不要批准，用 `/mcaisay` 说明需要调整的地方。新反馈会使尚未执行的方案失效，由 AI 重新判断；新方案仍需再次批准。MOD 由 A 下载，提交安装方案时传给 B 暂存并校验，批准后才安装；CurseForge 凭据在 A 插件设置的“下载与主机”区填写，Modrinth 公开下载无需令牌。
 
 ### 4. 验证效果，再验收
 
@@ -512,12 +510,12 @@ B 窗口按 Ctrl+C 正常退出会等待已接受修复，再结束辅助工作�
 
 ### 更新时保留什么
 
-从 **0.15.0升级到0.16.0** 时，协议从`mcai-5`升为`mcai-6`，必须配套更新A、B与托管窗口：
+从 **0.16.0 升级到 0.17.0** 时，协议从 `mcai-6` 升为 `mcai-7`，必须配套更新 A、B 与托管窗口：
 
 1. 完成或中止活动任务并等待操作收尾；未结算旧工具调用不迁移，历史记录保留。
 2. 关闭AstrBot与B程序，备份并保留插件数据、`host.json`、`instances.json`、B的`data_dir`、证书、备份和经验文档。
-3. 更新A、B及所有托管窗口到0.16.0；按原环境安装B依赖并重启B。已运行的托管窗口须关闭后再用新程序打开，MC目录与`start.bat`保持不变。
-4. 在A设置页配置CurseForge密钥、A工作区目录和PowerShell 7.3+路径；在B实例高级选项填写测试服可达地址及专用端口。按需将B端旧CurseForge密钥迁入A后从B配置中删除。
+3. 在维护窗口正常停服，关闭旧托管窗口与 B，再更新 A、B 及所有托管窗口到 0.17.0。在原 B 环境重新安装依赖，再打开新窗口启动原 `start.bat`。
+4. 保留原测试服地址和专用端口；可在 B 的实例高级选项填写常用复制路径、按需开启故障留证。需要 CurseForge 时，在 A 设置页填写密钥。
 5. 启用插件，测试连接和模型能力，再创建只读任务确认正常。现有三份运行时规则保留，按[配置说明](docs/usage/configuration.md#运行时规则)人工合并新版工具说明。
 
 以下是从 **0.14.3升级到0.15.0** 的历史说明：
@@ -533,8 +531,8 @@ B 窗口按 Ctrl+C 正常退出会等待已接受修复，再结束辅助工作�
 
 1. 用`/mcailist`查看活动任务。已验收的任务用`/mcaidone 任务名`结束；其余用`/mcaistop 任务名`中止并等执行收尾。本轮工具名称和结果格式改变，不迁移未结算旧调用，仅暂停不足以完成升级准备。
 2. 停用MCAI插件或退出AstrBot，备份`AstrBot/data/plugin_data/astrbot_plugin_mcai/`及现有插件配置，保留任务历史和经验。
-3. **配套更新B和所有托管窗口到0.16.0**。先正常停服、关闭旧托管窗口，再退出B；用0.16.0主机包更新程序并在原B环境重新执行`.\.venv\Scripts\python.exe -m pip install -e .`。保留`host.json`、`instances.json`、`data_dir`、证书、令牌和备份；安装Probe的服务端同时替换为对应0.4.1 JAR，再打开新托管窗口运行原`start.bat`。
-4. 在AstrBot插件管理中更新MCAI；通过ZIP安装的实例可使用0.16.0插件包更新，或通过上面的仓库地址安装。确认版本为0.16.0，启用插件并重载或重启AstrBot。
+3. **配套更新B和所有托管窗口到0.17.0**。先正常停服、关闭旧托管窗口，再退出B；用0.17.0主机包更新程序并在原B环境重新执行`.\.venv\Scripts\python.exe -m pip install -e .`。保留`host.json`、`instances.json`、`data_dir`、证书、令牌和备份；安装旧版Probe的服务端换为对应0.4.1 JAR，再打开新托管窗口运行原`start.bat`。
+4. 在AstrBot插件管理中更新MCAI；通过ZIP安装的实例可使用0.17.0插件包更新，或通过上面的仓库地址安装。确认版本为0.17.0，启用插件并重载或重启AstrBot。
 5. 已有运行时 `AGENTS.md`、`REVIEW_AGENTS.md` 和 `SUMMARY_AGENTS.md` 会保留。将插件中的三份对应模板分别人工合并，采用[工具升级对照](docs/usage/configuration.md#运行时规则)中的新名称、返回格式、示例及一次批准多轮执行约定，保留自己的服务器约定。
 6. 在插件设置页测试A→B连接及模型能力，再创建一个新的状态查询任务确认正常。历史记录继续保留。
 

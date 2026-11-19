@@ -53,6 +53,9 @@ function instance(name = '', config = {}, state = {}) {
   field(card, '配置名', name, 'name'); field(card, '说明／群内叫法', config.description, 'description'); field(card, '服务端目录（其中使用 start.bat）', config.directory, 'directory');
   const advanced = document.createElement('details'), summary = document.createElement('summary'); summary.textContent = '高级选项'; advanced.append(summary);
   for (const [key, label] of Object.entries({ java_path: '实例 Java 路径（可选）', encoding: 'BAT 编码（默认 auto）', stop_timeout: '停服超时秒（默认 120）', stop_command: 'MC 停服命令（默认 stop）', restart_prompt: '自动重启提示（默认约定提示）', test_address: '测试服可达地址', test_port: '测试服专用端口' })) field(advanced, label, config[key], key);
+  const paths = document.createElement('label'); paths.append('试服复制清单（每行一个相对路径）');
+  const list = document.createElement('textarea'); list.dataset.key = 'test_copy_paths'; list.value = (config.test_copy_paths ?? []).join('\n'); paths.append(list); advanced.append(paths);
+  const watch = document.createElement('label'); const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.dataset.key = 'incident_watch'; toggle.checked = config.incident_watch ?? false; watch.append(toggle, '主动保留故障现场'); advanced.append(watch);
   card.append(advanced); document.querySelector('#instances').append(card);
 }
 async function loadHost() {
@@ -70,7 +73,7 @@ document.querySelector('#save-instances').onclick = function () {
     if (!host) throw new Error('请先刷新 B 配置。'); const instances = {};
     for (const card of document.querySelectorAll('.instance')) {
       const config = {}; let name = '';
-      for (const input of card.querySelectorAll('input')) { const key = input.dataset.key; if (key === 'name') name = input.value.trim(); else if (input.value.trim()) config[key] = ['stop_timeout', 'test_port'].includes(key) ? Number(input.value) : input.value; }
+      for (const input of card.querySelectorAll('input, textarea')) { const key = input.dataset.key; if (key === 'name') name = input.value.trim(); else if (key === 'incident_watch') { if (input.checked) config[key] = true; } else if (key === 'test_copy_paths') { if (input.value.trim()) config[key] = input.value.split(/\r?\n/).map(item => item.trim()).filter(Boolean); } else if (input.value.trim()) config[key] = ['stop_timeout', 'test_port'].includes(key) ? Number(input.value) : input.value; }
       if (!name || instances[name]) throw new Error('配置名不能为空或重复。'); instances[name] = config;
     }
     await api('POST', 'host', { instances, revision: host.revision }); await loadHost(); show('服务端配置已保存；运行中的启动变更会等待空闲。');

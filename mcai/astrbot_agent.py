@@ -67,7 +67,13 @@ PROMPT = (
 根据实际结果核实效果，请管理员使用“/mcaidone 任务名”验收。面向群的命令提示都用中文双引号括起完整命令及参数，用途说明放在引号外。执行进度使用commentary，最终结论和验收请求使用final，不用mc_say代发。使用Responses时，final通道对应消息phase:final_answer。面向用户的消息先说明当前动作或结论，再给必要依据和下一步；报告聚焦目标、实际动作、结果和待验收事项，工具字段、内部审查、代码和逐条日志留在本地记录。最终答复应独立完整，长消息由程序分段发送，必要结论、提问和方案说明完整保留。使用中文纯文本，收到补充继续按当前目标调整。
 """
     + TASK_POLICY
+    + "\n确认需要修复MOD源码并重新打包时，用mc_tools的workflow=mod_repair与所需工具一起加载指引。"
 )
+
+MOD_REPAIR_GUIDE = """MOD源码修复：先核对故障、目标和素材。用mc_workspace pull从B取素材，在A核对java、javac、jar或项目构建工具后修改和构建。首次提案就写清这次修复范围：隔离试服先安装、启动和验证；管理员实际试玩通过后，正常关试服，备份并把同一份制品安装到正式服，按原方式启动并验证。
+获批后在原plan_id内继续。用stage登记产物，经install_download传到B；试服安装、启动和ready验证可合并在一个测试批次。试服就绪后用mc_say提供入口、测试目标与内部test_operation_id，然后等待。
+按上下文理解管理员的自然语言。明确试过当前版本且通过时，用原反馈的id作trial_feedback_id提交正式服发布，不复问，不要求固定措辞。发布批次包含安装、启动和ready验证，程序会先正常停试服。新候选装到试服后重新请试玩，无需重复批准同一范围。
+未通过则按现象或发生时间查本次试服证据；缺关键线索时问一个问题然后等待。未完成正式服发布和验证，不结束方案或提示done。不要把端口或启动日志说成玩家通过。提示可用say自然回复，不写示例答案让用户照抄。回复只说用户要决定的事、试玩入口或实际结果，内部编号和审核留本地。"""
 
 
 def clean_arguments(arguments):
@@ -191,6 +197,8 @@ class AstrBotAgent:
             provider.input_ready.set()
 
     async def prepare_apply(self, tasks, job):
+        if job.get("release_submitted"):
+            return True
         try:
             await tasks.client.request("GET", f"/operations/{job['operation']}")
             return True
@@ -517,7 +525,10 @@ class AstrBotAgent:
                 )
                 return await remote(record, action, query_arguments)
             if name == "mc_tools":
-                for requested in arguments["names"]:
+                names = arguments.get("names", [])
+                if arguments.get("workflow") == "mod_repair":
+                    job["mod_repair_loaded"] = True
+                for requested in names:
                     description, schema = next(
                         (description, schema)
                         for tool, description, schema in TOOLS
@@ -538,7 +549,8 @@ class AstrBotAgent:
                 tool_definitions = tools.openai_schema()
                 return {
                     "loaded_tools": job["loaded_tools"],
-                    "help": [tool_help(requested) for requested in arguments["names"]],
+                    "help": [tool_help(requested) for requested in names],
+                    **({"workflow": "mod_repair"} if "workflow" in arguments else {}),
                 }
             if name == "mc_instances":
                 return await tasks.instances()
@@ -598,41 +610,49 @@ class AstrBotAgent:
                 if scope is None:
                     raise ValueError("工作区脚本需要先批准当前多轮方案")
                 approved = tasks.require_plan(job, scope["snapshot"]["plan"]["id"])
+            trial_release = None
             if (
                 name == "mc_propose"
                 and arguments.get("environment", "production") == "production"
             ):
-                for step in arguments["steps"]:
-                    if step["action"] != "install_download":
-                        continue
-                    key = step["download_id"]
-                    staged = tasks.store.get("download", key)
-                    if staged is None or staged.get("source") != "workspace":
-                        continue
-                    tested = next(
+                staged = [
+                    download
+                    for step in arguments["steps"]
+                    if step["action"] == "install_download"
+                    and (download := tasks.store.get("download", step["download_id"]))
+                    and download.get("source") == "workspace"
+                ]
+                if staged:
+                    trial = job.get("trial")
+                    feedback = next(
                         (
-                            repair
-                            for repair in reversed(job.get("repairs", []))
-                            if repair.get("environment") == "test"
-                            and not repair.get("result", {}).get("cancelled")
-                            and any(
-                                item.get("download_id") == key
-                                for item in repair.get("result", {}).get("steps", [])
-                            )
+                            row
+                            for row in job.get("feedback", [])
+                            if row.get("id")
+                            and row["id"] == arguments.get("trial_feedback_id")
                         ),
                         None,
                     )
                     if (
                         not approved
-                        or tested is None
-                        or not any(
-                            feedback.get("time", 0) > tested["ended"]
-                            for feedback in job.get("feedback", [])
-                        )
+                        or not trial
+                        or not feedback
+                        or not feedback["is_admin"]
+                        or feedback.get("trial_id") != trial["id"]
+                        or not tasks.store.get("outbox", trial["id"] + "-0")["sent"]
+                        or len(staged) != 1
+                        or staged[0]["id"] != trial["download_id"]
+                        or staged[0]["sha256"] != trial["sha256"]
                     ):
                         raise ValueError(
-                            "发布工作区制品需要原多轮方案、同一制品的测试服安装记录，以及安装后收到的 SAY 测试反馈"
+                            "发布须沿原多轮方案引用当前试服邀请下管理员的通过反馈，并使用同一份制品"
                         )
+                    trial_release = {
+                        **trial,
+                        "feedback_id": feedback["id"],
+                        "feedback_revision": record["feedback_revision"],
+                    }
+                    record["trial_release"] = trial_release
             approved_hash = approved["identity"] if approved else None
             needs_review = (
                 name in ("mc_exec", "mc_propose", "mc_console_send") or workspace_exec
@@ -696,6 +716,11 @@ class AstrBotAgent:
                             "encoding": metadata.get("encoding", "utf-8-sig"),
                             "commands": commands,
                             "diagnostic": name == "mc_exec",
+                            **(
+                                {"trial_release": trial_release}
+                                if trial_release
+                                else {}
+                            ),
                             **(
                                 {"steps": arguments["steps"]}
                                 if name == "mc_propose"
@@ -777,6 +802,7 @@ class AstrBotAgent:
                 arguments["script_hashes"] = record["checks"]
                 arguments["review_configuration"] = record["review_configuration"]
             if name == "mc_propose":
+                arguments.pop("trial_feedback_id", None)
                 checks = arguments.pop("script_hashes")
                 configuration = arguments.pop("review_configuration")
                 if approved:
@@ -791,6 +817,7 @@ class AstrBotAgent:
                     review_configuration=configuration,
                     proposal_id=record["id"],
                     operation_id=record.get("batch_operation"),
+                    trial_release=trial_release,
                     reviewed={
                         "call_id": record["id"],
                         "protocol_version": REVIEW_VERSION,
@@ -810,13 +837,36 @@ class AstrBotAgent:
                     "approval_command": f"/mcaiapply {job['name']}",
                 }
             if name == "mc_say":
-                tasks.message(job, arguments["text"])
+                if operation_id := arguments.get("test_operation_id"):
+                    if not tasks.active_plan(job):
+                        raise ValueError("试玩邀请需要有效的已批准多轮方案")
+                    trial = await tasks.client.call(
+                        job["instance"],
+                        "test_server",
+                        {"mode": "trial", "operation_id": operation_id},
+                        task_id=job["id"],
+                        operation_id=record["id"],
+                    )
+                    job["trial"] = {
+                        "id": record["id"],
+                        "text": arguments["text"],
+                        **trial,
+                    }
+                    tasks.save(job)
+                elif job.get("trial") and not job.get("trial_published"):
+                    job["trial_question"] = arguments["text"]
+                    tasks.save(job)
+                tasks.message(job, arguments["text"], identity=record["id"])
                 queued_messages.add(arguments["text"].strip())
                 if tasks.active_plan(job):
                     job["state"] = "waiting"
                     tasks.save(job)
                 return {"status": "queued"}
             if name == "mc_workspace":
+                root = str(tasks.workspace.root)
+                if job.setdefault("workspace_root", root) != root:
+                    raise ValueError("任务工作区位置已变化，请恢复本任务原工作区配置")
+                tasks.save(job)
                 mode = arguments["mode"]
                 if mode == "list":
                     return tasks.workspace.list(job["id"], arguments)
@@ -1442,6 +1492,10 @@ class AstrBotAgent:
         async def inject(kwargs, *, force=False):
             nonlocal request_snapshot, tool_definitions
             tool_definitions = tools.openai_schema()
+            request_system = system + (
+                "\n" + MOD_REPAIR_GUIDE if job.get("mod_repair_loaded") else ""
+            )
+            kwargs["system_prompt"] = request_system
             pending = tasks.drain(job)
             if pending:
                 wrapper.messages.append(Message(role="user", content=pending))
@@ -1459,7 +1513,7 @@ class AstrBotAgent:
                 job,
                 budget_provider,
                 job["messages"],
-                system,
+                request_system,
                 tools=tool_definitions,
                 force=force,
                 summary_rules=summary_rules,
@@ -1470,10 +1524,14 @@ class AstrBotAgent:
             ]
             kwargs["contexts"] = list(wrapper.messages)
             request_snapshot = {
-                "identity": context_identity(budget_provider, system, tool_definitions),
+                "identity": context_identity(
+                    budget_provider, request_system, tool_definitions
+                ),
                 "messages": len(fitted),
                 "prefix": digest(fitted),
-                "estimated_tokens": tokens([{"role": "system", "content": system}])
+                "estimated_tokens": tokens(
+                    [{"role": "system", "content": request_system}]
+                )
                 + tokens(
                     [
                         {

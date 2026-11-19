@@ -130,3 +130,26 @@ python -m pytest -p no:cacheprovider --require-astrbot -q tests/test_mod_workspa
 补充用同一模型产物在新隔离目录连续运行两次真实 Java：不设置 `lithium.e2e.batchSize`、设置合法正整数 `17`。分别到 `Done (1.143s)`、`Done (0.601s)`，未见解析异常，均正常停服；未覆盖 MOD 后续性能。试服监听且没有入世界证据时，主流程确实保持待人工验收；独立的真实登录握手失败用例未测。
 
 验收后，七个仍运行的目标服/试服经原托管窗口正常停服，日志均确认存档写出。随后结束本轮 AstrBot、B、OneBot 和托管终端；检查本轮进程及监听端口无残留。只删除本轮 `runtime/lithium-e2e-20261119-r3` 和 `.upstream/lithium-e2e-20261119-r3`（合计 8825 个文件、4235199441 字节，约 3.944 GiB），包括临时源码、产物、模型配置副本和原始日志；最小证据保留在本文。四个原保留实例与配置目录仍在，自定义规则的 SHA-256 与开测前一致。未连接真实 QQ、未操作生产服。
+
+## 自然语言试玩确认、发布与故障留证复验
+
+本次使用新隔离目录、独立端口、本地 OneBot v11、AstrBot 4.29.4 原生 runner、真实 Responses 排障与独立 Chat 审核、HTTPS、Windows 托管窗口和 Fabric 1.21.1。仍用 Lithium 0.15.4 入口的 `batchSize=auto` 故障；在独立 Java 进程确认异常且未就绪后，才从群里报障。没有告诉模型修法、工具顺序或替它构建。去敏的操作编号、制品哈希和判定见[机器可读结果](mod-repair-natural-e2e.json)。
+
+- **正常链路两次跑通，最后一次在取消目录改名后重跑。** 一次有效 `/mcaiapply`，试服就绪后客户端与日志均确认进世界；发送“刚进去试了一下，没问题了”。B 审计中 `trial_stopped` 先于同一发布批次的第一个正式服步骤，两端安装使用同一制品编号和 SHA-256。旧件备份与原件一致，启动脚本和其余 MOD 未变，目标服也实际进世界。`/mcaidone` 后经验落盘；试服副本、A 工作区与两端暂存件已清，正式服备份仍在。1.21.1 协议客户端有独立物品解码告警；两侧进世界证据齐备，未据此验收物品或完整游戏操作。
+- **按需提示来自实际发包。** 最后一轮 29 次主请求，前 3 次未携带详细 MOD 指引，从第 4 次一起加载工具和指引后均只带一份；独立审核 8 次、上下文压缩 3 次、验收总结 1 次。另用真实 Chat、Responses 各做一项只读端口及世界名巡检，两者均未加载指引。批准到试服实际进世界 218.3 秒，反馈到目标服进世界 62.1 秒；复跑脚本全过程 553.0 秒，包含启动、报障、批准、玩家验收、归档与清理，本次主请求 235.6 秒、审核 70.8 秒、压缩 114.0 秒。
+- **真实负反馈通过。** 独立试服保留启用白名单，真实协议客户端收到 `multiplayer.disconnect.not_whitelisted`。管理员先只说没通过，MCAI 查到拒绝日志并询问是否对应；补游戏名和客户端提示后，MCAI 指出试服名单为空并继续处理。原批准仍有效，无正式服备份、替换、启停或结案。
+- **Windows 改名失败实际复现。** 复跑曾在复制已完成、把 `server.partial-<操作号>` 改为 `server` 时再次报 `WinError 5`，没有登记可用副本。未确认具体持锁进程。现直接复制到本操作独立目录，全部复制和配置完成后才在 B 登记，打开前核对准备操作已结算；失败目录保留。用相同的启动 JAR、库、版本目录、`.fabric`、MOD、配置和 EULA 复验，取消目录重命名后复制成功，并完成了上述完整真实链路。
+- **主动留证用真实服务端验证。** 正常启动、正常停服及计划重启未增加事件。断开托管连接只显示状态未知，重新连接后仍是原 JVM，事件数不变。单独注入 Java 退出、真实 Lithium 连续启动失败、冻结支持 Probe 0.4.1 的当前 JVM；三种分别留下对应事件，持续故障不重复生成。两个 A 离线期间存下的事件，在 A 连回 B 后经明确配置的本地 OneBot 群各收到一次；重载 A 后不重复。Java 强制退出仅由隔离测试夹具触发，MCAI 不自动重启；该案例退场时一次正常停服超时，由隔离夹具关闭已确认归属的进程。
+
+复跑入口（源码和 npm 依赖目录由调用者提前准备；运行路径必须是本仓库 `runtime/` 下的新目录）：
+
+```powershell
+git clone --depth 1 --branch mc1.21.1-0.15.4 https://github.com/CaffeineMC/lithium.git .upstream/lithium-natural-e2e
+npm --prefix runtime/mcai-e2e-client install --no-audit --no-fund minecraft-protocol@1.60.0
+.\.venv\Scripts\python.exe scripts/e2e_mod_repair.py --run runtime/lithium-natural-pass --source .upstream/lithium-natural-e2e --protocol runtime/mcai-e2e-client
+.\.venv\Scripts\python.exe scripts/e2e_mod_repair.py --run runtime/lithium-natural-fail --source .upstream/lithium-natural-e2e --protocol runtime/mcai-e2e-client --negative
+```
+
+另以受控 runner/真实 HTTPS 验证成员反馈和过期邀请不能提交安装、B 缺发布依据直接拒绝且不创建备份、丢失首次提交回执后只查原号、暂存文件占用后沿同一收尾编号继续、端口与源文件预检。69 项组合回归全部通过；后续 Windows、恢复及旧就绪日志的定向复验分别为 18、11、3 项通过，选择集重叠，不累计。B 重启不重放的原测试夹具误把 B 状态目录放在服务端目录内，改成隔离目录后复跑通过。打包复用未修改的 Java/Probe 产物，检查两端 ZIP，B 从解压包离线构建并独立安装 wheel，A 从解压插件加载；两端协议为 `mcai-7`。未联调真实 QQ 或生产服，未重编 Probe；没有把所有断线、重启和模型误判排列组合当作实服已覆盖。
+
+验收结束后核对本轮进程和监听端口均无残留，清理本轮的 8393 个临时文件（约 2.06 GiB），保留现有实例、配置和最小验收证据。

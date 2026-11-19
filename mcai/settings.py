@@ -9,7 +9,7 @@ from astrbot.api.web import error_response, file_response, json_response, reques
 from .astrbot_agent import AstrBotAgent
 from .capabilities import detected_settings, provider_identity, test_capabilities
 from .client import HostClient, RemoteError
-from .configuration import powershell_path
+from .configuration import incident_routes, powershell_path
 from .paths import workspace_root
 from .tracing import export_diagnostics
 
@@ -122,6 +122,10 @@ class Settings:
             for key, value in fields.items():
                 if type(value) is not types[schema[key]["type"]]:
                     raise ValueError(f"{key} 类型不正确")
+            incident_routes(
+                fields.get("incident_routes", plugin.config.get("incident_routes", [])),
+                fields.get("group_ids", plugin.config.get("group_ids", [])),
+            )
             if (
                 "group_forward_threshold" in fields
                 and fields["group_forward_threshold"] < 1

@@ -233,10 +233,10 @@ STEP_SCHEMA = variants(
                     "type": "array",
                     "minItems": 1,
                     "items": STRING,
-                    "description": "除 start.bat 外只复制这里列出的路径。先核对绑定服目录，列全实际存在的启动 JAR、运行库、MOD、配置、EULA 等依赖；不要填写不存在的可选文件。",
+                    "description": "除 start.bat 外只复制这里列出的路径；省略则使用实例的 test_copy_paths。先核对启动 JAR、运行库、MOD、配置及 EULA 等实际依赖。",
                 }
             },
-            ("paths",),
+            (),
         ),
         "copy_test_world": (
             {"paths": {"type": "array", "minItems": 1, "items": STRING}},
@@ -1030,6 +1030,11 @@ TOOLS = [
                         ("scope", "completion"),
                     ),
                     "plan_id": {"type": "string", "minLength": 1},
+                    "trial_feedback_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "发布A工作区制品时引用当前试服邀请下管理员的原始通过反馈ID。",
+                    },
                     "environment": {
                         "enum": ["production", "test"],
                         "description": "默认 production 指绑定服；prepare_test 从绑定服创建副本。test 操作已创建的副本。",
@@ -1054,9 +1059,13 @@ TOOLS = [
     ),
     (
         "mc_say",
-        "仅在确实缺少用户信息时，把合并后的必要提问加入群消息发件箱，返回status=queued；实际送达另由发件箱记录。提示/mcaisay并结束本轮等待补充。进度使用commentary，最终结论和验收请求使用final，不调用本工具代发。",
+        "发送必要提问或试玩邀请，返回status=queued；实际送达由发件箱记录。试玩时引用已结算的test_operation_id，给出入口和测试目标。发出后结束本轮等待。进度用commentary，最终结论用final。",
         contract(
-            {"text": {"type": "string", "minLength": 1, "pattern": "\\S"}}, ("text",)
+            {
+                "text": {"type": "string", "minLength": 1, "pattern": "\\S"},
+                "test_operation_id": {"type": "string", "minLength": 1},
+            },
+            ("text",),
         ),
     ),
     (
@@ -1368,21 +1377,24 @@ TOOLS.extend(
             "mc_tools",
             "按名称批量加载工具，下一次模型请求起可调用，并返回用法及示例。"
             "当前任务保留已加载工具，暂停重启后恢复；重复调用可重读帮助。"
-            "只加载当前需要的能力，名称见系统能力目录。",
-            contract(
-                {
-                    "names": {
-                        "type": "array",
-                        "minItems": 1,
-                        "uniqueItems": True,
-                        "items": {
-                            "type": "string",
-                            "enum": [tool[0] for tool in TOOLS],
+            "可同时加载MOD源码修复指引，选择workflow=mod_repair。",
+            {
+                **contract(
+                    {
+                        "names": {
+                            "type": "array",
+                            "minItems": 1,
+                            "uniqueItems": True,
+                            "items": {
+                                "type": "string",
+                                "enum": [tool[0] for tool in TOOLS],
+                            },
                         },
-                    }
-                },
-                ("names",),
-            ),
+                        "workflow": {"enum": ["mod_repair"]},
+                    },
+                ),
+                "anyOf": [{"required": ["names"]}, {"required": ["workflow"]}],
+            },
         ),
     ]
 )

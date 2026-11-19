@@ -123,6 +123,7 @@ def plan_identity(plan):
                 "continuation",
                 "plan_id",
                 "environment",
+                "trial_release",
             )
             if key in plan
         }

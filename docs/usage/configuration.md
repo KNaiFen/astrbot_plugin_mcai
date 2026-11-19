@@ -163,6 +163,8 @@ say 的接收由管理员按任务控制：`/mcaisaymode 任务名 false` 暂停
 | `restart_prompt` | `Start server in 10 seconds. Press ctrl+c to stop right now.` | 退出后、自动重启前的完整提示 |
 | `test_address` | 无 | 玩家可连接的测试服地址；配置测试环境时必填 |
 | `test_port` | 无 | B端测试服专用TCP端口；同一B实例不得重复 |
+| `test_copy_paths` | 无 | 可选试服复制清单，相对于该实例目录的路径列表；`start.bat` 始终复制 |
+| `incident_watch` | `false` | 为此正式服开启主动故障留证 |
 
 BAT 的自动重启循环保留。主动停服监听本次新输出，收到约定提示后只发一次 Ctrl+C，并处理批处理终止确认。正常退出、不循环的 BAT 同样可用。超时不会强杀，也不会继续文件修复。
 
@@ -186,6 +188,8 @@ Modrinth 公开 API 无需令牌。CurseForge 在A插件设置的高级项填写
 
 A工作区按任务目录保存源码、现场MOD、反编译结果和构建输出。`mc_workspace`可读取、从B拉取实例文件、将构建JAR暂存以供审核安装，并在独立审核及已批准多轮方案范围内执行PowerShell 7.3+命令。命令运行权限与AstrBot Windows账号相同，工作区目录不构成操作系统沙箱。B测试副本由管理员配置的地址和端口提供，玩家可用`mc_test_server`返回的入口连接；生产服仍是该任务的唯一正式目标。
 
-A 网页获取、B 外部 API 与下载支持 `HTTP_PROXY`、`HTTPS_PROXY` 等环境变量；模型请求和独立搜索沿用 AstrBot 提供商代理。托管搜索的出站网络由服务商控制。
+A 的网页获取、MOD API 与下载支持 `HTTP_PROXY`、`HTTPS_PROXY` 等环境变量；模型请求和独立搜索沿用 AstrBot 提供商代理。托管搜索的出站网络由服务商控制。
+
+故障留证默认关闭。B 实例启用 `incident_watch` 后，异常证据保存在 B 的操作数据库；A 无需在线。需要通知时，在 A 设置填 `incident_routes`，每行 `实例=平台ID:GroupMessage:群号`。平台 ID 是 AstrBot 消息适配器配置 ID；群号仍须满足 A 的允许群配置。留空只在 B 本地记录，不发送消息。通知不附原始日志，不会自动开任务、修改或启动服务端。0.17.0 的 A、B 和托管窗口统一使用 `mcai-7`，须配套更新。
 
 B 首次开启 TLS 在 `data_dir/tls` 生成证书并持续复用。指纹支持大小写、冒号和空格分隔。本机 CLI 自动读取配置和证书，连接本机 HTTPS。公网 IP 变化只更新 A 的地址，证书未变则指纹不变。更多见[运行维护](operations.md)。

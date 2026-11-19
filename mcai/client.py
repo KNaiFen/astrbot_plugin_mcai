@@ -21,6 +21,10 @@ class SubmissionCancelled(Exception):
     pass
 
 
+class ReleaseDeferred(Exception):
+    """Administrator feedback changed before the first send."""
+
+
 class HostClient:
     def __init__(self, url, token, fingerprint=""):
         self.url = url.rstrip("/")
@@ -44,7 +48,9 @@ class HostClient:
         if self.session:
             await self.session.close()
 
-    async def request(self, method, path, *, stopped=None, data_factory=None, **kwargs):
+    async def request(
+        self, method, path, *, stopped=None, data_factory=None, once=False, **kwargs
+    ):
         if self.session is None:
             self.session = aiohttp.ClientSession(
                 headers={"Authorization": f"Bearer {self.token}", **HEADERS},
@@ -99,6 +105,8 @@ class HostClient:
             except (aiohttp.ContentTypeError, json.JSONDecodeError) as exc:
                 raise RemoteError(f"控制程序返回了无效 JSON 数据：{exc}") from exc
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                if once:
+                    raise
                 logger.warning("连接中断，%.1f 秒后重连：%s", delay, exc)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 10)
@@ -115,6 +123,8 @@ class HostClient:
         operation_id=None,
         task_id="manual",
         stopped=None,
+        before_release=None,
+        release_submitted=False,
     ):
         operation_id = operation_id or uuid.uuid4().hex
         body = {
@@ -125,10 +135,23 @@ class HostClient:
         }
         cancel_sent = False
         try:
-            await self.request("GET", "/instances", stopped=stopped)
-            operation = await self.request(
-                "POST", f"/operations/{operation_id}", json=body, stopped=stopped
-            )
+            path = f"/operations/{operation_id}"
+            if release_submitted:
+                operation = await self.request("GET", path)
+            else:
+                await self.request("GET", "/instances", stopped=stopped)
+                if before_release:
+                    before_release()
+                try:
+                    operation = await self.request(
+                        "POST",
+                        path,
+                        json=body,
+                        stopped=stopped,
+                        once=before_release is not None,
+                    )
+                except (aiohttp.ClientError, asyncio.TimeoutError):
+                    operation = await self.request("GET", path)
         except SubmissionCancelled:
             operation = await self.request("POST", f"/operations/{operation_id}/cancel")
             cancel_sent = True

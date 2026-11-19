@@ -109,6 +109,23 @@ def bat_codepage(path, encoding="auto", data=None):
         return page
 
 
+def incident_routes(values, allowed):
+    routes = {}
+    groups = {str(group) for group in allowed}
+    for value in values:
+        match = re.fullmatch(
+            r"([A-Za-z0-9_-]+)=([^:\s=]+:GroupMessage:(\d+))", str(value)
+        )
+        if not match or match[1] in routes:
+            raise ValueError(
+                "故障通知须按 实例=平台ID:GroupMessage:群号 配置，实例不能重复"
+            )
+        if groups and match[3] not in groups:
+            raise ValueError("故障通知目标必须在允许群号中")
+        routes[match[1]] = match[2]
+    return routes
+
+
 def normalize_instances(values, base, shell):
     if not isinstance(values, dict):
         raise ValueError("instances.json 必须是服务端名称到配置的对象")
@@ -126,6 +143,8 @@ def normalize_instances(values, base, shell):
             "restart_prompt",
             "test_address",
             "test_port",
+            "test_copy_paths",
+            "incident_watch",
         }
         if set(value) - allowed:
             raise ValueError(
@@ -146,6 +165,8 @@ def normalize_instances(values, base, shell):
             raise ValueError(f"{name}：说明、路径、编码和停服提示必须是字符串")
         if type(value.get("stop_timeout", 120)) not in (int, float):
             raise ValueError("stop_timeout 必须是秒数")
+        if type(value.get("incident_watch", False)) is not bool:
+            raise ValueError("incident_watch 必须是布尔值")
         if "test_address" in value or "test_port" in value:
             if (
                 not isinstance(value.get("test_address"), str)
@@ -157,6 +178,14 @@ def normalize_instances(values, base, shell):
             if value["test_port"] in test_ports:
                 raise ValueError("测试服端口不能重复")
             test_ports.add(value["test_port"])
+        if "test_copy_paths" in value and (
+            not isinstance(value["test_copy_paths"], list)
+            or any(
+                not isinstance(item, str) or not item.strip()
+                for item in value["test_copy_paths"]
+            )
+        ):
+            raise ValueError(f"{name}：test_copy_paths 必须是路径字符串列表")
         path = (Path(base) / value["directory"]).resolve()
         if not path.is_dir():
             raise ValueError(f"{name}：服务端目录不存在：{path}")

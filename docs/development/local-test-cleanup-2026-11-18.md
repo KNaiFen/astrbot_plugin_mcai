@@ -30,3 +30,17 @@
 ## 历史证据边界
 
 旧开发报告引用的原始任务数据库、API留痕、诊断包、备份及运行日志已随本次清理删除，原路径不再支持完整回放；顶层JSON／XML／日志只保留概要证据。历史测试结论及限制继续以当时报告为准，不能表述为本次重跑。后续测试复用`runtime/test-servers/`，建立新的测试状态；旧测试配置中的实例路径仅供历史追溯。
+
+## 2026-11-19 补充清理
+
+在 Windows 开发工作区用一次性 Python 脚本预检了 31 个 Git 忽略目标，共 8857 个文件、1265139528 字节。范围为 Probe 各目标的 Gradle 缓存及构建输出、Forge 1.7.10 的本地运行目录（仅有构建下载的原生库）、已解压的 JDK 17 对应的下载压缩包、仅用于 Probe 构建的 JDK 25 与 Gradle 9.2.0 下载包及解压目录，以及项目 Python、pytest、Ruff 缓存和辅助编译目录。下次构建旧版 Forge Probe 时，`python scripts/build_probe.py forge1710` 会重新下载缺少的构建依赖。
+
+清理范围由 `git check-ignore --stdin -z` 和 `git ls-files -z` 核对，并校验解析后的绝对路径和目录树均无重解析点。保留四套测试服、仍供测试使用的 JDK 8 与 17、Python 开发环境、上游参考源码及历史、发行包和现有验证证据。
+
+预检后用 `./.venv/Scripts/python.exe -B <临时清理脚本> --apply` 删除全部 31 个目标。共清理 1.178 GiB 文件；执行期间 E 盘可用空间由 138844844032 增到 140124835840 字节，约增加 1.192 GiB。四套测试服的 `start.bat`、`server.properties` 和 `level.dat` 共 12 个文件的 SHA-256 前后一致；0.16.0 的 12 个发行附件均通过 `SHA256SUMS.txt` 校验。本轮未修改产品或重跑集成测试。
+
+## DeceasedCraft 测试服退役
+
+按用户单独指定，清理 `runtime/test-servers/deceased/` 及同级 `instances.json` 中的 `deceased` 登记。删除前确认没有运行进程使用该目录、目标及内容无重解析点，且没有受 Git 跟踪的文件。待清理的 DeceasedCraft 5.10.17 测试副本共 9916 个文件、15863329743 字节（14.774 GiB），包含该副本的世界存档。其历史验证结果仍见[双服实测记录](two-servers-e2e-2026-11-17.md)；本次不重跑。
+
+用 Python `shutil.rmtree` 删除核对后的目录，并移除一条本地实例登记。E 盘可用空间从 239124283392 增至 254999166976 字节（约 14.785 GiB）。复核 `deceased/` 已移除，ATM10、GTNH、Fabric 的实例配置内容未变且均指向现存目录；三套测试服合计 16.901 GiB。

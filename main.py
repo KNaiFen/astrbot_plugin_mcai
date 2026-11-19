@@ -9,8 +9,8 @@ from astrbot.api.star import Context, Star
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .mcai.astrbot_agent import AstrBotAgent
-from .mcai.client import HostClient
-from .mcai.configuration import powershell_path
+from .mcai.client import HostClient, RemoteError
+from .mcai.configuration import incident_routes, powershell_path
 from .mcai.downloads import Downloads
 from .mcai.jobs import Jobs
 from .mcai.memory_job import MemoryJob
@@ -132,6 +132,7 @@ class MCAI(Star):
         self.settings = Settings(
             self, rules_path, review_rules_path, summary_rules_path
         )
+        self.incident_worker = asyncio.create_task(self.deliver_incidents())
 
         # Providers are loaded after plugins during a cold start, but already
         # exist when a running AstrBot installs or reloads this plugin.
@@ -141,6 +142,48 @@ class MCAI(Star):
     @filter.on_astrbot_loaded()
     async def on_astrbot_loaded(self):
         await self.tasks.start()
+
+    async def deliver_incidents(self):
+        while True:
+            try:
+                routes = incident_routes(
+                    self.config.get("incident_routes", []),
+                    self.config.get("group_ids", []),
+                )
+                if routes:
+                    client = self.tasks.client
+                    cursor = self.store.get("incident_cursor", client.url) or {"seq": 0}
+                    async with asyncio.timeout(15):
+                        rows = await client.request(
+                            "GET", "/incidents", params={"after": cursor["seq"]}
+                        )
+                    for row in rows:
+                        origin = routes.get(row["instance"])
+                        if origin and not self.context.get_platform_inst(
+                            origin.split(":", 1)[0]
+                        ):
+                            break
+                        if origin:
+                            key = "incident-" + row["id"]
+                            if not self.store.get("outbox", key):
+                                self.store.save(
+                                    "outbox",
+                                    key,
+                                    {
+                                        "id": key,
+                                        "task": None,
+                                        "origin": origin,
+                                        "mention": None,
+                                        "text": f"「{row['instance']}」：{row['summary']}，已保留现场。",
+                                        "sent": False,
+                                    },
+                                )
+                        self.store.save(
+                            "incident_cursor", client.url, {"seq": row["seq"]}
+                        )
+            except (RemoteError, OSError, ValueError, TimeoutError) as exc:
+                self.store.log("incident_delivery_pending", error=str(exc))
+            await asyncio.sleep(15)
 
     async def notify(self, item):
         origin, text, mention = item["origin"], item["text"], item["mention"]
@@ -339,7 +382,13 @@ class MCAI(Star):
             if command == "mcaisay":
                 if not content.strip():
                     raise ValueError(f"用法：“/mcaisay {name} 内容”，请填写补充信息。")
-                self.tasks.feedback(job, sender, content.strip(), is_admin=is_admin)
+                self.tasks.feedback(
+                    job,
+                    sender,
+                    content.strip(),
+                    is_admin=is_admin,
+                    feedback_id=trace["event_id"],
+                )
                 if job["state"] == "paused":
                     yield reply(
                         f"「{name}」：补充已保存；任务仍暂停，管理员使用 “/mcairesume {name}” 后会一起读取。"
@@ -438,6 +487,17 @@ class MCAI(Star):
                         applying=f"方案已批准，正在执行当前批次。{audience}可用 “/mcaisay {name} 内容” 补充，执行结束后读取。",
                         waiting=f"方案已批准，等待必要补充。{audience}使用 “/mcaisay {name} 内容” 继续。",
                     )
+                if job.get("trial"):
+                    state["running"] = "正在根据本轮试玩反馈继续排查。"
+                    state["waiting"] = (
+                        f"正式服已完成启动检查。确认后使用 “/mcaidone {name}” 验收。"
+                        if job.get("trial_published")
+                        else f"正式服尚未完成发布。{job.get('trial_question') or '等待本轮试玩反馈。'}"
+                    )
+                if job.get("release_submitted") and job.get("operation"):
+                    state["applying"] = (
+                        f"正在核对正式服操作 {job['operation']} 的进度。"
+                    )
                 yield reply(
                     f"「{name}」：{state.get(job['state'], job['state'])}"
                     + (
@@ -459,6 +519,8 @@ class MCAI(Star):
             event.stop_event()
 
     async def terminate(self):
+        self.incident_worker.cancel()
+        await asyncio.gather(self.incident_worker, return_exceptions=True)
         await self.settings.close()
         await self.tasks.close()
         self.workspace_memory.close()

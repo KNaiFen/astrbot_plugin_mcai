@@ -62,6 +62,24 @@ class Store:
             )
         return cursor.lastrowid
 
+    def open_incident(self, instance, incident):
+        with self.db:
+            body = json.dumps(incident, ensure_ascii=False)
+            self.db.execute(
+                "INSERT OR REPLACE INTO records VALUES ('active_incident', ?, ?)",
+                (instance, body),
+            )
+            self.db.execute(
+                "INSERT INTO events(topic, body) VALUES ('incident', ?)", (body,)
+            )
+            self.db.execute(
+                """DELETE FROM events WHERE seq IN (
+                    SELECT seq FROM events WHERE topic='incident'
+                    AND json_extract(body, '$.instance')=? ORDER BY seq DESC LIMIT -1 OFFSET 20
+                )""",
+                (instance,),
+            )
+
     def active(self, kind, instance=None, task_id=None):
         sql = "SELECT body FROM records WHERE kind=? AND json_extract(body, '$.status') IN ('pending', 'running')"
         params = [kind]
@@ -87,6 +105,7 @@ class Store:
                 """SELECT body FROM records WHERE kind='task' AND (
                 json_extract(body, '$.state') NOT IN ('done', 'stopped')
                 OR json_extract(body, '$.cancel_pending')=1
+                OR json_extract(body, '$.cleanup.pending')=1
                 OR json_extract(body, '$.archive_state') IN ('pending', 'ready')) ORDER BY rowid"""
             )
         ]

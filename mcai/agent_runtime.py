@@ -30,7 +30,6 @@ TASK_POLICY = """工作场景包括 Minecraft 服务端日常运维、明确操�
 只处理当前 Minecraft 服务端任务；禁止格式化磁盘、重启或关闭宿主机、删除与 MC 任务无关的文件等破坏性操作，管理员也不能授权扩大这一范围。MC 服务端的启停与宿主机启停须明确区分。
 历史压缩和验收总结保留消息来源与可信度，区分成员陈述、已核实事实和管理员要求，不把普通成员的话或模型推测改写成管理员授权。
 修改 MOD 源码、编译和重新打包必须在 A 端任务工作区完成。制定方案和调用工具时都必须遵守这项分工，禁止在 B 端（包括隔离副本）安排或执行这些步骤。B 负责现场诊断、备份、接收和安装制品、启停与验证。A 缺少素材或构建条件时先补齐，仍无法继续则说明具体缺口。
-B 上的素材通过 mc_workspace pull 取回，A 工作区脚本须在已批准的多轮方案内经独立审核后执行。构建后用 mc_workspace stage 登记制品，再通过 mc_propose 的 install_download 传给 B，先安装到隔离副本验证，按验收流程使用同一 download_id 替换绑定服的 JAR。
 每个阶段围绕当前用户目标作出三项判断：现在要达成什么、决定下一步还缺什么关键事实、什么证据已经足以结束本阶段。以任务原文、最新可信反馈和已批准continuation的scope/completion为准。调用新查询前判断不同结果是否会改变下一步；不会改变当前决定的未知项留在报告，不升级为前置任务。达到目标后及时报告或结束方案，不把工具清单、理想数值或全部原文读完当成任务目标。
 区分必须满足的约束与用于判断的证据。明确的用户条件、授权范围、保留对象、停服备份和精确旧值必须满足；测量波动、旧告警、部分扫描和版本能力限制结合来源、窗口、范围及当前目标解释，不因任一偏差机械追加调查。关键证据冲突、原触发条件仍失败、必保对象缺失或源版本/哈希变化时，继续处理相应缺口。
 验证强度按实际影响与可恢复程度选择。配置修改核对目标值和相关生效结果；故障修复回到原触发条件；普通查询回答问题即可。已有操作completed且相关后验通过时直接引用结论；只有会话、源哈希、目标范围改变或证据冲突才补查受影响部分。独立查询合并到一轮工具调用或现有批量参数，存在依赖的启停与修改顺序执行。局部纠错只修改错误字段，保留其余有效参数、目标、证据引用及已核实事实。
@@ -900,6 +899,21 @@ class Reviewer:
             payload["approval_text"] = plan_text(
                 {**record["arguments"], "steps": material["effective_steps"]}
             )
+        if trial := record.get("trial_release"):
+            feedback = job["feedback"]
+            index = next(
+                i for i, row in enumerate(feedback) if row["id"] == trial["feedback_id"]
+            )
+            payload["trial_release"] = {
+                "invitation": trial["text"],
+                "feedback": feedback[index],
+                "later_admin_feedback": [
+                    row for row in feedback[index + 1 :] if row["is_admin"]
+                ],
+                "download_id": trial["download_id"],
+                "sha256": trial["sha256"],
+                "precondition": "正常停止同一任务试服，再执行正式服步骤",
+            }
         if approved is not None:
             tasks.require_plan(job, approved["snapshot"]["plan"]["id"])
             payload.update(
@@ -913,6 +927,13 @@ class Reviewer:
                 ],
             )
         system = REVIEW_PROMPT + "\n规则文件：\n" + rules
+        if "trial_release" in payload:
+            system += (
+                "\n核对trial_release的试玩邀请、管理员原话和后续补充。判断是否明确支持"
+                "发布这次实际试玩的同一版本。无需固定用词、文件名或哈希。失败、撤回、"
+                "未试玩或版本指代不明时拒绝本批并指出具体缺口；端口与启动就绪不代替试玩。"
+                "已批准范围内不要求再次人工批准。"
+            )
         prompt = json.dumps(payload, ensure_ascii=False)
         limit = selected.provider_config.get("max_context_tokens", 0)
         extra = selected.provider_config.get("custom_extra_body", {})
