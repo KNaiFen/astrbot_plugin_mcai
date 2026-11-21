@@ -68,6 +68,8 @@ class Jobs:
     def get(self, key):
         job = self.store.get("background_job", key)
         if job is None:
+            if self.store.get("cleaned_job", key) is not None:
+                raise ValueError("后台任务已清理")
             raise ValueError("后台任务不存在")
         return job
 

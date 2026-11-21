@@ -24,6 +24,15 @@ EXAMPLES = {
     "incidents": [
         ["incidents", "list"],
         ["incidents", "console", "--id", "实际故障编号", "--query", "Exception"],
+        [
+            "incidents",
+            "file",
+            "--id",
+            "实际故障编号",
+            "--attachment",
+            "详情返回的附件编号",
+            "--tail",
+        ],
     ],
     "files": [
         ["files", "read", "--path", "server.properties", "--line-count", "30"],

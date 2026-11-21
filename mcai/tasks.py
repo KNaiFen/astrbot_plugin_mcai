@@ -1,6 +1,8 @@
 import asyncio
 import copy
+import hashlib
 import json
+import logging
 import re
 import shutil
 import time
@@ -9,18 +11,102 @@ import uuid
 from pathlib import Path
 
 from .agent_runtime import RETRY_DELAYS, progress_text, retryable
+from .cleanup import settled
 from .client import ReleaseDeferred, RemoteError
 from .knowledge import Knowledge
+from .model_usage import task_usage
 from .paths import resolve_file
-from .plans import plan_identity, plan_text
+from .plans import approval_command, plan_identity, plan_text
 from .review import digest
 from .web import WebPages
 
-MESSAGE_RETRY_DELAYS = (2, 4)
+MESSAGE_RETRY_DELAYS = (2, 5, 10, 30, 60)
+MESSAGE_PROBE_FAILURES = 3
+MESSAGE_FAILURE_LOG_INTERVAL = 10
+TOKEN_WARNING_PERCENT = 80
+logger = logging.getLogger(__name__)
 
 
 def occupies_instance(job):
     return job["state"] not in ("done", "stopped") or job.get("cancel_pending", False)
+
+
+def task_violations(job) -> list[str]:
+    violations = []
+    state = job.get("state")
+    plan = job.get("plan")
+    applied = job.get("applied_plan")
+    if state not in ("running", "waiting", "applying", "paused", "done", "stopped"):
+        violations.append("state 不在合法状态中")
+    if state == "applying" and (not job.get("operation") or not applied):
+        violations.append("applying 缺少 operation 或 applied_plan")
+    if state == "paused" and "pause_reason" not in job:
+        violations.append("paused 缺少 pause_reason")
+    if (
+        state in ("done", "stopped")
+        and not job.get("cancel_pending")
+        and job.get("operation")
+    ):
+        violations.append("取消已结算的终态任务仍有 operation")
+    if plan:
+        if state == "applying":
+            violations.append("applying 同时保留了待批准的 plan")
+        code = plan.get("approval_code") if isinstance(plan, dict) else None
+        if not isinstance(code, str) or not re.fullmatch(
+            r"[0-9A-F]{6}(?:[0-9A-F]{2})?", code
+        ):
+            violations.append("plan 缺少有效的 approval_code")
+    if (job.get("release_checkpoint") or job.get("release_submitted")) and not (
+        isinstance(applied, dict) and applied.get("trial_release")
+    ):
+        violations.append("发布检查点缺少 applied_plan.trial_release")
+    if job.get("trial_published") and not job.get("trial"):
+        violations.append("trial_published 缺少 trial")
+    if approved := job.get("approved_plan"):
+        if not isinstance(approved, dict) or approved.get("status") not in (
+            "active",
+            "invalidated",
+            "replaced",
+            "completed",
+            "stopped",
+            "failed",
+        ):
+            violations.append("approved_plan.status 不在合法状态中")
+    if (job.get("cancel_pending") or job.get("cancel_request")) and not job.get(
+        "stop_requested"
+    ):
+        violations.append("取消检查点缺少 stop_requested")
+    cleanup = job.get("cleanup")
+    if (
+        isinstance(cleanup, dict)
+        and cleanup.get("pending")
+        and not job.get("trial_published")
+    ):
+        violations.append("cleanup.pending 缺少 trial_published")
+    archive = job.get("archive_state")
+    if archive is not None and (
+        state != "done" or archive not in ("pending", "ready", "completed")
+    ):
+        violations.append(
+            "archive_state 只允许在 done 中为 pending、ready 或 completed"
+        )
+    return violations
+
+
+def _same_messages(left, right):
+    if left is right:
+        return True
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(
+            _same_messages(value, right[key]) for key, value in left.items()
+        )
+    if isinstance(left, list):
+        return len(left) == len(right) and all(
+            _same_messages(a, b) for a, b in zip(left, right)
+        )
+    return left == right
 
 
 class Tasks:
@@ -36,28 +122,71 @@ class Tasks:
         local_jobs=None,
         downloads=None,
         workspace=None,
+        task_token_limit=0,
+        model_failure_pause_minutes=0,
     ):
         self.store, self.client, self.agent, self.notify = store, client, agent, notify
+        self.task_token_limit = task_token_limit
+        self.model_failure_pause_minutes = model_failure_pause_minutes
         self.local_jobs, self.downloads, self.workspace = (
             local_jobs,
             downloads,
             workspace,
         )
         self.jobs = {job["id"]: job for job in store.live_tasks()}
+        self._saved_messages = {}
         self.knowledge = Knowledge(store.directory)
         self.web = WebPages(store)
         self.archive_workers = {}
         self.create_lock = asyncio.Lock()
+        self.reference_lock = asyncio.Lock()
         self.workers = {}
         self.model_requests = {}
         self.outbox_worker = None
+        self.outbox_sends = {}
+        self.outbox_sending = set()
         self.closing = False
 
     def save(self, job):
-        self.store.save("task", job["id"], job)
+        key, messages = job["id"], job["messages"]
+        if (
+            job.get("operation")
+            and job["state"] in ("done", "stopped")
+            and job.get("cancel_pending") is False
+            and (self.store.get("task", key) or {}).get("cancel_pending")
+        ):
+            # The persisted cancellation is only settled after B returns.
+            job["operation"] = None
+        if violations := task_violations(job):
+            try:
+                self.log(
+                    job,
+                    "task_invariant_violation",
+                    violations=violations,
+                    traceback=traceback.format_stack(limit=8)[:-1],
+                )
+            except OSError:
+                logger.exception("写入任务不变量审计失败：%s", key)
+        if settled(job) and "settled_at" not in job:
+            job["settled_at"] = time.time()
+        task = {field: value for field, value in job.items() if field != "messages"}
+        if key not in self._saved_messages:
+            self._saved_messages[key] = self.store.get("task_messages", key)
+        if _same_messages(messages, self._saved_messages[key]):
+            self.store.save("task", key, task)
+        else:
+            self.store.save_many(("task", key, task), ("task_messages", key, messages))
+            # Appends and edits can mutate the same list, including older messages.
+            self._saved_messages[key] = copy.deepcopy(messages)
 
     def log(self, job, kind, **data):
         self.store.log(kind, task=job["id"], **data)
+
+    def forget_settled(self, job):
+        key = job["id"]
+        if key not in self.workers and key not in self.archive_workers and settled(job):
+            self.jobs.pop(key, None)
+            self._saved_messages.pop(key, None)
 
     def find(self, group, name):
         matches = [
@@ -162,85 +291,251 @@ class Tasks:
             job["admin"],
         )
 
+    def check_token_limit(self, job):
+        limit = self.task_token_limit * (1 + job.get("token_limit_renewals", 0))
+        if not limit:
+            return
+        usage = task_usage(self.store, job["id"])
+        used = usage["input_tokens"] + usage["output_tokens"]
+        if (
+            used * 100 >= limit * TOKEN_WARNING_PERCENT
+            and job.get("token_limit_warned") != limit
+        ):
+            self.message(
+                job,
+                f"模型用量已达到单任务上限的 {TOKEN_WARNING_PERCENT}%：{used} / {limit} token。",
+                job["admin"],
+                identity=f"token-limit-{job['id']}-{limit}",
+            )
+            job["token_limit_warned"] = limit
+            self.save(job)
+        if used >= limit:
+            job["token_limit_pause"] = True
+            reason = f"模型用量 {used} token 已达到单任务上限 {limit} token"
+            self.pause(job, reason)
+            return reason
+
     def resume(self, job):
         if job["state"] != "paused" or job["stop_requested"]:
             raise ValueError("当前任务未暂停")
         if job["id"] in self.workers:
             raise ValueError("正在保存暂停进度，请稍后续接")
-        reason = job.pop("pause_reason")
-        self.log(job, "task_resumed", previous_reason=reason)
-        job.pop("model_retry", None)
+        try:
+            self.log(job, "task_resumed", previous_reason=job["pause_reason"])
+        except OSError as exc:
+            raise ValueError(f"续接失败，无法写入审计：{exc}") from exc
+        job.pop("pause_reason")
+        notice = "继续排查。"
+        if job.pop("token_limit_pause", False):
+            job["token_limit_renewals"] = job.get("token_limit_renewals", 0) + 1
+            usage = task_usage(self.store, job["id"])
+            limit = self.task_token_limit * (1 + job["token_limit_renewals"])
+            used = usage["input_tokens"] + usage["output_tokens"]
+            notice += f"模型用量累计 {used} token，" + (
+                f"新上限 {limit} token。" if limit else "当前不限制用量。"
+            )
         job["state"] = "applying" if job.get("operation") else "running"
-        job["pending"].append(
-            {
-                "sender": "system",
-                "text": "管理员要求从已保存进度继续。先核对原操作和后台任务结果。",
-            }
-        )
+        retry = job.get("model_retry", {})
+        if retry.pop("auto_paused", False):
+            retry.pop("first_failed_at")
+            retry.pop("next_retry_at")
+        else:
+            job.pop("model_retry", None)
+            job["pending"].append(
+                {
+                    "sender": "system",
+                    "text": "管理员要求从已保存进度继续。先核对原操作和后台任务结果。",
+                }
+            )
         self.save(job)
-        self.message(job, "继续排查。")
+        self.message(job, notice)
         self.wake(job)
 
     async def deliver(self):
-        while True:
-            delay = 1
-            for item in self.store.pending_outbox():
-                if (
-                    item.get("progress_task")
-                    and self.store.get("task", item["progress_task"])["stop_requested"]
-                ):
-                    item.update(sent=True, discarded=True)
-                    self.store.save("outbox", item["id"], item)
-                    continue
-                item["attempts"] = item.get("attempts", 0) + 1
-                self.store.save("outbox", item["id"], item)
+        try:
+            while True:
                 try:
-                    await self.notify(item)
-                except Exception as exc:
-                    item.update(
-                        error=f"{type(exc).__name__}: {exc}",
-                        failed=item["attempts"] >= 3,
-                    )
-                    self.store.save("outbox", item["id"], item)
-                    self.store.log(
-                        "message_delivery_error",
-                        task=item.get("task"),
-                        outbox=item["id"],
-                        attempts=item["attempts"],
-                        exhausted=item["failed"],
-                        text=item["text"],
-                        traceback=traceback.format_exc(),
-                    )
-                    if item["failed"]:
-                        continue
-                    delay = MESSAGE_RETRY_DELAYS[item["attempts"] - 1]
-                    break
-                item["sent"] = True
-                item.pop("error", None)
+                    for item in self.store.pending_outbox(now=time.time()):
+                        lane = (
+                            item["origin"],
+                            item["id"] if item.get("single_fault") else None,
+                        )
+                        if lane in self.outbox_sends:
+                            continue
+                        self.outbox_sending.add(item["id"])
+                        self.outbox_sends[lane] = asyncio.create_task(
+                            self.deliver_pending(item, lane)
+                        )
+                except Exception:
+                    self.log_delivery_error("message_outbox_poll_error")
+                await asyncio.sleep(1)
+        finally:
+            sends = tuple(self.outbox_sends.values())
+            for send in sends:
+                send.cancel()
+            await asyncio.gather(*sends, return_exceptions=True)
+            self.outbox_sends.clear()
+            self.outbox_sending.clear()
+
+    async def deliver_pending(self, item, lane):
+        try:
+            # Give the head the first chance to send when the platform recovers.
+            if (
+                await self.deliver_item(item) is False
+                and lane[1] is None
+                and item["attempts"] > MESSAGE_PROBE_FAILURES
+                and item["failures"] > MESSAGE_PROBE_FAILURES
+                and (probe := self.store.outbox_probe(item))
+            ):
+                self.outbox_sending.add(probe["id"])
+                try:
+                    if await self.deliver_item(probe):
+                        item["single_fault"] = True
+                        self.store.save("outbox", item["id"], item)
+                finally:
+                    self.outbox_sending.remove(probe["id"])
+        except Exception:
+            self.log_delivery_error("message_outbox_item_error", outbox=item["id"])
+        finally:
+            self.outbox_sending.remove(item["id"])
+            del self.outbox_sends[lane]
+
+    def log_delivery_error(self, kind, **fields):
+        details = traceback.format_exc()
+        try:
+            self.store.log(kind, **fields, traceback=details)
+        except Exception:
+            logger.exception("记录群消息发件箱错误失败：%s\n%s", kind, details)
+
+    async def deliver_item(self, item):
+        if progress_task := item.get("progress_task"):
+            job = self.store.get("task", progress_task)
+            if job is None or job["stop_requested"]:
+                item.update(sent=True, discarded=True)
                 self.store.save("outbox", item["id"], item)
-                self.store.log(
-                    "group_message_sent",
-                    task=item.get("task"),
-                    text=item["text"],
-                    outbox=item["id"],
+                if job is None:
+                    self.store.log(
+                        "message_progress_discarded",
+                        task=progress_task,
+                        outbox=item["id"],
+                        reason="任务不存在",
+                    )
+                return
+        attempts = item.get("attempts", 0)
+        previous_error = item.get("error")
+        first_failure = item.get("first_failure_at", item.get("error_at"))
+        failures = item.get("failures", attempts if previous_error else 0)
+        item.update(
+            attempts=attempts + 1,
+            total_attempts=item.get("total_attempts", attempts) + 1,
+        )
+        self.store.save("outbox", item["id"], item)
+        try:
+            async with asyncio.timeout(15):
+                await self.notify(item)
+        except Exception as exc:
+            delay = MESSAGE_RETRY_DELAYS[
+                min(item["attempts"] - 1, len(MESSAGE_RETRY_DELAYS) - 1)
+            ]
+            now = time.time()
+            failures += 1
+            item.update(
+                error=f"{type(exc).__name__}: {exc}",
+                error_at=now,
+                retry_at=now + delay,
+                failures=failures,
+                first_failure_at=now if first_failure is None else first_failure,
+            )
+            self.store.save("outbox", item["id"], item)
+            fields = dict(
+                task=item.get("task"),
+                outbox=item["id"],
+                attempts=item["total_attempts"],
+                failures=failures,
+                error=item["error"],
+                retry_at=item["retry_at"],
+            )
+            if failures == 1:
+                self.log_delivery_error(
+                    "message_delivery_error", text=item["text"], **fields
                 )
-                job = self.jobs.get(item.get("task"))
-                if (
-                    job
-                    and job.get("trial")
-                    and item["id"] == job["trial"]["id"] + "-0"
-                    and job["pending"]
-                    and job["state"] == "waiting"
-                    and not job["stop_requested"]
-                ):
-                    self.wake(job)
-            await asyncio.sleep(delay)
+            elif (
+                failures % MESSAGE_FAILURE_LOG_INTERVAL == 0
+                or item["error"] != previous_error
+            ):
+                self.store.log("message_delivery_error", **fields)
+            return False
+        item["sent"] = True
+        for key in ("error", "error_at", "retry_at"):
+            item.pop(key, None)
+        self.store.save("outbox", item["id"], item)
+        self.store.log(
+            "group_message_sent",
+            task=item.get("task"),
+            text=item["text"],
+            outbox=item["id"],
+        )
+        if failures:
+            self.store.log(
+                "message_delivery_recovered",
+                task=item.get("task"),
+                outbox=item["id"],
+                total_attempts=item["total_attempts"],
+                first_failure_at=first_failure,
+            )
+        job = self.jobs.get(item.get("task"))
+        if (
+            job
+            and job.get("trial")
+            and item["id"] == job["trial"]["id"] + "-0"
+            and job["pending"]
+            and job["state"] == "waiting"
+            and not job["stop_requested"]
+        ):
+            self.wake(job)
+        return True
 
-    async def create(self, group, origin, name, instance, sender, report):
+    async def create(
+        self,
+        group,
+        origin,
+        name,
+        instance,
+        sender,
+        report,
+        *,
+        task_id=None,
+        attachments=(),
+        workspace_root=None,
+    ):
+        entry = await self.instance_entry(instance) if instance is not None else None
         async with self.create_lock:
-            return await self._create(group, origin, name, instance, sender, report)
+            return self._create(
+                group,
+                origin,
+                name,
+                instance,
+                sender,
+                report,
+                entry,
+                task_id,
+                attachments,
+                workspace_root,
+            )
 
-    async def _create(self, group, origin, name, instance, sender, report):
+    def _create(
+        self,
+        group,
+        origin,
+        name,
+        instance,
+        sender,
+        report,
+        entry,
+        task_id,
+        attachments,
+        workspace_root,
+    ):
         if " " in name or len(name) > 40:
             raise ValueError("任务名请控制在 40 字内，不带空格")
         if any(
@@ -250,38 +545,30 @@ class Tasks:
             for job in self.jobs.values()
         ):
             raise ValueError("任务名已存在")
-        if instance is not None and any(
-            job["instance"] == instance and occupies_instance(job)
+        if entry and any(
+            job.get("directory") == entry["canonical_directory"]
+            and occupies_instance(job)
             for job in self.jobs.values()
         ):
             raise ValueError("该服务端已有进行中的排障任务")
-        entry = None
-        if instance is not None:
-            entry = next(
-                (
-                    item
-                    for item in await self.instances()
-                    if item["instance"] == instance
-                ),
-                None,
-            )
-            if entry is None:
-                raise ValueError("实例不存在")
+        ready = bool(report or attachments)
         job = {
-            "id": uuid.uuid4().hex,
+            "id": task_id or uuid.uuid4().hex,
             "group": group,
             "origin": origin,
             "name": name,
             "instance": instance,
             "admin": sender,
-            "state": "running",
+            "state": "running" if ready else "waiting",
             "pending": [
                 {
                     "sender": sender,
                     "is_admin": True,
                     "text": "【管理员创建任务】\n" + report,
                 }
-            ],
+            ]
+            if report
+            else [],
             "messages": [],
             "plan": None,
             "operation": None,
@@ -295,14 +582,21 @@ class Tasks:
         }
         if entry:
             job["directory"] = entry["canonical_directory"]
+        if workspace_root is not None:
+            job["workspace_root"] = workspace_root
+        for author, admin, text in attachments:
+            self.append_feedback(job, author, text, admin, attachment=True)
         self.jobs[job["id"]] = job
         self.log(job, "task_created", report=report, admin=sender, instance=instance)
         self.save(job)
-        self.message(
-            job,
-            f"开始排查。\n群成员可用 “/mcaisay {name} 内容” 补充线索；普通群聊不会进入任务。\n查看进度：“/mcaistatus {name}”",
-        )
-        self.wake(job)
+        if ready:
+            self.message(
+                job,
+                f"开始排查。\n群成员可用 “/mcaisay {name} 内容” 补充线索；普通群聊不会进入任务。\n查看进度：“/mcaistatus {name}”",
+            )
+            self.wake(job)
+        else:
+            self.message(job, f"任务已创建，等待文字补充：“/mcaisay {name} 内容”")
         return job
 
     async def instances(self):
@@ -315,11 +609,7 @@ class Tasks:
             )
         return entries
 
-    async def select_instance(self, job, instance, reason):
-        async with self.create_lock:
-            return await self._select_instance(job, instance, reason)
-
-    async def _select_instance(self, job, instance, reason):
+    async def instance_entry(self, instance):
         entry = next(
             (item for item in await self.instances() if item["instance"] == instance),
             None,
@@ -328,35 +618,56 @@ class Tasks:
             raise ValueError("实例不存在，请先 mc_instances 识别目标")
         if not entry.get("selectable", True):
             raise ValueError("实例已待移除，不能绑定新任务")
+        return entry
+
+    async def select_instance(self, job, instance, reason):
+        entry = await self.instance_entry(instance)
         directory = entry["canonical_directory"]
-        old = job.get("directory")
-        changing = (old is not None and old != directory) or (
-            job["instance"] is not None and job["instance"] != instance
-        )
-        if changing and (job.get("repair_submitted") or job.get("operation")):
-            raise ValueError(
-                "本任务已提交修复，不能更换服务端，请为其他服务端创建新任务"
-            )
-        if any(
-            other["id"] != job["id"]
-            and other.get("directory") == directory
-            and occupies_instance(other)
-            for other in self.jobs.values()
-        ):
-            raise ValueError("该服务端已有进行中的排障任务，请向原任务补充反馈")
-        if old and old != directory:
-            cleanup = job.setdefault(
-                "selection_cleanup",
-                {
-                    "instance": job["instance"],
-                    "target": directory,
-                    "arguments": {"mode": "cancel_task", "expected_directory": old},
-                    "operation_id": uuid.uuid4().hex,
-                },
-            )
-            if cleanup["target"] != directory:
-                raise ValueError("上次目标切换尚未结算，请先继续原选择并核对清理结果")
-            self.save(job)
+        cleanup = None
+        while True:
+            async with self.create_lock:
+                old = job.get("directory")
+                if cleanup is not None:
+                    if job.get("selection_cleanup") is not cleanup:
+                        raise ValueError("目标切换状态已变化，请重新核对任务目标")
+                    job.pop("selection_cleanup")
+                    job["background"] = {}
+                    job["plan"] = None
+                    self.save(job)
+                if job["stop_requested"] or job["state"] == "done":
+                    raise ValueError("任务已结束，不能绑定服务端")
+                changing = (old is not None and old != directory) or (
+                    job["instance"] is not None and job["instance"] != instance
+                )
+                if changing and (job.get("repair_submitted") or job.get("operation")):
+                    raise ValueError(
+                        "本任务已提交修复，不能更换服务端，请为其他服务端创建新任务"
+                    )
+                if any(
+                    other["id"] != job["id"]
+                    and other.get("directory") == directory
+                    and occupies_instance(other)
+                    for other in self.jobs.values()
+                ):
+                    raise ValueError("该服务端已有进行中的排障任务，请向原任务补充反馈")
+                if cleanup is not None or not old or old == directory:
+                    job.update(instance=instance, directory=directory)
+                    self.save(job)
+                    break
+                cleanup = job.get("selection_cleanup")
+                if cleanup is None:
+                    cleanup = job["selection_cleanup"] = {
+                        "instance": job["instance"],
+                        "target": directory,
+                        "arguments": {"mode": "cancel_task", "expected_directory": old},
+                        "operation_id": uuid.uuid4().hex,
+                    }
+                    self.save(job)
+                elif cleanup["target"] != directory:
+                    raise ValueError(
+                        "上次目标切换尚未结算，请先继续原选择并核对清理结果"
+                    )
+            # Retain the old binding during cancellation and recheck the new one after it.
             await self.client.call(
                 cleanup["instance"],
                 "job",
@@ -364,10 +675,6 @@ class Tasks:
                 operation_id=cleanup["operation_id"],
                 task_id=job["id"],
             )
-            job.pop("selection_cleanup")
-            job["background"] = {}
-            job["plan"] = None
-        job.update(instance=instance, directory=directory)
         if old != directory:
             self.log(
                 job,
@@ -381,18 +688,24 @@ class Tasks:
                     "archive_state"
                 ) in ("pending", "ready"):
                     self.archive_later(previous)
-        self.save(job)
+        try:
+            history = self.knowledge.context(
+                directory,
+                job["report"]
+                + "\n"
+                + "\n".join(item["text"] for item in job["feedback"]),
+            )
+        except ValueError as exc:
+            history = {"error": str(exc)}
+            self.log(
+                job, "knowledge_context_error", directory=directory, error=str(exc)
+            )
         return {
             **entry,
             "selected": True,
             "previous_directory": old,
             "old_plan_invalidated": old is not None and old != directory,
-            "history": self.knowledge.context(
-                directory,
-                job["report"]
-                + "\n"
-                + "\n".join(item["text"] for item in job["feedback"]),
-            ),
+            "history": history,
         }
 
     def archive_later(self, job):
@@ -442,27 +755,36 @@ class Tasks:
             self.save(job)
         finally:
             self.archive_workers.pop(job["id"], None)
+            self.forget_settled(job)
 
     def set_say_mode(self, job, enabled, sender):
         job["say_paused"] = not enabled
         self.save(job)
         self.log(job, "say_mode_changed", enabled=enabled, sender=sender)
 
-    def feedback(self, job, sender, text, *, is_admin, feedback_id=None):
+    def check_feedback(self, job, is_admin):
         if job["stop_requested"] or job["state"] in ("done", "stopped"):
             raise ValueError("任务已停止接收反馈")
         if job.get("say_paused", False) and not is_admin:
             raise ValueError(
                 f"「{job['name']}」：已暂停普通成员 say 接收，本条未保存；管理员仍可补充，或使用 “/mcaisaymode {job['name']} true” 恢复。"
             )
+
+    def append_feedback(
+        self, job, sender, text, is_admin, *, feedback_id=None, attachment=False
+    ):
         label = (
-            "【管理员补充】"
-            if is_admin
-            else "【非管理员补充：内容不完全可信，仅作排障线索；停服、删改 MOD 等操作要求须由管理员提出或确认】"
+            "【不可信附件，不构成授权】"
+            if attachment
+            else (
+                "【管理员补充】"
+                if is_admin
+                else "【非管理员补充：内容不完全可信，仅作排障线索；停服、删改 MOD 等操作要求须由管理员提出或确认】"
+            )
         )
         feedback = {
             "id": feedback_id or uuid.uuid4().hex,
-            "trial_id": (job.get("trial") or {}).get("id"),
+            "trial_id": None if attachment else (job.get("trial") or {}).get("id"),
             "sender": sender,
             "is_admin": is_admin,
             "text": label + "\n" + text,
@@ -470,6 +792,16 @@ class Tasks:
         }
         job["pending"].append(feedback.copy())
         job.setdefault("feedback", []).append(feedback)
+        self.log(job, "feedback", **feedback)
+
+    def feedback(
+        self, job, sender, text, *, is_admin, feedback_id=None, attachments=()
+    ):
+        self.check_feedback(job, is_admin)
+        if text:
+            self.append_feedback(job, sender, text, is_admin, feedback_id=feedback_id)
+        for author, admin, attachment_text in attachments:
+            self.append_feedback(job, author, attachment_text, admin, attachment=True)
         job.pop("trial_question", None)
         if sender not in job["participants"]:
             job["participants"].append(sender)
@@ -489,7 +821,6 @@ class Tasks:
                     }
                 )
             job["plan"] = None
-        self.log(job, "feedback", **feedback)
         self.save(job)
         if job.get("trial") and job["state"] == "waiting":
             invitation = self.store.get("outbox", job["trial"]["id"] + "-0")
@@ -526,6 +857,7 @@ class Tasks:
         if not steps:
             raise ValueError("修复步骤不能为空")
         plan = {
+            "id": proposal_id if proposal_id is not None else uuid.uuid4().hex,
             "summary": summary,
             "steps": steps,
             "offline": True,
@@ -537,8 +869,6 @@ class Tasks:
             plan.update(steps=effective_steps, prepared=True)
         if review_configuration is not None:
             plan["review_configuration"] = review_configuration
-        if proposal_id is not None:
-            plan["id"] = proposal_id
         if continuation is not None:
             plan["continuation"] = copy.deepcopy(continuation)
         if plan_id is not None:
@@ -560,11 +890,23 @@ class Tasks:
             )
             return
         self.end_plan(job, "replaced", "已提交替代方案，等待重新批准")
+        last = job.get("last_proposal")
+        if last and last["id"] == plan["id"]:
+            code = last["code"]
+        else:
+            short_hash = hashlib.sha256(plan["id"].encode()).hexdigest().upper()
+            code = (
+                short_hash[:8]
+                if last and short_hash[:6] == last["code"]
+                else short_hash[:6]
+            )
+        plan["approval_code"] = code
+        job["last_proposal"] = {"id": plan["id"], "code": code}
         job["plan"] = plan
         job.pop("proposal_invalidated", None)
         self.save(job)
         self.log(job, "plan", plan=job["plan"])
-        hints = f"\n管理员批准：“/mcaiapply {job['name']}”\n需补充或调整：“/mcaisay {job['name']} 内容”"
+        hints = f"\n管理员批准：“{approval_command(job)}”\n需补充或调整：“/mcaisay {job['name']} 内容”"
         self.message(
             job,
             plan_text(plan) + hints,
@@ -633,6 +975,7 @@ class Tasks:
 
     def queue_apply(self, job, plan, *, operation_id=None):
         job.pop("release_submitted", None)
+        job.pop("release_checkpoint", None)
         job.update(
             state="applying",
             operation=operation_id or uuid.uuid4().hex,
@@ -647,10 +990,17 @@ class Tasks:
             "id"
         ] != (job.get("trial") or {}).get("id"):
             raise ReleaseDeferred("管理员补充或试服邀请已变化，正式服批次未发送")
-        job["release_submitted"] = True
+        plan = job["applied_plan"]
+        self.require_plan(job, plan.get("plan_id", plan["id"]))
+        if plan.get("reviewed", {}).get("rules_hash") != self.agent.rules_hash():
+            raise ReleaseDeferred("审核规则已变化，正式服批次未发送")
+
+    def record_release(self, job, checkpoint):
+        job.pop("release_submitted", None)
+        job["release_checkpoint"] = checkpoint
         self.save(job)
 
-    def approve(self, job):
+    def approve(self, job, sender, code):
         if job["state"] == "paused":
             raise ValueError(
                 f"任务已暂停，管理员请先使用 “/mcairesume {job['name']}” 续接。"
@@ -661,12 +1011,32 @@ class Tasks:
             )
         if job["state"] == "applying":
             raise ValueError("修复已在执行")
+        plan = job["plan"]
+        current = plan["approval_code"]
+        if code.upper() != current:
+            reason = "缺少方案短码" if not code else "该短码不是当前待批准方案"
+            raise ValueError(
+                f"「{job['name']}」：{reason}。请核对当前方案：\n"
+                f"{plan_text(plan)}\n管理员批准：“{approval_command(job)}”"
+            )
         if job["id"] in self.workers:
             raise ValueError("正在整理排查结果，请稍后再批准")
-        plan = job["plan"]
+        approved_at = time.time()
+        job["approval"] = {
+            "plan_id": plan["id"],
+            "code": current,
+            "by": sender,
+            "at": approved_at,
+        }
         if plan.get("continuation"):
             snapshot = {
-                "plan": copy.deepcopy(plan),
+                "plan": copy.deepcopy(
+                    {
+                        key: value
+                        for key, value in plan.items()
+                        if key != "approval_code"
+                    }
+                ),
                 "instance": job["instance"],
                 "directory": job.get("directory"),
             }
@@ -674,9 +1044,12 @@ class Tasks:
                 "snapshot": snapshot,
                 "identity": digest(snapshot),
                 "status": "active",
-                "approved_at": time.time(),
+                "approved_at": approved_at,
+                "approved_by": sender,
+                "code": current,
             }
         self.queue_apply(job, plan)
+        self.log(job, "plan_approved", sender=sender, plan_id=plan["id"], code=current)
         self.message(job, "收到，正在执行。")
         self.wake(job)
 
@@ -718,6 +1091,10 @@ class Tasks:
         self.wake(job)
 
     def pause_requested(self, job):
+        if job["state"] == "paused":
+            raise ValueError(
+                f"「{job['name']}」：任务已暂停，管理员使用 “/mcairesume {job['name']}” 续接。"
+            )
         if job["state"] == "applying" and job["id"] not in self.model_requests:
             job["pause_after_operation"] = True
             self.save(job)
@@ -828,15 +1205,32 @@ class Tasks:
                         job["repair_submitted"] = True
                         self.save(job)
                         release = job["applied_plan"].get("trial_release")
+                        approved_by = job.get("approval", {}).get("by")
+                        scheduled = (
+                            job["applied_plan"]["steps"][0]["action"] == "schedule"
+                        )
                         try:
                             result = await self.client.call(
                                 job["instance"],
                                 "apply_plan",
                                 {
-                                    key: value
-                                    for key, value in job["applied_plan"].items()
-                                    if key
-                                    not in ("id", "plan_id", "continuation", "reviewed")
+                                    **{
+                                        key: value
+                                        for key, value in job["applied_plan"].items()
+                                        if key
+                                        not in (
+                                            "id",
+                                            "plan_id",
+                                            "continuation",
+                                            "reviewed",
+                                            "approval_code",
+                                        )
+                                    },
+                                    **(
+                                        {"schedule_approved_by": approved_by}
+                                        if scheduled
+                                        else {}
+                                    ),
                                 },
                                 operation_id=key,
                                 task_id=job["id"],
@@ -846,8 +1240,16 @@ class Tasks:
                                         "before_release": lambda: self.submit_release(
                                             job
                                         ),
-                                        "release_submitted": job.get(
-                                            "release_submitted", False
+                                        "release_checkpoint": job.get(
+                                            "release_checkpoint"
+                                        )
+                                        or (
+                                            {"state": "unknown"}
+                                            if job.get("release_submitted")
+                                            else None
+                                        ),
+                                        "record_release": lambda checkpoint: (
+                                            self.record_release(job, checkpoint)
                                         ),
                                     }
                                     if release
@@ -873,6 +1275,7 @@ class Tasks:
                             job.setdefault("repairs", []).append(
                                 {
                                     "operation": key,
+                                    "approved_by": approved_by,
                                     "result": result,
                                     "environment": job["applied_plan"].get(
                                         "environment", "production"
@@ -883,9 +1286,17 @@ class Tasks:
                             job["pending"].append(
                                 {
                                     "sender": "system",
-                                    "text": "已批准修复的执行结果："
+                                    "text": (
+                                        "已批准定时计划的登记结果："
+                                        if scheduled
+                                        else "已批准修复的执行结果："
+                                    )
                                     + json.dumps(result, ensure_ascii=False)
-                                    + "。请读取状态和日志验证，不要把进程启动直接视为故障解决。",
+                                    + (
+                                        "。仅确认登记，不代表已经执行定时维护。"
+                                        if scheduled
+                                        else "。请读取状态和日志验证，不要把进程启动直接视为故障解决。"
+                                    ),
                                 }
                             )
                         except ReleaseDeferred as exc:
@@ -895,28 +1306,36 @@ class Tasks:
                         except RemoteError as exc:
                             if (
                                 release
-                                and job.get("release_submitted")
+                                and (
+                                    job.get("release_checkpoint")
+                                    or job.get("release_submitted")
+                                )
                                 and exc.operation is None
                             ):
                                 self.pause(
                                     job, f"正式服操作 {key} 的提交结果尚未确认：{exc}"
                                 )
                                 break
-                            # A definitive failed operation is investigated, not submitted again.
+                            # Investigate the original operation instead of replaying it.
                             job["failed_operation"] = key
                             applied = job["applied_plan"]
+                            execution_state = (
+                                exc.operation.get("execution_state")
+                                if exc.operation
+                                else None
+                            )
+                            not_executed = execution_state == "not_executed"
+                            unknown = execution_state == "unknown"
                             test_only = applied.get("environment") == "test" or all(
                                 step["action"] in ("prepare_test", "snapshot")
                                 for step in applied["steps"]
                             )
-                            test_only = test_only or bool(
-                                release
-                                and exc.operation
-                                and exc.operation.get("execution_state")
-                                == "not_executed"
+                            test_only = not unknown and (
+                                test_only or bool(release and not_executed)
                             )
                             if not test_only or not exc.operation:
-                                self.end_plan(job, "failed", f"批次执行失败：{key}")
+                                reason = "批次状态不确定" if unknown else "批次执行失败"
+                                self.end_plan(job, "failed", f"{reason}：{key}")
                             self.log(
                                 job, "repair_failed", operation=key, error=str(exc)
                             )
@@ -930,7 +1349,11 @@ class Tasks:
                                 job["instance"], "status", task_id=job["id"]
                             )
                             job.setdefault("repairs", []).append(
-                                {"operation": key, "failure": record}
+                                {
+                                    "operation": key,
+                                    "approved_by": approved_by,
+                                    "failure": record,
+                                }
                             )
                             console = await self.client.call(
                                 job["instance"],
@@ -941,9 +1364,15 @@ class Tasks:
                             job["pending"].append(
                                 {
                                     "sender": "system",
-                                    "text": f"修复失败，批次 {key}。保留失败现场，不自动回滚或重跑。"
+                                    "text": (
+                                        f"批次 {key} 状态不确定，需先用 mc_operation_read 和现场核实。"
+                                        if unknown
+                                        else f"修复未执行，批次 {key}。"
+                                        if not_executed
+                                        else f"修复失败，批次 {key}。保留失败现场，不自动回滚或重跑。"
+                                    )
                                     + (
-                                        "仅试服受影响；查清原因后可在原批准范围内调整。"
+                                        "查清原因后可在原批准范围内调整。"
                                         if test_only
                                         else "原方案已停止；继续诊断，新的修改须重新审核和批准。"
                                     )
@@ -959,6 +1388,7 @@ class Tasks:
                             )
                         job["operation"] = None
                         job.pop("release_submitted", None)
+                        job.pop("release_checkpoint", None)
                         job["state"] = "running"
                         self.save(job)
                         if job.pop("pause_after_operation", False):
@@ -1092,6 +1522,7 @@ class Tasks:
             finally:
                 self.save(job)
                 self.workers.pop(job["id"], None)
+                self.forget_settled(job)
 
     async def close(self):
         self.closing = True

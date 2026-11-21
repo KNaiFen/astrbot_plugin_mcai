@@ -20,6 +20,8 @@
       <a href="#servers"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="7" rx="2"/><rect x="4" y="13" width="16" height="7" rx="2"/><path d="M8 7.5h.01M8 16.5h.01"/></svg>服务端</a>
       <a href="#host"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16m-4-14v4m-8 2v4m5 2v4"/></svg>B 主机</a>
       <a href="#incidents"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s7-3 7-9V5l-7-3-7 3v8c0 6 7 9 7 9zm0-15v5m0 3h.01"/></svg>主动留证</a>
+      <a href="#rules"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5zM9 9h6m-6 5h6"/></svg>运行时规则</a>
+      <a href="#storage"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 13h16m-4 3h.01"/></svg>数据占用</a>
       <a href="#diagnostics"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9zm0 0v6h6M9 13h6m-6 4h6"/></svg>诊断导出</a>
     </nav>
     <div class="settings-content">
@@ -84,6 +86,20 @@
             <p class="hint">测试会发送少量模型与搜索请求，不执行 MC 操作或发群消息。执行进度汇报需 Responses commentary，默认关闭；未观察到汇报不等于不支持。</p>
             <div id="capabilities" aria-live="polite"></div>
           </div>
+          <div class="panel" aria-labelledby="model-usage-title">
+            <h3 id="model-usage-title">模型用量与费用保护</h3>
+            <div class="columns">
+              <label>单任务 token 上限（0 不限）<input type="number" name="task_token_limit" min="0" step="1" value="0"></label>
+              <label>连续 API 失败后暂停（分钟，0 关闭）<input type="number" name="model_failure_pause_minutes" min="0" step="1" value="0"></label>
+            </div>
+            <label>每百万 token 单价<textarea name="model_prices" rows="2" placeholder="每行一项：提供商ID=CNY:2:8:0.2"></textarea></label>
+            <p class="hint">按货币、输入、输出、缓存的顺序填写；留空只显示 token。费用为按已返回用量计算的估算。</p>
+            <div class="actions">
+              <button type="submit">保存 A 设置</button>
+              <button type="button" id="refresh-model-usage" class="secondary">刷新用量</button>
+            </div>
+            <div id="model-usage" aria-live="polite"></div>
+          </div>
         </section>
         <section id="groups" class="settings-section" aria-labelledby="groups-title">
           <header class="section-heading">
@@ -97,6 +113,11 @@
             </div>
             <label>故障通知群<textarea name="incident_routes" rows="2" placeholder="示例：survival=onebot:GroupMessage:123456"></textarea></label>
             <p class="hint">每行指定一个实例及通知群；留空只在 B 主机保存故障现场。</p>
+            <label>B 失联告警分钟数<input type="number" name="host_offline_alert_minutes" min="1" step="1" value="3" required></label>
+            <div class="columns">
+              <label class="toggle"><input type="checkbox" name="allow_member_ask">允许群成员使用 /mcaiask</label>
+              <label>群成员问答冷却秒数<input type="number" name="member_ask_cooldown_seconds" min="0" step="1" value="300"></label>
+            </div>
             <label>QQ 长回复合集门槛（字符数）<input type="number" name="group_forward_threshold" min="1" step="1" required></label>
             <p class="hint">默认 400。单条回复超过此值时发成一张合集卡片。</p>
             <div class="actions"><button type="submit">保存 A 设置</button></div>
@@ -154,23 +175,138 @@
           </form>
         </div>
       </section>
+      <section id="rules" class="settings-section" aria-labelledby="rules-title">
+        <header class="section-heading">
+          <h2 id="rules-title">运行时规则</h2>
+          <p>升级保留现有文件。查看与打包模板的差异，再决定采用模板或保留人工合并的内容。</p>
+        </header>
+        <div id="rule-list" class="rule-list" aria-live="polite"></div>
+        <dialog id="adopt-rule-dialog" aria-labelledby="adopt-rule-title" aria-describedby="adopt-rule-message">
+          <form method="dialog">
+            <h2 id="adopt-rule-title">采用新模板</h2>
+            <p id="adopt-rule-message"></p>
+            <div class="actions">
+              <button value="cancel" class="secondary" autofocus>取消</button>
+              <button value="adopt">备份并覆盖</button>
+            </div>
+          </form>
+        </dialog>
+      </section>
+      <section id="storage" class="settings-section" aria-labelledby="storage-title">
+        <header class="section-heading">
+          <h2 id="storage-title">数据占用</h2>
+          <p>按需查看本地和 B 主机的文件大小与数量。扫描未完成时显示已统计的部分。</p>
+        </header>
+        <div class="panel">
+          <div class="actions"><button type="button" id="refresh-storage" class="secondary">统计占用</button></div>
+          <h3>A 端</h3>
+          <div id="storage-a" class="storage-report" aria-live="polite"></div>
+          <h3>B 端</h3>
+          <div id="storage-b" class="storage-report" aria-live="polite"></div>
+          <div class="actions">
+            <button type="button" data-vacuum="a" class="secondary">压缩 A 数据库</button>
+            <button type="button" data-vacuum="b" class="secondary">压缩 B 数据库</button>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>按月清理日志归档</h3>
+          <div class="columns">
+            <label>位置<select id="logs-side"><option value="a">A 端</option><option value="b">B 端</option></select></label>
+            <label>归档月份<select id="logs-month"></select></label>
+          </div>
+          <div class="actions">
+            <button type="button" id="refresh-logs" class="secondary">刷新日志归档</button>
+            <button type="button" id="open-logs" disabled>删除所选月…</button>
+          </div>
+          <div id="log-archives" class="storage-report"></div>
+          <dialog id="logs-dialog" aria-labelledby="logs-title">
+            <form method="dialog">
+              <h3 id="logs-title">确认删除日志归档</h3>
+              <p id="logs-confirm"></p>
+              <div class="actions">
+                <button value="cancel" class="secondary" autofocus>取消</button>
+                <button value="delete">确认删除</button>
+              </div>
+            </form>
+          </dialog>
+        </div>
+        <div class="panel">
+          <h3>清理已结束任务</h3>
+          <p class="hint">按任务或结算天数选择，再预览类别及大小。A 端留痕、网页和发件记录会先归档；工作区、B 端文件和备份不会入包。</p>
+          <div id="cleanup-selection">
+            <label>清理方式<select id="cleanup-mode"><option value="single">单个任务</option><option value="batch">按天数批量清理</option></select></label>
+            <label id="cleanup-task-label">已结算任务<select id="cleanup-task"><option value="">请先刷新任务</option></select></label>
+            <label id="cleanup-days-label" hidden>已结算超过多少天<input type="number" id="cleanup-days" min="1" step="1" value="30"></label>
+            <div class="columns">
+              <div>
+                <strong>A 端</strong>
+                <label class="toggle"><input type="checkbox" value="traces">任务留痕</label>
+                <label class="toggle"><input type="checkbox" value="web_page">网页记录</label>
+                <label class="toggle"><input type="checkbox" value="workspace">工作区</label>
+                <label class="toggle"><input type="checkbox" value="outbox">已结算的发件记录</label>
+              </div>
+              <div>
+                <strong>B 端</strong>
+                <label class="toggle"><input type="checkbox" value="jobs">后台输出与产物</label>
+                <label class="toggle"><input type="checkbox" value="downloads">未被安装引用的暂存下载</label>
+                <label class="toggle"><input type="checkbox" value="backups">正式服备份（需单独确认）</label>
+              </div>
+            </div>
+          </div>
+          <div class="actions">
+            <button type="button" id="refresh-cleanup" class="secondary">刷新任务</button>
+            <button type="button" id="preview-cleanup" class="secondary">预览清理</button>
+            <button type="button" id="open-cleanup" disabled>确认清理…</button>
+          </div>
+          <p id="cleanup-result" class="hint" role="status"></p>
+          <div id="cleanup-preview" class="storage-report"></div>
+          <label>自动清理已结算任务数据的天数（0 关闭）<input form="a-settings" type="number" name="auto_cleanup_days" min="0" step="1" value="0" required></label>
+          <p class="hint">开启后每天最多执行一次，保留备份，只写本地审计。</p>
+          <div class="actions"><button type="submit" form="a-settings">保存 A 设置</button></div>
+        </div>
+        <dialog id="cleanup-dialog" aria-labelledby="cleanup-title">
+          <form method="dialog">
+            <h3 id="cleanup-title">确认清理所列数据</h3>
+            <p>执行后将删除预览列出的数据。请核对路径、大小和现有备份。</p>
+            <div id="cleanup-backup-warning" hidden>
+              <label class="toggle"><input id="confirm-cleanup-backups" type="checkbox">单独确认：删除所列 B 端正式服备份，删除后无法用这些备份恢复。</label>
+            </div>
+            <div class="actions">
+              <button type="submit" class="secondary" value="cancel" formnovalidate autofocus>取消</button>
+              <button type="submit" value="execute">执行清理</button>
+            </div>
+          </form>
+        </dialog>
+      </section>
       <section id="diagnostics" class="settings-section" aria-labelledby="diagnostics-title">
         <header class="section-heading">
           <h2 id="diagnostics-title">诊断导出</h2>
+          <p id="outbox-status" aria-live="polite"></p>
           <p>按时间和任务导出命令、模型、审核、工具及消息记录。B 离线时仍可导出 A 已保存的记录。</p>
         </header>
         <div class="panel">
+          <div id="outbox-list"></div>
           <div class="columns">
             <label>开始时间<input id="diagnostics-start" type="datetime-local"></label>
             <label>结束时间<input id="diagnostics-end" type="datetime-local"></label>
           </div>
-          <label>任务（可多选，留空导出全部）<select id="diagnostics-tasks" multiple size="4"></select></label>
+          <label>任务和只读问答（可多选，留空导出全部）<select id="diagnostics-tasks" multiple size="4"></select></label>
           <div class="actions">
-            <button id="refresh-diagnostics" type="button" class="secondary">刷新任务</button>
+            <button id="refresh-diagnostics" type="button" class="secondary">刷新任务与发件箱</button>
             <button id="export-diagnostics" type="button">导出 ZIP</button>
           </div>
           <p id="diagnostics-result" class="hint" role="status"></p>
         </div>
+        <dialog id="discard-outbox-dialog" aria-labelledby="discard-outbox-title">
+          <form method="dialog">
+            <h3 id="discard-outbox-title">确认丢弃消息</h3>
+            <p id="discard-outbox-message"></p>
+            <div class="actions">
+              <button type="submit" class="secondary" value="cancel" autofocus>取消</button>
+              <button type="submit" value="discard">确认丢弃</button>
+            </div>
+          </form>
+        </dialog>
       </section>
     </div>
   </div>

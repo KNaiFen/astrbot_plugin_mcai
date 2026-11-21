@@ -14,4 +14,4 @@
 - `design/`：实际采用的架构、约束和失败处理。
 - `development/`：开发、测试、构建与第三方来源。完整源码的 `docs/development/records/` 另存发行和验证证据；安装包附现行指南。
 
-当前产品版本为 **0.18.0**，A、B 和托管窗口使用 `mcai-8`；Probe 版本为 **0.5.0**。配置以 A 的 `_conf_schema.json`、B 的 `host.example.json` 和 `instances.example.json` 为入口，模型工具契约由源码中的 `mcai/tool_schemas.py` 定义。安装时的三份[运行时规则](usage/configuration.md#运行时规则)和源码根目录的开发规则各有用途。
+当前产品版本为 **0.19.0**，A、B 和托管窗口使用 `mcai-9`；Probe 版本为 **0.5.0**。配置以 A 的 `_conf_schema.json`、B 的 `host.example.json` 和 `instances.example.json` 为入口，模型工具契约由源码中的 `mcai/tool_schemas.py` 定义。安装时的三份[运行时规则](usage/configuration.md#运行时规则)和源码根目录的开发规则各有用途。

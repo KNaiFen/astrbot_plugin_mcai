@@ -1,6 +1,7 @@
 # 上游源码与本地研究副本
 /.upstream/
 /upstream/
+/.codegraph/
 
 # Python环境、缓存与安装元数据
 .venv/

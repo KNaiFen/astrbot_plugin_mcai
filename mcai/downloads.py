@@ -6,11 +6,12 @@ import json
 import os
 import time
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlsplit
 
 import aiohttp
 
 from .protocol import PRODUCT_VERSION
+from .public_http import PublicResolver, get_public_url
 
 USER_AGENT = f"mcai/{PRODUCT_VERSION}"
 MODRINTH = "https://api.modrinth.com/v2"
@@ -20,8 +21,9 @@ LOADERS = {"forge": 1, "fabric": 4, "quilt": 5, "neoforge": 6}
 
 
 class Downloads:
-    def __init__(self, store, config):
+    def __init__(self, store, config, *, resolver=None):
         self.store, self.config = store, config
+        self.resolver = resolver if resolver is not None else PublicResolver()
 
     def headers(self, url):
         headers = {"User-Agent": USER_AGENT}
@@ -221,56 +223,37 @@ class Downloads:
             if jobs.stopped(key):
                 return
             try:
-                url = metadata["url"]
-                if urlsplit(url).scheme not in ("http", "https"):
-                    raise ValueError("下载地址必须使用 HTTP 或 HTTPS")
-                async with aiohttp.ClientSession(
-                    trust_env=True, timeout=aiohttp.ClientTimeout(total=600)
-                ) as session:
-                    for redirect in range(6):
-                        async with session.get(
-                            url, headers=self.headers(url), allow_redirects=False
-                        ) as response:
-                            if 300 <= response.status < 400:
-                                url = urljoin(url, response.headers["Location"])
-                                if urlsplit(url).scheme not in ("http", "https"):
-                                    raise ValueError("下载重定向必须使用 HTTP 或 HTTPS")
-                                continue
-                            response.raise_for_status()
-                            hashes = {
-                                name: hashlib.new(name)
-                                for name in {"sha256", *metadata["hashes"]}
-                            }
-                            size = 0
-                            reported_at = 0
-                            with partial.open("wb") as output:
-                                async for chunk in response.content.iter_chunked(
-                                    262144
-                                ):
-                                    if jobs.stopped(key):
-                                        return
-                                    size += len(chunk)
-                                    if size > self.config.get(
-                                        "download_max_bytes", 2 * 1024**3
-                                    ):
-                                        raise ValueError(
-                                            "下载超过 download_max_bytes 限制"
-                                        )
-                                    output.write(chunk)
-                                    for hasher in hashes.values():
-                                        hasher.update(chunk)
-                                    if time.monotonic() - reported_at >= 0.5:
-                                        jobs.update(
-                                            key,
-                                            progress={
-                                                "bytes": size,
-                                                "attempt": attempt + 1,
-                                            },
-                                        )
-                                        reported_at = time.monotonic()
-                            break
-                    else:
-                        raise ValueError("下载重定向超过 5 次")
+                async with get_public_url(
+                    metadata["url"],
+                    resolver=self.resolver,
+                    timeout=600,
+                    headers=self.headers,
+                ) as response:
+                    response.raise_for_status()
+                    hashes = {
+                        name: hashlib.new(name)
+                        for name in {"sha256", *metadata["hashes"]}
+                    }
+                    size = 0
+                    reported_at = 0
+                    with partial.open("wb") as output:
+                        async for chunk in response.content.iter_chunked(262144):
+                            if jobs.stopped(key):
+                                return
+                            size += len(chunk)
+                            if size > self.config.get(
+                                "download_max_bytes", 2 * 1024**3
+                            ):
+                                raise ValueError("下载超过 download_max_bytes 限制")
+                            output.write(chunk)
+                            for hasher in hashes.values():
+                                hasher.update(chunk)
+                            if time.monotonic() - reported_at >= 0.5:
+                                jobs.update(
+                                    key,
+                                    progress={"bytes": size, "attempt": attempt + 1},
+                                )
+                                reported_at = time.monotonic()
                 for name, expected in metadata["hashes"].items():
                     if hashes[name].hexdigest().lower() != expected.lower():
                         raise ValueError(f"下载 {name} 校验不匹配，文件未安装")

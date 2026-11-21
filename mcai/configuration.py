@@ -4,6 +4,7 @@ import codecs
 import ctypes
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -15,6 +16,15 @@ from .environment import canonical_directory
 RESTART_PROMPT = "Start server in 10 seconds. Press ctrl+c to stop right now."
 DEFAULT_INCIDENT_RESTART_WINDOW = 120
 DEFAULT_INCIDENT_CAPACITY = 256
+ALERT_DEFAULTS = {
+    "alert_window": True,
+    "alert_window_minutes": 3,
+    "alert_disk": True,
+    "alert_disk_gib": 10,
+    "alert_performance": False,
+    "alert_mspt": 50,
+    "alert_performance_minutes": 3,
+}
 
 
 def launcher_identity(config):
@@ -40,10 +50,10 @@ def launcher_identity(config):
 def write_json(path, value):
     path = Path(path)
     temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    data = (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    temporary.write_bytes(data)
     temporary.replace(path)
+    return data
 
 
 def powershell_path(configured=""):
@@ -147,6 +157,7 @@ def normalize_instances(values, base, shell):
             "test_port",
             "test_copy_paths",
             "incident_watch",
+            *ALERT_DEFAULTS,
         }
         if set(value) - allowed:
             raise ValueError(
@@ -169,6 +180,13 @@ def normalize_instances(values, base, shell):
             raise ValueError("stop_timeout 必须是秒数")
         if type(value.get("incident_watch", False)) is not bool:
             raise ValueError("incident_watch 必须是布尔值")
+        for key, default in ALERT_DEFAULTS.items():
+            setting = value.get(key, default)
+            if isinstance(default, bool):
+                if type(setting) is not bool:
+                    raise ValueError(f"{name}：{key} 必须是布尔值")
+            elif type(setting) not in (int, float) or not 0 < setting < math.inf:
+                raise ValueError(f"{name}：{key} 必须是有限正数")
         if "test_address" in value or "test_port" in value:
             if (
                 not isinstance(value.get("test_address"), str)
@@ -260,6 +278,14 @@ def load_host(path):
     )
     config["data_dir"] = str(
         (path.parent / config.get("data_dir", "runtime/host")).resolve()
+    )
+    value = config.get("scheduled_backup_dir", "")
+    if not isinstance(value, str):
+        raise ValueError("scheduled_backup_dir 必须是目录路径")
+    config["scheduled_backup_dir"] = str(
+        (path.parent / value).resolve()
+        if value.strip()
+        else Path(config["data_dir"]) / "backups"
     )
     config["workspace_dir"] = str(
         (

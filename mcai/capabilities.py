@@ -15,6 +15,24 @@ from .review import digest
 from .search import alpha_search
 from .tracing import traced_provider
 
+IMAGE_PROBE = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAN0lEQVR4n"
+    "O3RMQ0AMAzEQLf8OacQ3CWbD8BHcg4Mm+7qOh340A9UiVSJVIlUiVSJVIlUiVSJMA+hxgE/8m7Sp"
+    "QAAAABJRU5ErkJggg=="
+)
+
+
+def image_unsupported(error):
+    text = str(error).lower()
+    return (
+        getattr(error, "status_code", None) in (400, 415, 422)
+        and re.search(r"\b(?:image(?:_url|s)?|input_image|vision|multi.?modal)\b", text)
+        and re.search(
+            r"unsupported|not support|does not accept|only support|unknown|unrecognized|不支持",
+            text,
+        )
+    )
+
 
 def provider_identity(provider, settings):
     config = provider.provider_config
@@ -63,7 +81,9 @@ async def test_capabilities(main, review, settings, progress, *, store=None):
         except Exception as exc:
             status = getattr(exc, "status_code", None)
             unsupported = (
-                status in (400, 404, 405, 422)
+                image_unsupported(exc)
+                if name == "image"
+                else status in (400, 404, 405, 422)
                 and not retryable(exc)
                 and bool(
                     re.search(
@@ -115,6 +135,21 @@ async def test_capabilities(main, review, settings, progress, *, store=None):
         return response.role != "err" and "MCAI_OK" in (response.completion_text or "")
 
     await check("conversation", conversation)
+
+    async def image():
+        response = await selected.text_chat(
+            prompt="这张图只有一种颜色。用一个英文单词写出你看到的颜色：red、green 或 blue。",
+            image_urls=[IMAGE_PROBE],
+            contexts=[],
+            func_tool=None,
+            request_max_retries=1,
+        )
+        return (
+            response.role != "err"
+            and (response.completion_text or "").strip().lower().rstrip(".。") == "blue"
+        )
+
+    await check("image", image)
 
     async def streaming():
         complete = None
@@ -245,7 +280,10 @@ async def test_capabilities(main, review, settings, progress, *, store=None):
     search = await check(
         "alpha_search",
         lambda: alpha_search(
-            main, session_id, {"mode": "search", "query": "Minecraft official website"}
+            main,
+            session_id,
+            {"mode": "search", "query": "Minecraft official website"},
+            store=store,
         ),
     )
     if search:
@@ -260,7 +298,10 @@ async def test_capabilities(main, review, settings, progress, *, store=None):
         await check(
             "alpha_open",
             lambda: alpha_search(
-                main, session_id, {"mode": "open", "reference": reference}
+                main,
+                session_id,
+                {"mode": "open", "reference": reference},
+                store=store,
             ),
         )
         await check(
@@ -269,6 +310,7 @@ async def test_capabilities(main, review, settings, progress, *, store=None):
                 main,
                 session_id,
                 {"mode": "find", "reference": reference, "pattern": "Minecraft"},
+                store=store,
             ),
         )
 

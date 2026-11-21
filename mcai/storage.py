@@ -3,10 +3,16 @@ import sqlite3
 import time
 from pathlib import Path
 
+from .monthly_logs import append as append_log
+
 
 class Store:
-    def __init__(self, directory):
+    def __init__(self, directory, *, read_only=False):
         self.directory = Path(directory)
+        if read_only:
+            path = (self.directory / "state.sqlite3").resolve()
+            self.db = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=2)
+            return
         self.directory.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.directory / "state.sqlite3")
         self.db.execute("PRAGMA journal_mode=WAL")
@@ -32,13 +38,17 @@ class Store:
         """)
 
     def save(self, kind, key, body):
+        self.save_many((kind, key, body))
+
+    def save_many(self, *records):
         with self.db:
-            self.db.execute(
-                "INSERT INTO records VALUES (?, ?, ?) ON CONFLICT(kind,id) DO UPDATE SET body=excluded.body"
-                if kind == "outbox"
-                else "INSERT OR REPLACE INTO records VALUES (?, ?, ?)",
-                (kind, key, json.dumps(body, ensure_ascii=False)),
-            )
+            for kind, key, body in records:
+                self.db.execute(
+                    "INSERT INTO records VALUES (?, ?, ?) ON CONFLICT(kind,id) DO UPDATE SET body=excluded.body"
+                    if kind == "outbox"
+                    else "INSERT OR REPLACE INTO records VALUES (?, ?, ?)",
+                    (kind, key, json.dumps(body, ensure_ascii=False)),
+                )
 
     def get(self, kind, key):
         row = self.db.execute(
@@ -53,6 +63,30 @@ class Store:
                 "SELECT body FROM records WHERE kind=? ORDER BY rowid", (kind,)
             )
         ]
+
+    def task_records(self, *, active=False, selected=None):
+        # A single read sees both parts at the same revision even during export.
+        sql = """
+            SELECT task.body, history.body FROM records AS task
+            LEFT JOIN records AS history
+                ON history.kind='task_messages' AND history.id=task.id
+            WHERE task.kind='task'
+        """
+        if active:
+            sql += """ AND (
+                json_extract(task.body, '$.state') NOT IN ('done', 'stopped')
+                OR json_extract(task.body, '$.cancel_pending')=1
+                OR json_extract(task.body, '$.cleanup.pending')=1
+                OR json_extract(task.body, '$.archive_state') IN ('pending', 'ready'))"""
+        params = ()
+        if selected is not None:
+            sql += " AND task.id IN (SELECT value FROM json_each(?))"
+            params = (json.dumps(list(selected)),)
+        for body, history in self.db.execute(sql + " ORDER BY task.rowid", params):
+            task = json.loads(body)
+            if history is not None:
+                task["messages"] = json.loads(history)
+            yield task
 
     def event(self, topic, body):
         with self.db:
@@ -71,26 +105,49 @@ class Store:
                 params.append(value)
         return [json.loads(row[0]) for row in self.db.execute(sql, params)]
 
-    def pending_outbox(self, limit=100):
+    def pending_outbox(self, limit=100, *, now=None, include_failed=False):
         return [
             json.loads(row[0])
             for row in self.db.execute(
-                "SELECT body FROM records WHERE kind='outbox' AND json_extract(body, '$.sent')=0 AND COALESCE(json_extract(body, '$.attempts'),0)<3 ORDER BY rowid LIMIT ?",
-                (limit,),
+                """SELECT body FROM records
+                WHERE kind='outbox' AND json_extract(body, '$.sent')=0
+                AND (? OR COALESCE(json_extract(body, '$.failed'),0)=0)
+                AND (? IS NULL OR COALESCE(json_extract(body, '$.retry_at'), 0)<=?)
+                AND (? IS NULL OR json_extract(body, '$.single_fault')=1 OR rowid IN (
+                    SELECT MIN(rowid) FROM records
+                    WHERE kind='outbox' AND json_extract(body, '$.sent')=0
+                    AND COALESCE(json_extract(body, '$.failed'),0)=0
+                    AND COALESCE(json_extract(body, '$.single_fault'),0)=0
+                    GROUP BY json_extract(body, '$.origin')))
+                ORDER BY rowid LIMIT ?""",
+                (include_failed, now, now, now, limit),
             )
         ]
 
+    def outbox_probe(self, item):
+        row = self.db.execute(
+            """SELECT body FROM records
+            WHERE kind='outbox' AND json_extract(body, '$.sent')=0
+            AND COALESCE(json_extract(body, '$.failed'),0)=0
+            AND COALESCE(json_extract(body, '$.single_fault'),0)=0
+            AND json_extract(body, '$.origin')=?
+            AND rowid > (SELECT rowid FROM records WHERE kind='outbox' AND id=?)
+            ORDER BY rowid LIMIT 1""",
+            (item["origin"], item["id"]),
+        ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def outbox_status(self):
+        row = self.db.execute(
+            """SELECT COUNT(*) OVER (), json_extract(body, '$.error')
+            FROM records WHERE kind='outbox' AND json_extract(body, '$.sent')=0
+            ORDER BY json_extract(body, '$.error_at') DESC, rowid DESC LIMIT 1"""
+        ).fetchone()
+        count, error = row if row else (0, None)
+        return {"pending": count, "latest_error": error}
+
     def live_tasks(self):
-        return [
-            json.loads(row[0])
-            for row in self.db.execute(
-                """SELECT body FROM records WHERE kind='task' AND (
-                json_extract(body, '$.state') NOT IN ('done', 'stopped')
-                OR json_extract(body, '$.cancel_pending')=1
-                OR json_extract(body, '$.cleanup.pending')=1
-                OR json_extract(body, '$.archive_state') IN ('pending', 'ready')) ORDER BY rowid"""
-            )
-        ]
+        return list(self.task_records(active=True))
 
     def job_batch(self, key, rows, fields):
         job = self.get("background_job", key)
@@ -116,8 +173,11 @@ class Store:
 
     def log(self, topic, **fields):
         entry = {"time": time.time(), "topic": topic, **fields}
-        with (self.directory / "audit.jsonl").open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        append_log(
+            self.directory / "audit.jsonl",
+            (json.dumps(entry, ensure_ascii=False) + "\n").encode(),
+            entry["time"],
+        )
 
     def close(self):
         self.db.close()

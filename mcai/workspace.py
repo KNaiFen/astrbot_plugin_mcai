@@ -1,5 +1,6 @@
 import asyncio
 import codecs
+import heapq
 import os
 import subprocess
 import sys
@@ -8,7 +9,7 @@ from pathlib import Path
 import psutil
 
 from .paths import resolve_file
-from .review import verify_scripts
+from .review import digest, verify_scripts
 
 
 class Workspace:
@@ -30,6 +31,12 @@ class Workspace:
         directory = self.path(task_id, args.get("path", "."))
         if not directory.is_dir():
             raise ValueError("工作区路径不是目录")
+        after = args.get("after", "")
+        page = heapq.nsmallest(
+            201,
+            (item for item in directory.iterdir() if item.name > after),
+            key=lambda item: item.name,
+        )
         return {
             "path": str(directory),
             "items": [
@@ -38,20 +45,57 @@ class Workspace:
                     "directory": item.is_dir(),
                     "bytes": item.stat().st_size if item.is_file() else None,
                 }
-                for item in sorted(directory.iterdir(), key=lambda item: item.name)
-            ][:200],
+                for item in page[:200]
+            ],
+            "next_cursor": page[199].name if len(page) > 200 else None,
         }
 
     def read(self, task_id, args):
         self.directory(task_id).mkdir(parents=True, exist_ok=True)
         path = self.path(task_id, args["path"])
-        text = path.read_text(encoding=args.get("encoding", "utf-8"))
+        encoding = args.get("encoding", "utf-8")
         offset = args.get("offset", 0)
-        end = min(len(text), offset + args.get("limit", 12000))
+        with path.open(encoding=encoding) as stream:
+            info = os.fstat(stream.fileno())
+            revision = digest(
+                [str(path), encoding, info.st_ino, info.st_size, info.st_mtime_ns]
+            )
+            if "cursor" in args:
+                if "offset" in args:
+                    raise ValueError("cursor 和 offset 只能指定一个")
+                stamp, separator, position = args["cursor"].partition(":")
+                if (
+                    not separator
+                    or stamp != revision
+                    or len(position) > 64
+                    or not position.isascii()
+                    or not position.isdecimal()
+                ):
+                    raise ValueError("工作区文件或编码已变化，或游标无效，请重新读取")
+                stream.seek(int(position))
+            else:
+                while offset:
+                    skipped = stream.read(min(12000, offset))
+                    if not skipped:
+                        break
+                    offset -= len(skipped)
+            text = stream.read(args.get("limit", 12000))
+            position = stream.tell()
+            more = bool(stream.read(1))
+            current = path.stat()
+            if (info.st_ino, info.st_size, info.st_mtime_ns) != (
+                current.st_ino,
+                current.st_size,
+                current.st_mtime_ns,
+            ):
+                raise ValueError("读取期间工作区文件已变化，请重新读取")
         return {
             "path": args["path"],
-            "text": text[offset:end],
-            "next_offset": end if end < len(text) else None,
+            "text": text,
+            "next_cursor": f"{revision}:{position}" if more else None,
+            "next_offset": args.get("offset", 0) + len(text)
+            if more and "cursor" not in args
+            else None,
         }
 
     async def execute(self, jobs, key, task_id, args):

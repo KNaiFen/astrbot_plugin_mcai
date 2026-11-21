@@ -47,7 +47,7 @@ from .evidence import (
     tool_evidence,
 )
 from .model_budget import BASELINE_FACTORS, estimated_input, record_usage
-from .plans import plan_identity
+from .plans import approval_command, plan_identity
 from .query_cli import QueryError, QueryHelp, parse_query, query_argv, query_operation
 from .review import REVIEW_VERSION, digest, review_material
 from .tool_arguments import argument_error, arguments_for, model_continuations
@@ -198,7 +198,7 @@ class AstrBotAgent:
             provider.input_ready.set()
 
     async def prepare_apply(self, tasks, job):
-        if job.get("release_submitted"):
+        if job.get("release_checkpoint") or job.get("release_submitted"):
             return True
         try:
             await tasks.client.request("GET", f"/operations/{job['operation']}")
@@ -457,7 +457,7 @@ class AstrBotAgent:
                         else None
                     )
                     state = (
-                        "failed"
+                        operation.get("execution_state", "failed")
                         if operation
                         else "unknown"
                         if record.get("state") == "submitted"
@@ -537,6 +537,21 @@ class AstrBotAgent:
                 query_arguments["environment"] = arguments.get(
                     "environment", "production"
                 )
+                if (
+                    action == "incidents"
+                    and query_arguments["mode"] == "show"
+                    and query_arguments["environment"] == "production"
+                    and (
+                        alert := tasks.store.get(
+                            "connection_alert", query_arguments["id"]
+                        )
+                    )
+                ):
+                    if job["origin"] not in alert["origins"]:
+                        raise ValueError("此群没有这条 B 连接告警")
+                    return {
+                        key: value for key, value in alert.items() if key != "origins"
+                    }
                 return await remote(record, action, query_arguments)
             if name == "mc_tools":
                 names = arguments.get("names", [])
@@ -592,11 +607,32 @@ class AstrBotAgent:
                     raise ValueError("搜索提供商不存在")
                 return await task_search(tasks, job, selected, arguments, record["id"])
             if job["instance"] is None and name not in ("mc_say", "mc_pause"):
-                raise ValueError(
-                    "尚未确定服务端，请 mc_instances 查看并 mc_select_instance 绑定；不确定时向群里追问"
+                read_attachment = (
+                    name == "mc_workspace"
+                    and arguments["mode"] == "read"
+                    and tasks.workspace.path(
+                        job["id"], arguments["path"]
+                    ).is_relative_to(
+                        tasks.workspace.directory(job["id"]).resolve() / "attachments"
+                    )
                 )
+                if not read_attachment:
+                    raise ValueError(
+                        "尚未确定服务端，请 mc_instances 查看并 mc_select_instance 绑定；不确定时向群里追问"
+                    )
             if name == "mc_plan_finish":
                 return tasks.finish_plan(job, **arguments)
+            if (
+                name == "mc_propose"
+                and any(step["action"] == "schedule" for step in arguments["steps"])
+                and (
+                    len(arguments["steps"]) != 1
+                    or arguments.get("environment", "production") != "production"
+                    or arguments.get("continuation")
+                    or arguments.get("plan_id")
+                )
+            ):
+                raise ValueError("定时计划只能作为单独的正式服提案，不能沿用多轮批准")
             approved = None
             workspace_exec = name == "mc_workspace" and arguments.get("mode") == "exec"
             if name == "mc_propose" and arguments.get("plan_id"):
@@ -848,7 +884,7 @@ class AstrBotAgent:
                 return {
                     "status": "awaiting_approval",
                     "plan_id": record["id"],
-                    "approval_command": f"/mcaiapply {job['name']}",
+                    "approval_command": approval_command(job),
                 }
             if name == "mc_say":
                 if operation_id := arguments.get("test_operation_id"):
@@ -883,9 +919,13 @@ class AstrBotAgent:
                 tasks.save(job)
                 mode = arguments["mode"]
                 if mode == "list":
-                    return tasks.workspace.list(job["id"], arguments)
+                    return await asyncio.to_thread(
+                        tasks.workspace.list, job["id"], arguments
+                    )
                 if mode == "read":
-                    return tasks.workspace.read(job["id"], arguments)
+                    return await asyncio.to_thread(
+                        tasks.workspace.read, job["id"], arguments
+                    )
                 if mode == "pull":
                     target = tasks.workspace.path(job["id"], arguments["destination"])
                     target.parent.mkdir(parents=True, exist_ok=True)

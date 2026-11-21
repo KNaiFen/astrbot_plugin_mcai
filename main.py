@@ -1,7 +1,13 @@
 import asyncio
+import json
+import re
+import shutil
+import sqlite3
+import time
 import uuid
 from pathlib import Path
 
+import aiohttp
 from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.message_components import At, Node, Nodes, Plain, Reply
@@ -9,14 +15,20 @@ from astrbot.api.star import Context, Star
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .mcai.astrbot_agent import AstrBotAgent
+from .mcai.attachments import message_attachments, receive_attachments, recognize_image
 from .mcai.client import HostClient, RemoteError
 from .mcai.configuration import incident_routes, powershell_path
 from .mcai.downloads import Downloads
 from .mcai.jobs import Jobs
 from .mcai.memory_job import MemoryJob
+from .mcai.model_usage import parse_prices, task_usage
+from .mcai.monthly_logs import A_LOGS, rotate
 from .mcai.paths import workspace_root
+from .mcai.plans import approval_command, plan_text, schedule_time
+from .mcai.readonly import answer_question, server_status
+from .mcai.runtime_rules import install_rules
 from .mcai.storage import Store
-from .mcai.tasks import Tasks, plan_text
+from .mcai.tasks import Tasks, occupies_instance
 from .mcai.tracing import trace_event
 from .mcai.workspace import Workspace
 
@@ -33,6 +45,9 @@ COMMANDS = {
     "mcailist",
     "mcaiplan",
     "mcaipause",
+    "mcaiserver",
+    "mcaiask",
+    "mcaischedule",
 }
 GROUP_MESSAGE_PART_LIMIT = 1800
 DEFAULT_GROUP_FORWARD_THRESHOLD = 400
@@ -70,6 +85,9 @@ class MCAI(Star):
         self.store = Store(
             Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_mcai"
         )
+        for name in A_LOGS:
+            rotate(self.store.directory / name, time.time())
+        install_rules(self.store)
         powershell = config.get("workspace_powershell_path", "")
         if powershell:
             powershell = str((self.store.directory / powershell).resolve())
@@ -78,18 +96,6 @@ class MCAI(Star):
         rules_path = self.store.directory / "AGENTS.md"
         review_rules_path = self.store.directory / "REVIEW_AGENTS.md"
         summary_rules_path = self.store.directory / "SUMMARY_AGENTS.md"
-        for target, source in (
-            (rules_path, "agent_rules.md"),
-            (review_rules_path, "review_rules.md"),
-            (summary_rules_path, "summary_rules.md"),
-        ):
-            if not target.exists():
-                target.write_text(
-                    (Path(__file__).parent / "mcai" / source).read_text(
-                        encoding="utf-8"
-                    ),
-                    encoding="utf-8",
-                )
         self.tasks = Tasks(
             self.store,
             HostClient(
@@ -113,6 +119,8 @@ class MCAI(Star):
                 enable_alpha_search=config.get("enable_alpha_search", False),
             ),
             self.notify,
+            task_token_limit=config.get("task_token_limit", 0),
+            model_failure_pause_minutes=config.get("model_failure_pause_minutes", 0),
             local_jobs=Jobs(self.store),
             downloads=Downloads(
                 self.store,
@@ -133,6 +141,8 @@ class MCAI(Star):
             self, rules_path, review_rules_path, summary_rules_path
         )
         self.incident_worker = asyncio.create_task(self.deliver_incidents())
+        self.ask_workers = {}
+        self.ask_recent = {}
 
         # Providers are loaded after plugins during a cold start, but already
         # exist when a running AstrBot installs or reloads this plugin.
@@ -143,6 +153,189 @@ class MCAI(Star):
     async def on_astrbot_loaded(self):
         await self.tasks.start()
 
+    async def ask(self, event, identity, question):
+        sender = event.get_sender_id()
+        current = self.tasks.client
+        client = HostClient(current.url, current.token, current.fingerprint)
+        try:
+            answer = await answer_question(
+                self.tasks, client, event, identity, question
+            )
+            text = "「只读问答」：" + answer
+            trace_event(self.store, "ask_answer", task=identity, reply=text)
+            self.store.save(
+                "outbox",
+                identity,
+                {
+                    "id": identity,
+                    "task": identity,
+                    "origin": event.unified_msg_origin,
+                    "text": text,
+                    "mention": None,
+                    "sent": False,
+                },
+            )
+        finally:
+            await client.close()
+            self.ask_workers.pop(sender, None)
+
+    def queue_connection_alert(self, url, routes, now, state, error):
+        recovered = error is None
+        identity = uuid.uuid4().hex
+        duration = max(0, int(now - state["since"]))
+        summary = (
+            f"与 B 的连接已恢复，中断约 {duration // 60} 分 {duration % 60} 秒。"
+            if recovered
+            else f"连不上 B：最近一次轮询错误类别为 {error}。"
+        )
+        origins = sorted(set(routes.values()))
+        row = {
+            "id": identity,
+            "type": "alert",
+            "reason": "connection",
+            "recovered": recovered,
+            "time": now,
+            "since": state["since"],
+            "duration_seconds": duration,
+            "error_category": error or state["error_category"],
+            "summary": summary,
+            "origins": origins,
+        }
+        records = [
+            ("connection_alert", identity, row),
+            (
+                "incident_connection",
+                url,
+                {}
+                if recovered
+                else {**state, "alerted": True, "error_category": error},
+            ),
+        ]
+        for index, origin in enumerate(origins):
+            key = f"incident-{identity}-{index}"
+            records.append(
+                (
+                    "outbox",
+                    key,
+                    {
+                        "id": key,
+                        "task": None,
+                        "origin": origin,
+                        "mention": None,
+                        "text": f"{summary}\n/mcainew 任务名 处理事件 {identity}",
+                        "sent": False,
+                    },
+                )
+            )
+        self.store.save_many(*records)
+
+    async def poll_incidents(self, routes, *, now=None):
+        client = self.tasks.client
+        cursor = self.store.get("incident_cursor", client.url) or {"seq": 0}
+        state = self.store.get("incident_connection", client.url) or {}
+        try:
+            async with asyncio.timeout(15):
+                feed = await client.request(
+                    "GET",
+                    "/incidents",
+                    once=True,
+                    params={
+                        "after": cursor["seq"],
+                        "active": json.dumps(
+                            [
+                                [job["directory"], job["id"]]
+                                for job in self.tasks.jobs.values()
+                                if job.get("directory") and occupies_instance(job)
+                            ],
+                            ensure_ascii=False,
+                        ),
+                        **(
+                            {
+                                "stream": "1",
+                                "stream_id": cursor.get("stream_id", ""),
+                                **(
+                                    {"event_id": cursor["event_id"]}
+                                    if "event_id" in cursor
+                                    else {}
+                                ),
+                            }
+                            if routes
+                            else {"active_only": "1"}
+                        ),
+                    },
+                )
+        except (
+            aiohttp.ClientError,
+            RemoteError,
+            OSError,
+            ValueError,
+            TimeoutError,
+        ) as exc:
+            if not routes:
+                return
+            now = time.time() if now is None else now
+            if not state:
+                state = {"since": now, "alerted": False}
+                self.store.save("incident_connection", client.url, state)
+                self.store.log("incident_delivery_pending", error=str(exc))
+            if (
+                not state["alerted"]
+                and now - state["since"]
+                >= self.config.get("host_offline_alert_minutes", 3) * 60
+            ):
+                self.queue_connection_alert(
+                    client.url, routes, now, state, type(exc).__name__
+                )
+            return
+        if not routes:
+            return
+        if state:
+            if state["alerted"]:
+                self.queue_connection_alert(
+                    client.url, routes, time.time() if now is None else now, state, None
+                )
+            else:
+                self.store.save("incident_connection", client.url, {})
+        if not isinstance(feed, dict):
+            raise ValueError("B 未返回留证流标识，请配套更新 A、B")
+        if feed["reset"]:
+            cursor = {"stream_id": feed["stream_id"], "seq": 0}
+        records = []
+        for row in feed["items"]:
+            origin = routes.get(row["instance"]) if row.get("notify", True) else None
+            if origin:
+                key = "incident-" + row["id"]
+                if not self.store.get("outbox", key):
+                    if row.get("type") in ("alert", "schedule"):
+                        body = f"{row['summary']}\n/mcainew 任务名 处理事件 {row['id']}"
+                    else:
+                        body = row["summary"] + (
+                            "，已保留现场。"
+                            if row["console_status"] == "complete"
+                            else "，已记录事件，控制台证据不完整。"
+                        )
+                    records.append(
+                        (
+                            "outbox",
+                            key,
+                            {
+                                "id": key,
+                                "task": None,
+                                "origin": origin,
+                                "mention": None,
+                                "text": f"「{row['instance']}」：{body}",
+                                "sent": False,
+                            },
+                        ),
+                    )
+            cursor = {
+                "stream_id": feed["stream_id"],
+                "seq": row["seq"],
+                "event_id": row["id"],
+            }
+        if feed["items"] or feed["reset"]:
+            self.store.save_many(*records, ("incident_cursor", client.url, cursor))
+
     async def deliver_incidents(self):
         while True:
             try:
@@ -150,47 +343,61 @@ class MCAI(Star):
                     self.config.get("incident_routes", []),
                     self.config.get("group_ids", []),
                 )
-                if routes:
-                    client = self.tasks.client
-                    cursor = self.store.get("incident_cursor", client.url) or {"seq": 0}
-                    async with asyncio.timeout(15):
-                        rows = await client.request(
-                            "GET", "/incidents", params={"after": cursor["seq"]}
-                        )
-                    for row in rows:
-                        origin = routes.get(row["instance"])
-                        if origin and not self.context.get_platform_inst(
-                            origin.split(":", 1)[0]
-                        ):
-                            break
-                        if origin:
-                            key = "incident-" + row["id"]
-                            if not self.store.get("outbox", key):
-                                self.store.save(
-                                    "outbox",
-                                    key,
-                                    {
-                                        "id": key,
-                                        "task": None,
-                                        "origin": origin,
-                                        "mention": None,
-                                        "text": (
-                                            f"「{row['instance']}」：{row['summary']}，"
-                                            + (
-                                                "已保留现场。"
-                                                if row["console_status"] == "complete"
-                                                else "已记录事件，控制台证据不完整。"
-                                            )
-                                        ),
-                                        "sent": False,
-                                    },
-                                )
-                        self.store.save(
-                            "incident_cursor", client.url, {"seq": row["seq"]}
-                        )
-            except (RemoteError, OSError, ValueError, TimeoutError) as exc:
+                await self.poll_incidents(routes)
+            except (
+                RemoteError,
+                OSError,
+                ValueError,
+                TimeoutError,
+                sqlite3.Error,
+            ) as exc:
                 self.store.log("incident_delivery_pending", error=str(exc))
             await asyncio.sleep(15)
+
+    async def manage_schedules(self, tail, is_admin, sender):
+        parts = tail.split()
+        client = self.tasks.client
+        try:
+            if parts == ["list"]:
+                result = await client.request(
+                    "GET", "/schedules", once=True, timeout=5, params={"health": "1"}
+                )
+                states = {"active": "启用", "paused": "暂停"}
+                lines = []
+                for row in result["items"]:
+                    kind = "备份" if row["spec"]["kind"] == "backup" else "重启"
+                    last = row.get("last_result", {}).get("message", "尚未执行")
+                    lines.append(
+                        f"{row['id']} · {row['instance']} · {kind} · {schedule_time(row['spec'])}"
+                        f"\n状态：{states[row['state']]}；下次：{row['next_local'] or '—'}；上次：{last}"
+                    )
+                health = result["health"]
+                if health["status"] != "ready":
+                    lines.insert(0, "B 调度降级：" + health["error"])
+                return "\n".join(lines) or "当前没有定时计划。"
+            if (
+                len(parts) != 2
+                or parts[0] not in ("pause", "resume", "delete")
+                or not re.fullmatch(r"[0-9a-f]{32}", parts[1])
+            ):
+                raise ValueError(
+                    "用法：/mcaischedule list 或 /mcaischedule pause|resume|delete 编号"
+                )
+            if not is_admin:
+                raise ValueError("只有管理员可暂停、恢复或删除定时计划。")
+            action, key = parts
+            await client.request(
+                "POST",
+                f"/schedules/{key}",
+                once=True,
+                timeout=5,
+                json={"action": action, "sender": sender},
+            )
+            return f"计划 {key} 已{'暂停' if action == 'pause' else '恢复' if action == 'resume' else '删除'}。"
+        except (aiohttp.ClientError, OSError, TimeoutError, RemoteError) as exc:
+            raise ValueError(
+                f"无法读取或管理 B 的定时计划：{str(exc) or type(exc).__name__}"
+            ) from exc
 
     async def notify(self, item):
         origin, text, mention = item["origin"], item["text"], item["mention"]
@@ -223,6 +430,19 @@ class MCAI(Star):
                 item.update(parts_sent=sent + index, attempts=1)
                 self.store.save("outbox", item["id"], item)
 
+    async def collect_attachments(self, workspace, task, event, attachments):
+        async def recognize(path):
+            return await recognize_image(
+                self.context,
+                self.store,
+                task,
+                event.unified_msg_origin,
+                self.config.get("provider_id", ""),
+                path,
+            )
+
+        return await receive_attachments(workspace, task, attachments, recognize)
+
     @filter.command("mcaihelp", alias=COMMANDS - {"mcaihelp"}, priority=100)
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=100)
     async def commands(self, event: AstrMessageEvent):
@@ -230,6 +450,8 @@ class MCAI(Star):
         # and must report configuration errors when a command arrives.
         await self.tasks.start()
         text = event.get_message_str().strip()
+        if not text:
+            return
         command, *arguments = text.split(maxsplit=1)
         tail = arguments[0] if arguments else ""
         command = command.removeprefix("/")
@@ -237,9 +459,8 @@ class MCAI(Star):
             return
         group = event.get_group_id()
         sender = event.get_sender_id()
-        is_admin = event.is_admin() or sender in {
-            str(item) for item in self.config.get("admin_ids", [])
-        }
+        admin_ids = {str(item) for item in self.config.get("admin_ids", [])}
+        is_admin = event.is_admin() or sender in admin_ids
         trace = {
             "event_id": uuid.uuid4().hex,
             "task": None,
@@ -254,6 +475,8 @@ class MCAI(Star):
                 if isinstance(part, Reply)
             ],
         }
+        if command == "mcaiask":
+            trace["task"] = "ask-" + trace["event_id"]
         trace_event(self.store, "plugin_command", **trace)
         if self.config.get("group_ids") and group not in {
             str(item) for item in self.config["group_ids"]
@@ -328,6 +551,9 @@ class MCAI(Star):
                 "mcaihelp",
                 "mcailist",
                 "mcaiplan",
+                "mcaiserver",
+                "mcaiask",
+                "mcaischedule",
             }:
                 if not is_admin:
                     status = "rejected"
@@ -337,19 +563,77 @@ class MCAI(Star):
                 yield reply(
                     "管理员创建：“/mcainew 任务名 问题描述”（也可引用问题，附加补充说明）\n"
                     "群成员补充：“/mcaisay 任务名 内容”\n"
-                    "创建和补充均将任务名后的整段文字作为内容，支持空格和换行。\n"
+                    "创建和补充均将任务名后的整段文字作为内容，支持空格和换行，也可以直接附上或引用群文件和图片。\n"
                     "管理员控制成员补充：“/mcaisaymode 任务名 false”（暂停）或 “/mcaisaymode 任务名 true”（开启）；管理员仍可补充\n"
                     "查看：“/mcailist [页码]”、“/mcaistatus 任务名”、“/mcaiplan 任务名”\n"
-                    "管理员批准：“/mcaiapply 任务名”\n"
+                    "直接查询：“/mcaiserver [实例ID]”（不调用模型）、“/mcaiask [实例ID] 问题”（只读，默认仅管理员）\n"
+                    "定时计划：“/mcaischedule list”；管理员可用 “/mcaischedule pause|resume|delete 编号”\n"
+                    "管理员批准：“/mcaiapply 任务名 短码”\n"
                     "管理员暂停／续接：“/mcaipause 任务名”、“/mcairesume 任务名”\n"
                     "管理员中止／验收：“/mcaistop 任务名”、“/mcaidone 任务名”"
                 )
                 return
+            if command == "mcaischedule":
+                text = await self.manage_schedules(tail, is_admin, sender)
+                for part in (text,) if onebot else message_parts(text):
+                    yield reply(part)
+                return
+            if command == "mcaiserver":
+                text = await server_status(
+                    self.tasks.client,
+                    self.store,
+                    "server-" + trace["event_id"],
+                    tail.strip(),
+                    is_admin,
+                )
+                for part in (text,) if onebot else message_parts(text):
+                    yield reply(part)
+                return
+            if command == "mcaiask":
+                if not is_admin and not self.config.get("allow_member_ask", False):
+                    raise ValueError("该指令仅管理员可用。")
+                if not tail.strip():
+                    raise ValueError("用法：“/mcaiask [实例ID] 问题”")
+                if sender in self.ask_workers:
+                    raise ValueError("你已有一条只读问答正在处理，请等结果返回。")
+                if not is_admin:
+                    now = time.monotonic()
+                    cooldown = self.config.get("member_ask_cooldown_seconds", 300)
+                    self.ask_recent = {
+                        key: stamp
+                        for key, stamp in self.ask_recent.items()
+                        if now - stamp < cooldown
+                    }
+                    if sender in self.ask_recent:
+                        remaining = int(cooldown - (now - self.ask_recent[sender])) + 1
+                        raise ValueError(f"只读问答冷却中，请 {remaining} 秒后再试。")
+                    self.ask_recent[sender] = now
+                identity = trace["task"]
+                self.store.save(
+                    "ask",
+                    identity,
+                    {"id": identity, "name": tail.splitlines()[0][:60], "group": group},
+                )
+                self.ask_workers[sender] = asyncio.create_task(
+                    self.ask(event, identity, tail.strip())
+                )
+                return
             if command == "mcailist":
-                yield reply(self.tasks.list_tasks(group, int(tail.strip() or "1")))
+                try:
+                    page = int(tail.strip() or "1")
+                    if page < 1:
+                        raise ValueError
+                except ValueError as exc:
+                    raise ValueError("用法：“/mcailist [页码]”，页码为正整数") from exc
+                yield reply(self.tasks.list_tasks(group, page))
                 return
             name, *arguments = tail.split(maxsplit=1) or [""]
             content = arguments[0] if arguments else ""
+            attachments = (
+                list(message_attachments(event, self.context, admin_ids, is_admin))
+                if command in ("mcainew", "mcaisay") and name
+                else []
+            )
             if command == "mcainew":
                 if not name:
                     raise ValueError(
@@ -358,24 +642,49 @@ class MCAI(Star):
                 quoted = [
                     part for part in event.get_messages() if isinstance(part, Reply)
                 ]
-                report = quoted[0].message_str if quoted else ""
+                report = (quoted[0].message_str or "") if quoted else ""
                 if report and content.strip():
                     report += "\n\n创建者补充：\n" + content.strip()
                 elif not report:
                     report = content.strip()
-                if not report.strip():
+                if not report.strip() and not attachments:
                     raise ValueError(
                         f"用法：“/mcainew {name} 问题描述”，或引用一条包含问题的消息后 “/mcainew {name}”"
                     )
-                job = await self.tasks.create(
-                    group,
-                    event.unified_msg_origin,
-                    name,
-                    None,
-                    sender,
-                    report,
-                )
+                task = uuid.uuid4().hex if attachments else None
+                workspace = self.tasks.workspace
+                options, notices = {}, []
+                try:
+                    if task:
+                        records, notices, saved = await self.collect_attachments(
+                            workspace, task, event, attachments
+                        )
+                        if not saved and not report.strip():
+                            yield reply("\n".join(notices))
+                            return
+                        options = {
+                            "task_id": task,
+                            "attachments": records,
+                            "workspace_root": str(workspace.root) if saved else None,
+                        }
+                    job = await self.tasks.create(
+                        group,
+                        event.unified_msg_origin,
+                        name,
+                        None,
+                        sender,
+                        report,
+                        **options,
+                    )
+                finally:
+                    if task and task not in self.tasks.jobs:
+                        path = workspace.directory(task) / "attachments"
+                        if path.exists():
+                            shutil.rmtree(path)
+                            path.parent.rmdir()
                 trace["task"] = job["id"]
+                if notices:
+                    yield reply("\n".join(notices))
                 return
             if not name:
                 usage = f"/{command} 任务名"
@@ -383,20 +692,43 @@ class MCAI(Star):
                     usage += " 内容"
                 elif command == "mcaisaymode":
                     usage += " true|false"
+                elif command == "mcaiapply":
+                    usage += " 短码"
                 raise ValueError(f"用法：“{usage}”；忘记任务名可用 “/mcailist” 查看。")
             job = self.tasks.find(group, name)
             trace["task"] = job["id"]
             if command == "mcaisay":
-                if not content.strip():
+                if not content.strip() and not attachments:
                     raise ValueError(f"用法：“/mcaisay {name} 内容”，请填写补充信息。")
-                self.tasks.feedback(
-                    job,
-                    sender,
-                    content.strip(),
-                    is_admin=is_admin,
-                    feedback_id=trace["event_id"],
-                )
-                if job["state"] == "paused":
+                records, notices = [], []
+                if attachments:
+                    self.tasks.check_feedback(job, is_admin)
+                    workspace = self.tasks.workspace
+                    root = str(workspace.root)
+                    if job.get("workspace_root", root) != root:
+                        raise ValueError(
+                            "任务工作区位置已变化，请恢复本任务原工作区配置"
+                        )
+                    records, notices, saved = await self.collect_attachments(
+                        workspace, job["id"], event, attachments
+                    )
+                    self.tasks.check_feedback(job, is_admin)
+                    if saved:
+                        job["workspace_root"] = root
+                        self.tasks.save(job)
+                accepted = bool(content.strip() or records)
+                if accepted:
+                    self.tasks.feedback(
+                        job,
+                        sender,
+                        content.strip(),
+                        is_admin=is_admin,
+                        feedback_id=trace["event_id"],
+                        attachments=records,
+                    )
+                if notices:
+                    yield reply("\n".join(notices))
+                if accepted and job["state"] == "paused":
                     yield reply(
                         f"「{name}」：补充已保存；任务仍暂停，管理员使用 “/mcairesume {name}” 后会一起读取。"
                     )
@@ -416,7 +748,7 @@ class MCAI(Star):
                     )
                 )
             elif command == "mcaiapply":
-                self.tasks.approve(job)
+                self.tasks.approve(job, sender, content.strip())
             elif command == "mcaistop":
                 self.tasks.stop(job)
             elif command == "mcaidone":
@@ -431,7 +763,7 @@ class MCAI(Star):
                     + (
                         f"\n任务已暂停，管理员续接：“/mcairesume {name}”"
                         if job["state"] == "paused"
-                        else f"\n管理员批准：“/mcaiapply {name}”"
+                        else f"\n管理员批准：“{approval_command(job)}”"
                     )
                     + f"\n需调整：“/mcaisay {name} 内容”"
                     if job["plan"]
@@ -457,6 +789,7 @@ class MCAI(Star):
                     }[job["state"]]
                     text = (
                         plan_text(approved["snapshot"]["plan"])
+                        + f"\n批准人 QQ：{approved.get('approved_by', '未记录')}"
                         + f"\n方案状态：{plan_status}；任务状态：{task_status}"
                         + (
                             f"\n任务已暂停，管理员续接：“/mcairesume {name}”"
@@ -482,7 +815,7 @@ class MCAI(Star):
                     "running": f"排查中。{audience}可用 “/mcaisay {name} 内容” 补充线索。",
                     "applying": f"修复中。{audience}可用 “/mcaisay {name} 内容” 补充，执行结束后读取。",
                     "waiting": (
-                        f"等待批准。\n查看方案：“/mcaiplan {name}”\n管理员批准：“/mcaiapply {name}”\n需调整：“/mcaisay {name} 内容”"
+                        f"等待批准。\n查看方案：“/mcaiplan {name}”\n管理员批准：“{approval_command(job)}”\n需调整：“/mcaisay {name} 内容”"
                         if job["plan"]
                         else f"等待反馈。{audience}使用 “/mcaisay {name} 内容” 继续；确认问题解决后，管理员使用 “/mcaidone {name}” 验收。"
                     ),
@@ -494,16 +827,31 @@ class MCAI(Star):
                         applying=f"方案已批准，正在执行当前批次。{audience}可用 “/mcaisay {name} 内容” 补充，执行结束后读取。",
                         waiting=f"方案已批准，等待必要补充。{audience}使用 “/mcaisay {name} 内容” 继续。",
                     )
-                if job.get("trial"):
+                if job.get("trial") and not job["plan"]:
                     state["running"] = "正在根据本轮试玩反馈继续排查。"
                     state["waiting"] = (
                         f"正式服已完成启动检查。确认后使用 “/mcaidone {name}” 验收。"
                         if job.get("trial_published")
                         else f"正式服尚未完成发布。{job.get('trial_question') or '等待本轮试玩反馈。'}"
                     )
-                if job.get("release_submitted") and job.get("operation"):
+                if (
+                    job.get("release_checkpoint") or job.get("release_submitted")
+                ) and job.get("operation"):
                     state["applying"] = (
                         f"正在核对正式服操作 {job['operation']} 的进度。"
+                    )
+                usage = task_usage(
+                    self.store,
+                    job["id"],
+                    parse_prices(self.config.get("model_prices", [])),
+                )
+                usage_line = (
+                    f"\n本任务模型请求 {usage['requests']} 次（审核 {usage['review_requests']} 次），"
+                    f"输入／输出 {usage['input_tokens']}／{usage['output_tokens']} token。"
+                )
+                if usage["cost"]:
+                    usage_line += (
+                        " 已配置单价的估算费用：" + "、".join(usage["cost"]) + "。"
                     )
                 yield reply(
                     f"「{name}」：{state.get(job['state'], job['state'])}"
@@ -512,10 +860,17 @@ class MCAI(Star):
                         if say_paused
                         else f"\n普通成员 say：开启。管理员暂停接收：“/mcaisaymode {name} false”"
                     )
+                    + usage_line
                 )
         except ValueError as exc:
             status = "rejected"
-            yield reply(str(exc))
+            text = str(exc)
+            for part in (
+                message_parts(text)
+                if command == "mcaiapply" and not onebot
+                else (text,)
+            ):
+                yield reply(part)
         except Exception as exc:
             status = "failed"
             trace["error"] = f"{type(exc).__name__}: {exc}"
@@ -529,6 +884,10 @@ class MCAI(Star):
         self.incident_worker.cancel()
         await asyncio.gather(self.incident_worker, return_exceptions=True)
         await self.settings.close()
+        questions = tuple(self.ask_workers.values())
+        for question in questions:
+            question.cancel()
+        await asyncio.gather(*questions, return_exceptions=True)
         await self.tasks.close()
         self.workspace_memory.close()
         self.store.close()

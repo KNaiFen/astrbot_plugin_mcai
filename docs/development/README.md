@@ -74,6 +74,8 @@ B生命周期使用HostRunner：在aiohttp的pre_shutdown停止WebSocket输入�
 
 构建校验固定MCA Selector官方JAR的SHA-256，用JDK21构建辅助程序，并构建八目标。首次构建按代理下载Java17和Gradle依赖；可用 `scripts/build_probe.py --java17 ... --java21 ...` 指定JDK。产物在被忽略的 `dist/`：
 
+从 Git 工作树构建时使用 Git 跟踪文件清单。完整源码 ZIP 内附 `SOURCE_MANIFEST.json`，解压到无 Git 的目录后可用同一命令构建。已有匹配版本的 Java 和八个 Probe 构建产物时，可加 `--package-only` 单独打包；清单错误会在构建前报告，三个 ZIP 都通过内部校验后才替换旧包。
+
 - `astrbot_plugin_mcai.zip`：插件入口、配置schema、A所需模块、依赖清单、运行时规则模板、设置视图、README和分层文档。
 - `mcai_windows_host.zip`：Python项目、基础与实例配置示例、模块、规则模板、JAR与许可、README和分层文档。
 - `probe/`：八目标、各目标sources JAR、完整源码ZIP与许可；B包中同样附带。

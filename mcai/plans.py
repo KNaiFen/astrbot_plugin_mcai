@@ -106,6 +106,7 @@ def execution_configuration(config, steps=(), *, diagnostic=False):
 
 
 def execution_configuration_changed(reviewed, current):
+    """Compare only reviewed Java path and stop command; directory identity is separate."""
     return any(
         reviewed[key] != current.get(key)
         for key in ("java_path", "stop_command")
@@ -130,6 +131,20 @@ def plan_identity(plan):
     )
 
 
+def approval_command(job):
+    return f"/mcaiapply {job['name']} {job['plan']['approval_code']}"
+
+
+def schedule_time(step):
+    days = step.get("weekdays")
+    prefix = (
+        "每周" + "、".join("一二三四五六日"[day - 1] for day in days)
+        if days
+        else "每天"
+    )
+    return f"{prefix} {step['at']}（B 本机时间）"
+
+
 def plan_text(plan):
     lines = [
         "测试副本实际步骤：" if plan.get("environment") == "test" else "实际步骤："
@@ -143,6 +158,22 @@ def plan_text(plan):
             detail = f"强制停止服务端及其自动重启启动链，保留托管窗口；Java PID {step['pid']}，会话 {step['session_id']}"
         elif kind == "snapshot":
             detail = "备份：" + "、".join(step["paths"])
+        elif kind == "schedule":
+            detail = f"登记定时{'备份' if step['kind'] == 'backup' else '重启'}：{schedule_time(step)}"
+            if step["kind"] == "backup":
+                detail += (
+                    f"；{'在线' if step['mode'] == 'online' else '停服'}备份："
+                    + "、".join(step["paths"])
+                    + f"；保留 {step['retain']} 份；保存至 {step['backup_directory']}"
+                )
+            else:
+                offsets = "、".join(map(str, step["announce_minutes"]))
+                detail += (
+                    f"；提前 {offsets} 分钟公告" if offsets else "；不在游戏内提前公告"
+                )
+            detail += "；成功也通知" if step["notify_success"] else "；仅通知异常或错过"
+            if step.get("replace"):
+                detail += f"；替换原计划 {step['replace']}"
         elif kind == "prepare_test":
             detail = "创建隔离测试副本：" + "、".join(step["paths"])
         elif kind == "copy_test_world":

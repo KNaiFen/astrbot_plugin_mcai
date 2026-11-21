@@ -2,12 +2,14 @@
 
 import re
 import uuid
+from functools import partial
 from urllib.parse import urlsplit
 
 from .review import digest
+from .tracing import trace_calls
 
 
-async def alpha_search(provider, session_id, arguments):
+async def alpha_search(provider, session_id, arguments, *, store=None, task=None):
     if provider.provider_config.get("type") not in (
         "openai_chat_completion",
         "openai_responses",
@@ -45,7 +47,10 @@ async def alpha_search(provider, session_id, arguments):
     command["response_length"] = "short"
     body = {"id": session_id, "model": provider.get_model(), "commands": command}
     client = provider.client.with_options(max_retries=0)
-    result = await client.post("alpha/search", cast_to=dict[str, object], body=body)
+    post = partial(client.post, "alpha/search", cast_to=dict[str, object])
+    if store is not None:
+        post = trace_calls(provider, store, task, "独立搜索")(post, "alpha/search")
+    result = await post(body=body)
     if not isinstance(result.get("output"), str) or not result["output"].strip():
         raise ValueError("独立搜索未返回可读 output，无法把加密内容用作搜索结果")
     return {"output": result["output"], "results": result.get("results", [])}
@@ -74,7 +79,9 @@ async def task_search(tasks, job, provider, arguments, call_id):
         tasks,
         job,
         "独立搜索",
-        lambda: alpha_search(provider, session["id"], arguments),
+        lambda: alpha_search(
+            provider, session["id"], arguments, store=tasks.store, task=job["id"]
+        ),
         tasks.agent.attempts,
         pause_on_error=False,
     )

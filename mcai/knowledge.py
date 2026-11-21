@@ -19,13 +19,19 @@ class Knowledge:
             self.index.write_text("# 服务端排障经验索引\n\n", encoding="utf-8")
         self.lock = asyncio.Lock()
 
-    def entries(self):
-        return [
-            json.loads(value)
-            for value in re.findall(
-                r"<!-- mcai-server (.+?) -->", self.index.read_text(encoding="utf-8")
-            )
-        ]
+    def entries(self, text=None):
+        if text is None:
+            text = self.index.read_text(encoding="utf-8")
+        entries = []
+        for number, line in enumerate(text.split("\n"), 1):
+            for value in re.findall(r"<!-- mcai-server (.*?)-->", line):
+                try:
+                    entries.append(json.loads(value))
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"index.md 第 {number} 行：索引注释不是有效 JSON，请修正后重试"
+                    ) from exc
+        return entries
 
     def entry(self, directory):
         return next(
@@ -36,6 +42,7 @@ class Knowledge:
         mode = args["mode"]
         if mode == "index":
             text = self.index.read_text(encoding="utf-8")
+            self.entries(text)
         else:
             selected = args.get("directory", directory)
             entry = self.entry(selected)

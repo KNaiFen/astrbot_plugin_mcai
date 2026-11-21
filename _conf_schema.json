@@ -12,10 +12,17 @@
   "web_search_tool_type": {"description": "托管搜索工具类型：web_search 或 web_search_preview", "type": "string", "default": "web_search"},
   "review_provider_id": {"description": "独立审核模型（必须选择，支持 OpenAI Chat／Responses）", "type": "string", "default": "", "_special": "select_provider"},
   "review_reasoning_effort": {"description": "审核模型思考程度，留空继承审核提供商配置，如 high；仅作用于审核请求", "type": "string", "default": ""},
+  "model_prices": {"description": "每百万 token 单价：每行提供商ID=货币:输入:输出:缓存，留空只显示用量", "type": "list", "default": []},
+  "task_token_limit": {"description": "单任务 token 上限（输入与输出之和，0 不限）", "type": "int", "default": 0},
+  "model_failure_pause_minutes": {"description": "同一模型请求连续 API 失败自动暂停的分钟数（0 关闭）", "type": "int", "default": 0},
   "forward_progress": {"description": "转发主模型 Responses commentary 执行进度汇报，要求简短中文；默认关闭，推理摘要和审核内容不转发", "type": "bool", "default": false},
   "admin_ids": {"description": "允许创建、批准、续接和结束任务的 QQ 号", "type": "list", "default": []},
   "group_ids": {"description": "允许使用的群号（留空允许所有群）", "type": "list", "default": []},
+  "allow_member_ask": {"description": "允许群成员使用 /mcaiask（默认仅管理员）", "type": "bool", "default": false},
+  "member_ask_cooldown_seconds": {"description": "群成员 /mcaiask 冷却秒数（0 不冷却）", "type": "int", "default": 300},
   "incident_routes": {"description": "故障通知：实例=平台ID:GroupMessage:群号（默认不发）", "type": "list", "default": []},
+  "host_offline_alert_minutes": {"description": "连不上 B 持续多久后告警（分钟，至少 1）", "type": "int", "default": 3},
+  "auto_cleanup_days": {"description": "自动清理已结算任务数据的天数（0 关闭；不清理备份）", "type": "int", "default": 0},
   "group_forward_threshold": {"description": "QQ 长回复合集门槛（字符数）；超过该值时合并转发，填写正整数", "type": "int", "default": 400},
   "max_steps": {"description": "每轮最多模型步骤", "type": "int", "default": 40}
 }
