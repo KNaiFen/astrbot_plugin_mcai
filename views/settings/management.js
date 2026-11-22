@@ -6,8 +6,28 @@ const lines = value => value.split(/\r?\n/).map(line => line.trim()).filter(Bool
 const numbers = value => value.split(/[\s,，]+/).filter(Boolean).map(Number);
 const labels = { start: '启动', stop: '停止', restart: '重启', active: '已启用', paused: '已暂停', pending: '排队中', running: '运行中', waiting: '等待中', applying: '执行方案中', done: '已验收', stopped: '已中止', completed: '已完成', not_accepted: 'B 未受理', failed: '失败', cancelled: '已取消' };
 const eventKinds = { exit: '意外退出', restart: '连续启动失败', unresponsive: '无响应', alert: '健康告警', schedule: '定时维护', connection: 'B 连接' };
+const alertReasons = { window_offline: '托管窗口掉线', disk_low: '磁盘空间不足', performance_low: 'Probe 性能偏低' };
 const format = value => typeof value === 'object' && value !== null ? JSON.stringify(value, null, 2) : String(value ?? '—');
 const detail = value => node('pre', format(value), 'text-preview');
+
+export function pendingConfiguration(row) {
+  const fields = row.pending_fields || [];
+  const reopen = fields.filter(field => ['directory', 'java_path', 'encoding'].includes(field));
+  const synchronize = fields.filter(field => !reopen.includes(field));
+  return [
+    reopen.length ? `配置待生效（需停服重开托管窗口：${reopen.join('、')}）` : '',
+    synchronize.length ? `配置待生效（等待窗口重连或当前操作结束：${synchronize.join('、')}）` : '',
+  ].filter(Boolean).join(' · ');
+}
+
+export function usageCells(row) {
+  return [
+    row.requests.toLocaleString(), row.input_tokens.toLocaleString(), row.output_tokens.toLocaleString(),
+    `${row.cached_tokens.toLocaleString()}${row.cache_missing ? `（${row.cache_missing.toLocaleString()} 次未提供）` : ''}`,
+    row.no_usage.toLocaleString(), row.cost.join('、') || '—',
+  ];
+}
+export const usageColumns = ['请求', '输入 (tokens)', '输出 (tokens)', '缓存命中 (tokens)', '未返回用量', '估算费用'];
 
 function item(title, description, status) {
   const row = node('article', null, 'data-item');
@@ -24,7 +44,7 @@ function facts(container, rows) {
   }));
 }
 
-export function createManagement({ api, hostApi, bridge, action, show, loadHost, ensureHost, diskSize }) {
+export function createManagement({ api, hostApi, bridge, action, show, loadHost, ensureHost, diskSize, storageTable }) {
   const dialog = $('#management-dialog');
   const dialogBody = $('#management-dialog-body');
   const dialogActions = $('#management-dialog-actions');
@@ -51,6 +71,11 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
   function confirm(title, description, callback) {
     modal(title, node('p', description));
     dialogActions.prepend(run('确认', async () => { try { await callback(); dialog.close(); } catch (error) { dialogBody.querySelector('.modal-error')?.remove(); dialogBody.append(node('p', error.message, 'modal-error')); } }, 'primary'));
+  }
+  function usageDetails(name, usage) {
+    modal(`${name} · 模型用量`, storageTable('按阶段、提供商与模型统计',
+      ['阶段', '提供商', '模型', ...usageColumns],
+      usage.stages.map(row => [row.purpose, row.provider, row.model, ...usageCells(row)])));
   }
 
   function renderProbe(area, result) {
@@ -86,12 +111,20 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
       for (const row of currentServers) {
         const state = row.state_unknown ? '状态待确认' : row.running ? '运行中' : '已停服';
         const pids = (row.java_processes || []).map(process => process.pid).join('、');
-        const card = item(row.instance, `${row.directory}\n托管窗口：${row.window_online ? '在线' : '离线'} · 会话 ${row.session_id || '—'} · Java PID ${pids || '—'}\n实例：${row.selectable ? '可选' : '待移除'}${row.configuration_pending ? ' · 配置待生效' : ''}`, state);
+        const pending = pendingConfiguration(row);
+        const card = item(row.instance, `${row.directory}\n托管窗口：${row.window_online ? '在线' : '离线'} · 会话 ${row.session_id || '—'} · Java PID ${pids || '—'}\n实例：${row.selectable ? '可选' : '待移除'}${pending ? ` · ${pending}` : ''}`, state);
         if (row.occupant) {
           const owner = node('p', `活动任务：${row.occupant.name}（${row.occupant.id}） · `);
           const link = node('a', '打开任务看板'); link.href = '#tasks'; owner.append(link); card.append(owner);
         }
-        for (const trial of row.tests || []) card.append(node('p', `隔离试服：${trial.task_name}（${trial.task_id}） · ${trial.address}:${trial.port} · 窗口${trial.window_online ? '在线' : '离线'}\n${trial.directory}`));
+        for (const trial of row.tests || []) {
+          card.append(node('p', `隔离试服：${trial.task_name}（${trial.task_id}） · ${trial.address}:${trial.port} · 窗口${trial.window_online ? '在线' : '离线'}\n${trial.directory}`));
+          if (trial.can_close) card.append(run('关闭试服窗口', async () => {
+            await post('host', { action: 'close_test', task_id: trial.task_id, instance: row.instance, directory: row.canonical_directory });
+            await servers();
+            show('试服窗口已关闭，可打开其他任务的试服。');
+          }));
+        }
         const probe = node('p', '正在读取 Probe 状态…');
         const tracking = node('p', row.web_control ? `待核对：${row.web_control.id}` : '');
         const actions = node('div', null, 'data-actions');
@@ -210,7 +243,8 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
       area.replaceChildren();
       for (const row of items) {
         const tokens = row.usage.input_tokens + row.usage.output_tokens;
-        const usage = `模型 ${row.usage.requests} 次（审核 ${row.usage.review_requests} 次） · ${tokens.toLocaleString()} token${row.token_limit ? ` / ${row.token_limit.toLocaleString()}（${Math.round(tokens * 100 / row.token_limit)}%）` : ' · 不限额'}`;
+        const [, input, output, cached] = usageCells(row.usage);
+        const usage = `模型 ${row.usage.requests.toLocaleString()} 次（审核 ${row.usage.review_requests.toLocaleString()} 次） · 输入 ${input} / 输出 ${output} / 缓存 ${cached} tokens${row.token_limit ? ` · 输入与输出共 ${tokens.toLocaleString()} / ${row.token_limit.toLocaleString()}（${Math.round(tokens * 100 / row.token_limit)}%）` : ''}${row.usage.cost.length ? ` · 估算费用 ${row.usage.cost.join('、')}` : ''}`;
         const card = item(row.name, `任务 ${row.id} · 群 ${row.group} · 实例 ${row.instance || '待识别'}\n${usage}${row.pause_reason ? `\n暂停原因：${row.pause_reason}` : ''}${row.pause_after_operation ? '\n修复结算后暂停' : ''}`, row.state);
         if (row.model_retry) card.append(node('p', `最近模型重试：${row.model_retry.error || row.model_retry.category || format(row.model_retry)}`));
         if (row.archive_error) card.append(node('p', `归档错误：${row.archive_error}`, 'modal-error'));
@@ -218,6 +252,7 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
         if (row.cancel_pending) card.append(node('p', '正在结算取消；实例仍被占用。'));
         const actions = node('div', null, 'data-actions');
         const update = async (action, data = {}) => { const result = await post('tasks', { id: row.id, action, ...data }); await tasks(page); return result; };
+        if (row.usage.requests) actions.append(button('用量明细', () => usageDetails(row.name, row.usage)));
         if (!row.cancel_pending && !['done', 'stopped'].includes(row.state)) {
           const say = node('label', null, 'switch-row');
           const input = node('input', null, 'switch'); input.type = 'checkbox'; input.checked = !row.say_paused; input.setAttribute('role', 'switch');
@@ -318,13 +353,14 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
     await load('#events', async area => {
       const select = $('#event-instance');
       const filters = { instance: select.value, kind: $('#event-kind').value };
+      if ($('#event-existing-only').checked) filters.existing_only = '1';
       if (cursors.length) filters.before = cursors.at(-1);
       const data = await hostApi('events', filters);
-      if (data.instances) options(select, [['', '全部实例'], ...data.instances.map(value => [value, value])]);
+      if (data.instances) options(select, [['', '全部实例'], ...data.instances.map(value => [value, data.existing_instances?.includes(value) ? value : `${value}（已删除）`])]);
       area.replaceChildren(node('h3', '活跃健康告警'));
       if (!data.active.length) area.append(node('p', '当前没有活跃健康告警。', 'hint'));
       for (const alert of data.active) {
-        const row = item(`${alert.instance} · ${alert.reason}`, `自 ${time(alert.since)} · ${alert.id}`, '活跃');
+        const row = item(`${alert.instance} · ${alertReasons[alert.reason] || alert.reason}`, `自 ${time(alert.since)} · ${alert.id}`, '活跃');
         row.append(run('查看详情', () => eventDetail(alert))); area.append(row);
       }
       area.append(node('h3', '事故与事件历史'));
@@ -349,36 +385,166 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
   }
   const refreshEvents = () => Promise.all([events(), connectionEvents()]);
   listen('#refresh-events', refreshEvents);
-  $('#event-instance').onchange = $('#event-kind').onchange = () => events();
+  $('#event-instance').onchange = $('#event-kind').onchange = $('#event-existing-only').onchange = () => events();
 
-  let documentVersion;
-  async function knowledgeList() {
-    const data = await api('GET', 'management/knowledge');
-    options($('#knowledge-file'), data.documents.map(name => [name, name]), 'index.md');
+  const documentEditor = $('#knowledge-text'), indexEditor = $('#knowledge-index-text');
+  const fileSelect = $('#knowledge-file');
+  const normalize = text => text.replace(/\r\n?/g, '\n');
+  const dirty = (editor, version) => !!version && editor.value !== normalize(version.text);
+  let documentVersion, indexVersion, loadNumber = 0;
+  function saveFromModal(label, callback) {
+    dialogActions.prepend(run(label, async () => { await callback(); dialog.close(); }, 'primary'));
+  }
+  function inputLabel(label, value = '', tag = 'input') {
+    const wrapper = node('label', label), input = node(tag);
+    input.value = value;
+    wrapper.append(input);
+    return [wrapper, input];
+  }
+  function associationEditor(action, row, indexRevision) {
+    const [nameLabel, name] = inputLabel('实例名', row?.title);
+    const [directoryLabel, directory] = inputLabel('规范目录（B 上的绝对路径）', row?.directory || '');
+    modal(action === 'create_server_doc' ? '新建服务端关联' : '设置目录关联', nameLabel, directoryLabel);
+    saveFromModal('保存关联', async () => {
+      const result = await post('knowledge', {
+        action, file: row?.file, directory: directory.value.trim(),
+        instance_name: name.value.trim() || undefined, index_revision: indexRevision,
+      });
+      await refreshKnowledge(result.file);
+    });
+  }
+  function renderAssociations(data) {
+    const buttonNew = button('新建服务端关联', () => associationEditor('create_server_doc', null, data.index_revision));
+    buttonNew.disabled = !!data.index_error;
     const associations = $('#knowledge-links');
-    associations.replaceChildren(node('h3', '索引关联'));
+    associations.replaceChildren(node('h3', '目录关联管理'), buttonNew);
     if (data.index_error) associations.append(node('p', data.index_error, 'modal-error'));
-    for (const entry of data.entries) associations.append(node('p', `${entry.directory} → ${entry.file}`));
+    const rows = data.items.flatMap(row => {
+      const directories = data.entries.filter(entry => entry.file === row.file).map(entry => entry.directory);
+      return (directories.length ? directories : [null]).map(directory => {
+        const edit = button(directory ? '修改目录' : '关联目录',
+          () => associationEditor('set_association', { ...row, directory }, data.index_revision));
+        const remove = directory
+          ? button('解除关联', () => confirm('解除目录关联', directory, async () => {
+            await post('knowledge', { action: 'remove_association', directory, index_revision: data.index_revision });
+            await refreshKnowledge();
+          }))
+          : button('删除孤立文档', () => confirm('删除孤立文档', row.file, async () => {
+            if (row.file === documentVersion?.name && dirty(documentEditor, documentVersion)) throw new Error('请先保存或放弃当前 Markdown 修改。');
+            await post('knowledge', { action: 'delete_orphan', file: row.file, revision: row.revision });
+            await refreshKnowledge();
+          }));
+        edit.disabled = remove.disabled = !!data.index_error;
+        const controls = node('div', null, 'data-actions');
+        controls.append(edit, remove);
+        return [row.title, directory || '未关联', row.file, row.case_count, controls];
+      });
+    });
+    associations.append(storageTable('服务端文档关联', ['实例名', '规范目录', '文档路径', '经验数', '操作'], rows));
   }
-  async function openDocument() {
-    const name = $('#knowledge-file').value;
-    if (!name) return;
-    documentVersion = await api('GET', 'management/knowledge', { name });
-    $('#knowledge-text').disabled = false;
-    $('#knowledge-text').value = documentVersion.text;
-    $('#knowledge-revision').textContent = `正在编辑 ${name}`;
+  function renderCases() {
+    const filter = $('#knowledge-filter').value.trim().toLowerCase();
+    const area = $('#knowledge-cases');
+    area.replaceChildren();
+    const cases = documentVersion.cases.filter(row => `${row.title} ${row.id} ${row.body}`.toLowerCase().includes(filter));
+    if (!cases.length) area.append(node('p', filter ? '没有匹配的经验。' : '暂无经验，可新增人工经验。', 'hint'));
+    for (const row of cases) {
+      const card = item(row.title, [row.date, row.id].filter(Boolean).join(' · '));
+      const body = node('div', null, 'knowledge-body');
+      for (const [i, block] of row.body.split(/^\s*```[^\n]*$/m).entries()) {
+        if (!block.trim()) continue;
+        if (i % 2) body.append(node('pre', block.trim(), 'text-preview'));
+        else for (const paragraph of block.trim().split(/\n\s*\n|\n(?=#{1,6} )/)) {
+          const heading = /^#{1,6} (.+)/.exec(paragraph);
+          if (heading) body.append(node('h4', heading[1]));
+          const text = heading ? paragraph.slice(heading[0].length).trim() : paragraph;
+          if (text) body.append(node('p', text));
+        }
+      }
+      const controls = node('div', null, 'data-actions');
+      controls.append(button('编辑', () => caseEditor(row)), button('删除', () => confirm('删除经验案例', row.title, () => saveCase({ action: 'delete_case', case_id: row.id }))));
+      card.append(body, controls);
+      area.append(card);
+    }
   }
-  listen('#load-knowledge', async () => {
-    if (documentVersion && documentVersion.text !== $('#knowledge-text').value) {
-      confirm('打开经验文档', '当前文档尚有未保存的修改。', openDocument);
-    } else await openDocument();
-  });
+  function caseEditor(row) {
+    const [titleLabel, title] = inputLabel('标题', row?.title);
+    const [dateLabel, date] = inputLabel('日期（可选，ISO 日期或时间）', row?.date || '');
+    const [bodyLabel, body] = inputLabel('正文（Markdown）', row?.body, 'textarea');
+    body.rows = 12;
+    modal(row ? '编辑经验' : '新增人工经验', titleLabel, dateLabel, bodyLabel);
+    saveFromModal('保存经验', () => saveCase({
+      action: 'upsert_case', case_id: row?.id, title: title.value, date: date.value.trim(), body: body.value,
+    }));
+  }
+  async function saveCase(data) {
+    await post('knowledge', { ...data, name: documentVersion.name, revision: documentVersion.revision });
+    await refreshKnowledge();
+  }
+  async function openDocument(name, source = false) {
+    const number = ++loadNumber;
+    const version = name ? await api('GET', 'management/knowledge', { name }) : null;
+    if (number !== loadNumber) return;
+    fileSelect.value = name;
+    documentVersion = version;
+    $('#knowledge-editor').hidden = !version;
+    $('#knowledge-revision').textContent = version ? `${version.directory || '未关联'} · ${name}` : '暂无服务端文档，可从目录关联管理新建。';
+    if (version) {
+      documentEditor.value = normalize(version.text);
+      renderCases();
+      showSource(source);
+    }
+  }
+  function showSource(source) {
+    $('#knowledge-source').hidden = !source;
+    $('#knowledge-structured').hidden = source;
+    $('#toggle-knowledge-source').textContent = source ? '返回经验案例' : '切换 Markdown 源码';
+  }
+  async function refreshKnowledge(preferred, discard = false, source = false) {
+    const data = await api('GET', 'management/knowledge');
+    renderAssociations(data);
+    options(fileSelect, data.items.map(row => [
+      row.file, row.linked ? `${row.title} · ${row.directory}（${row.case_count} 条经验）` : `${row.title}（未关联 · ${row.case_count} 条经验）`,
+    ]));
+    if (!discard && dirty(documentEditor, documentVersion)) {
+      fileSelect.value = documentVersion.name;
+      return;
+    }
+    const name = preferred || documentVersion?.name;
+    await openDocument(data.items.some(row => row.file === name) ? name : data.items[0]?.file || '', source);
+  }
+  function discardDocument(callback) {
+    if (dirty(documentEditor, documentVersion)) confirm('放弃未保存的 Markdown 修改', '继续将丢弃当前文档的修改。', callback);
+    else return callback();
+  }
+  fileSelect.onchange = () => {
+    const name = fileSelect.value;
+    if (documentVersion) fileSelect.value = documentVersion.name;
+    action(fileSelect, () => discardDocument(() => openDocument(name)));
+  };
+  listen('#refresh-knowledge', () => discardDocument(() => refreshKnowledge(undefined, true)));
+  listen('#new-knowledge-case', () => caseEditor());
+  $('#knowledge-filter').oninput = renderCases;
+  listen('#toggle-knowledge-source', () => $('#knowledge-source').hidden
+    ? showSource(true) : discardDocument(() => openDocument(documentVersion.name)));
   listen('#save-knowledge', async () => {
-    if (!documentVersion) throw new Error('请先打开经验文档。');
-    const text = $('#knowledge-text').value;
-    const data = await post('knowledge', { name: documentVersion.name, revision: documentVersion.revision, text });
-    documentVersion = { ...documentVersion, revision: data.revision, text };
-    await knowledgeList(); show('经验文档已保存。');
+    await post('knowledge', { name: documentVersion.name, revision: documentVersion.revision, text: documentEditor.value });
+    await refreshKnowledge(documentVersion.name, true, true);
+    show('经验文档已保存。');
+  });
+  async function loadIndex() {
+    indexVersion = await api('GET', 'management/knowledge', { name: 'index.md' });
+    indexEditor.disabled = $('#save-knowledge-index').disabled = false;
+    indexEditor.value = normalize(indexVersion.text);
+  }
+  listen('#load-knowledge-index', () => {
+    if (dirty(indexEditor, indexVersion)) confirm('重新读取索引', '继续将丢弃未保存的索引修改。', loadIndex);
+    else return loadIndex();
+  });
+  listen('#save-knowledge-index', async () => {
+    await post('knowledge', { name: indexVersion.name, revision: indexVersion.revision, text: indexEditor.value });
+    await Promise.all([loadIndex(), refreshKnowledge()]);
+    show('经验索引已保存。');
   });
 
   const version = value => value.ready ? `${value.version} · ${value.path}` : `未就绪${value.path ? ` · ${value.path}` : ''} · ${value.error}`;
@@ -427,7 +593,11 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
   listen('#refresh-storage-detail', storage);
 
   const opened = new Set();
-  return { open(hash) {
+  return { modal, usageDetails, open(hash) {
+    if (hash === '#knowledge') {
+      if (!dirty(documentEditor, documentVersion)) refreshKnowledge().catch(error => show(error.message, true));
+      return;
+    }
     if (opened.has(hash)) return;
     opened.add(hash);
     const run = {
@@ -437,7 +607,6 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
       '#maintenance': schedules,
       '#tasks': tasks,
       '#incidents': () => Promise.all([refreshEvents(), ensureHost()]),
-      '#knowledge': async () => { await knowledgeList(); await openDocument(); },
     }[hash];
     run?.().catch(error => show(error.message, true));
   } };

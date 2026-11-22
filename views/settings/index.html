@@ -99,11 +99,13 @@
               <label>连续 API 失败后暂停（分钟，0 关闭）<input type="number" name="model_failure_pause_minutes" min="0" step="1" value="0"></label>
             </div>
             <label>每百万 token 单价<textarea name="model_prices" rows="2" placeholder="每行一项：提供商ID=CNY:2:8:0.2"></textarea></label>
-            <p class="hint">按货币、输入、输出、缓存的顺序填写；留空只显示 token。费用为按已返回用量计算的估算。</p>
+            <p class="hint">单价单位是每百万（1M）tokens，用量单位是 tokens。单价仅用于估算费用；单任务上限按输入 + 输出 tokens 计算。</p>
             <div class="actions">
               <button type="submit">保存 A 设置</button>
+              <button type="button" id="sync-model-prices" class="secondary">同步上游模型价格</button>
               <button type="button" id="refresh-model-usage" class="secondary">刷新用量</button>
             </div>
+            <p id="model-price-status" class="hint" role="status"></p>
             <div id="model-usage" aria-live="polite"></div>
           </div>
         </section>
@@ -143,7 +145,8 @@
             <button id="load-host" type="button" class="secondary">刷新 B 配置</button>
             <button id="add-instance" type="button" class="secondary">添加服务端</button>
           </div>
-          <p class="hint">新实例可以只填写配置名和服务端目录。托管窗口仍使用原来的 start.bat；运行中的启动配置变更会等待空闲。</p>
+          <p class="hint">新实例可以只填写配置名和服务端目录。托管窗口仍使用原来的 start.bat；Java、编码或目录变更需停服并重开托管窗口。</p>
+          <p id="legacy-test-fields" class="hint" role="status" hidden></p>
           <div id="instances"></div>
           <div class="actions"><button id="save-instances" type="button">保存服务端列表</button></div>
         </div>
@@ -159,12 +162,14 @@
             <label>存档工具 Java 21+ 路径<input id="world-java" placeholder="留空从 PATH 查找"></label>
             <label>辅助操作共享内存上限（MiB）<input id="operations-memory" type="number" min="64" step="1" value="8192"></label>
             <label>定时备份根目录<input id="scheduled-backup-dir" placeholder="留空使用 B data_dir/backups"></label>
+            <label>测试服全局可达地址<input id="host-test-address"></label>
+            <label>测试服全局专用端口<input id="host-test-port" type="number" min="1" max="65535" step="1"></label>
             <label>隔离试服工作区根目录<input id="host-workspace-dir" placeholder="留空使用 B data_dir/workspaces"></label>
             <label>单文件下载上限（字节）<input id="download-max-bytes" type="number" min="1" step="1" value="2147483648" aria-describedby="download-size-hint"></label>
           </div>
           <div class="actions"><button id="save-host" type="button">保存主机设置</button></div>
           <p class="hint" id="download-size-hint"></p>
-          <p class="hint">主机设置重启 B 后生效。备份和试服目录必须与正式服目录分开；旧备份、已登记的备份计划及已有试服保留原路径。</p>
+          <p class="hint">PowerShell 路径及辅助操作内存额度需重启 B。其他项目保存后生效。备份和试服目录必须与正式服目录分开；旧备份、已登记的备份计划及已有试服保留原路径。</p>
           <p class="hint" id="effective-storage-paths"></p>
           <div class="actions"><button id="check-b-environment" type="button" class="secondary">刷新 B 环境</button></div>
           <div id="host-environment" class="info-grid" aria-live="polite"></div>
@@ -192,7 +197,7 @@
           <p>对已经开启留证的正式服生效；通知群在「群与通知」中配置。</p>
         </header>
         <div class="panel">
-          <div class="toolbar"><button id="refresh-events" type="button" class="secondary">刷新事故与告警</button><select id="event-instance" aria-label="按事件实例筛选"><option value="">全部实例</option></select><select id="event-kind" aria-label="按事件类型筛选"><option value="">全部类型</option><option value="exit">意外退出</option><option value="restart">连续启动失败</option><option value="unresponsive">卡死</option><option value="alert">健康告警</option><option value="schedule">定时维护</option></select></div><div id="events" class="data-list" aria-live="polite"></div><div id="connection-events" class="data-list" aria-live="polite"></div>
+          <div class="toolbar"><button id="refresh-events" type="button" class="secondary">刷新事故与告警</button><select id="event-instance" aria-label="按事件实例筛选"><option value="">全部实例</option></select><label class="toggle"><input id="event-existing-only" type="checkbox">仅看现有实例</label><select id="event-kind" aria-label="按事件类型筛选"><option value="">全部类型</option><option value="exit">意外退出</option><option value="restart">连续启动失败</option><option value="unresponsive">卡死</option><option value="alert">健康告警</option><option value="schedule">定时维护</option></select></div><div id="events" class="data-list" aria-live="polite"></div><div id="connection-events" class="data-list" aria-live="polite"></div>
           <form id="incident-settings" class="details-body">
             <div class="columns">
               <label>启动失败统计窗口（秒）<input id="incident-restart-window" type="number" min="1" step="1" placeholder="120" aria-describedby="incident-window-hint"></label>
@@ -209,8 +214,26 @@
         </div>
       </section>
       <section id="knowledge" class="settings-section" aria-labelledby="knowledge-title">
-        <header class="section-heading"><h2 id="knowledge-title">经验知识库</h2><p>index.md 和 servers/*.md 经过路径校验、版本核对和原子写入。</p></header>
-        <div class="panel"><div class="toolbar"><select id="knowledge-file" aria-label="经验文档"></select><button id="load-knowledge" type="button" class="secondary">打开</button><button id="save-knowledge" type="button">保存</button></div><textarea id="knowledge-text" rows="18" spellcheck="false" aria-label="Markdown 正文" disabled></textarea><p id="knowledge-revision" class="hint"></p><div id="knowledge-links"></div></div>
+        <header class="section-heading"><h2 id="knowledge-title">经验知识库</h2><p>查看验收后归档的案例，补充人工经验并维护目录关联。</p></header>
+        <div class="panel">
+          <div class="toolbar"><select id="knowledge-file" aria-label="经验文档"></select><button id="refresh-knowledge" type="button" class="secondary">刷新</button></div>
+          <p id="knowledge-revision" class="hint"></p>
+          <div id="knowledge-editor" hidden>
+            <div class="toolbar"><button id="toggle-knowledge-source" type="button" class="secondary">切换 Markdown 源码</button></div>
+            <div id="knowledge-structured">
+              <div class="toolbar"><input id="knowledge-filter" type="search" aria-label="筛选经验" placeholder="筛选标题、编号或正文"><button id="new-knowledge-case" type="button">新增人工经验</button></div>
+              <div id="knowledge-cases" class="data-list"></div>
+            </div>
+            <div id="knowledge-source" hidden><textarea id="knowledge-text" rows="18" spellcheck="false" aria-label="Markdown 正文"></textarea><button id="save-knowledge" type="button">保存 Markdown</button></div>
+          </div>
+        </div>
+        <div class="panel" id="knowledge-links"></div>
+        <details class="panel"><summary>高级：查看/编辑原始 index.md</summary>
+          <div class="details-body">
+            <div class="toolbar"><button id="load-knowledge-index" type="button" class="secondary">读取 index.md</button><button id="save-knowledge-index" type="button" disabled>保存 index.md</button></div>
+            <textarea id="knowledge-index-text" rows="12" spellcheck="false" aria-label="原始 index.md" disabled></textarea>
+          </div>
+        </details>
       </section>
       <section id="rules" class="settings-section" aria-labelledby="rules-title">
         <header class="section-heading">

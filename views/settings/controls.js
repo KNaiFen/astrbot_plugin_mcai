@@ -84,14 +84,16 @@ function tagEditor(textarea) {
   draw();
 }
 
-function rowEditor(field, type, data, fetchServers) {
+function rowEditor(field, type, data, fetchServers, priceCatalog) {
   const label = field.closest('label');
   label.dataset.editor = 'rows';
   field.hidden = true;
   const table = node('div', null, 'editor-table');
-  const headings = type === 'routes' ? ['实例', '平台', '群号'] : ['提供商', '货币', '输入', '输出', '缓存'];
+  const headings = type === 'routes' ? ['实例', '平台', '群号'] : ['提供商', '货币', '输入 (每 1M)', '输出 (每 1M)', '缓存命中 (每 1M)'];
   const header = node('div', null, `editor-row ${type} editor-heading`);
-  header.append(...headings.map(name => node('strong', name)), node('span'));
+  header.append(...headings.map(name => node('strong', name)));
+  if (type === 'prices') header.append(node('strong', '倍率 / 上游来源'));
+  header.append(node('span'));
   table.append(header);
   const group = node('datalist'); group.id = 'allowed-groups';
   let servers = [];
@@ -126,9 +128,61 @@ function rowEditor(field, type, data, fetchServers) {
       control.oninput = update;
       return control;
     });
-    const row = { controls, wrapper };
+    const row = { controls };
     rows.push(row);
-    wrapper.append(...controls, button('移除', () => { rows.splice(rows.indexOf(row), 1); wrapper.remove(); update(); }, 'quiet'));
+    wrapper.append(...controls);
+    if (type === 'prices') {
+      row.binding = data.bindings[values[0]];
+      const sources = node('div', null, 'price-source');
+      const label = node('span', '', 'hint');
+      const multiplier = node('input'); multiplier.type = 'number'; multiplier.min = '0'; multiplier.step = 'any';
+      multiplier.setAttribute('aria-label', '上游价格倍率');
+      const recalculate = () => {
+        const binding = row.binding;
+        if (!binding || multiplier.value === '' || !multiplier.validity.valid) return;
+        binding.multiplier = Number(multiplier.value);
+        for (const [index, key] of ['base_input', 'base_output', 'base_cache'].entries()) {
+          controls[index + 2].value = Number((binding[key] * binding.multiplier).toFixed(6)).toString();
+        }
+        label.textContent = `来源：${binding.source_name} · 倍率 ${binding.multiplier}`;
+        update();
+      };
+      const apply = (entry, ratio = 1, currency = 'USD') => {
+        row.binding = {
+          source_provider: entry.provider, source_model: entry.model, source_name: entry.name,
+          base_currency: 'USD', base_input: entry.input, base_output: entry.output, base_cache: entry.cache,
+          multiplier: ratio,
+        };
+        controls[1].value = currency;
+        render();
+        recalculate();
+      };
+      const pick = button('选择模型', () => {
+        const provider = data.providers.find(item => item.id === controls[0].value);
+        priceCatalog.pick(provider?.model || '', apply);
+      });
+      const refresh = button('应用最新价', () => {
+        const { source_provider, source_model, multiplier } = row.binding;
+        const entry = priceCatalog.models().find(model => model.provider === source_provider && model.model === source_model);
+        if (entry) apply(entry, multiplier, controls[1].value);
+        else label.textContent = '缓存中找不到该模型，当前单价已保留。';
+      });
+      function render() {
+        const binding = row.binding;
+        pick.disabled = !controls[0].value;
+        label.textContent = binding ? `来源：${binding.source_name} · 倍率 ${binding.multiplier}` : '自定义';
+        multiplier.hidden = refresh.hidden = !binding;
+        multiplier.disabled = !binding;
+        multiplier.value = binding?.multiplier ?? '';
+      }
+      controls[0].oninput = () => { row.binding = undefined; render(); update(); };
+      controls.slice(2).forEach(control => { control.oninput = () => { row.binding = undefined; render(); update(); }; });
+      multiplier.oninput = recalculate;
+      sources.append(label, multiplier, pick, refresh);
+      wrapper.append(sources);
+      render();
+    }
+    wrapper.append(button('移除', () => { rows.splice(rows.indexOf(row), 1); wrapper.remove(); update(); }, 'quiet'));
     rowBody.append(wrapper);
   }
   for (const line of field.value.split(/\r?\n/).filter(Boolean)) {
@@ -156,17 +210,23 @@ function rowEditor(field, type, data, fetchServers) {
   }
   table.append(rowBody, footer);
   label.append(table);
+  if (type === 'prices') return () => Object.fromEntries(rows
+    .filter(row => row.controls[0].value && row.binding)
+    .map(row => [row.controls[0].value, row.binding]));
 }
 
-export function setupEditors(root, data, fetchServers) {
+export function setupEditors(root, data, fetchServers, priceCatalog) {
   for (const textarea of root.querySelectorAll('textarea[name="admin_ids"], textarea[name="group_ids"], textarea[data-key="test_copy_paths"]')) {
     if (textarea.hidden) textarea.dispatchEvent(new Event('input'));
     else tagEditor(textarea);
   }
   if (!data) return;
+  let priceBindings;
   for (const [name, type] of [['incident_routes', 'routes'], ['model_prices', 'prices']]) {
     const field = root.elements[name];
     field.parentNode.querySelector('.editor-table')?.remove();
-    rowEditor(field, type, data, fetchServers);
+    const read = rowEditor(field, type, data, fetchServers, priceCatalog);
+    if (type === 'prices') priceBindings = read;
   }
+  return priceBindings;
 }

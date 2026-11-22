@@ -204,7 +204,10 @@ details { border: 0; }
 .tag { color: var(--accent-text); background: var(--accent-soft); min-height: 0; padding: 2px 8px; overflow-wrap: anywhere; }
 .editor-row { display: grid; align-items: center; gap: 6px; }
 .editor-row.routes { grid-template-columns: repeat(3, minmax(0,1fr)) auto; }
-.editor-row.prices { grid-template-columns: minmax(0, 1.3fr) repeat(4, minmax(0, 1fr)) auto; }
+.editor-row.prices { grid-template-columns: minmax(0, 1.3fr) repeat(4, minmax(0, 1fr)) minmax(0, 1.6fr) auto; }
+.price-source { display: grid; gap: .35rem; min-width: 0; overflow-wrap: anywhere; }
+.knowledge-body p { white-space: pre-wrap; }
+#knowledge-source, #knowledge-cases, #model-usage > .toolbar { margin-top: .75rem; }
 .editor-heading { color: var(--muted); font-size: 12px; }
 .editor-heading > :last-child, .editor-row > button { width: 58px; }
 #knowledge-links { overflow-wrap: anywhere; }

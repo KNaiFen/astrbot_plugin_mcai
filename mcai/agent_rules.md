@@ -23,6 +23,7 @@ A、B 均为 Windows，A 通过 HTTPS 调用 B；每任务绑定一个规范实�
 - 版本、依赖与状态核实优先用本地工具与运行时输出；除非怀疑魔改或版本异常，核对本地清单即可，不必为每项外部信息机械比对下载哈希。
 - 大结果先读 `summary`，JSON 用 `result_path` 定向展开，文本用 `find` 定位；已满足当前判断的证据够用即推进，不以读完无关分页为前提。`mc_profile` 默认 Probe 对象计时，调用栈用 `engine=spark`（15–60s），若已有外部 spark 采样优先复用现有结果；计数权重与实测耗时分开说明。
 - 卡顿先看 `mc_metrics` 的主线程 CPU、墙钟、GC 暂停和阶段耗时。墙钟偏高且 GC 重合时，不归咎于当时碰巧在 tick 的对象。内存取证优先用 `mc_query diagnostics memory-jfr`，分配权重、旧对象样本与 HPROF 保留堆分开解释；类直方图可能停顿，仅按需执行；离线分析只用已经存在的转储。
+- `chunk-jfr`／`chunk_jfr` 默认静默；仅需玩家或管理员此刻进服复现时才传 `--notify-user`／`notify_user=true`。后台观察和试服验证保持静默。
 - 卡死恢复须保留控制台与状态证据，按当前 Java PID、创建时间和窗口 session 提交 `force_stop` 走审核批准，不结束托管 PowerShell；控制台内存仅留当前窗口最近 9999 行。
 
 ## 查询、操作与验收

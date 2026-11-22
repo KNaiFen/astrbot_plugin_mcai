@@ -362,23 +362,37 @@ class AstrBotAgent:
                 job["pending"].append({"sender": "system", "text": str(exc)})
                 tasks.save(job)
 
-        def track(result):
+        def track(result, record):
             if isinstance(result, dict) and result.get("id"):
                 if result.get("status") in ("pending", "running"):
-                    job.setdefault("background", {})[result["id"]] = {
-                        "cursor": result.get("cursor", 0)
-                    }
+                    background = job.setdefault("background", {}).setdefault(
+                        result["id"], {}
+                    )
+                    background["cursor"] = result.get("cursor", 0)
+                    arguments = record.get("remote", {}).get("arguments", {})
+                    if arguments.get("mode") in ("chunk_jfr", "memory_jfr"):
+                        background["recording_kind"] = arguments["mode"]
+                        background["notify_user"] = arguments.get("notify_user") is True
                     progress = result.get("progress", {})
                     if (
                         result.get("kind") == "diagnostics"
                         and progress.get("phase") == "recording"
+                        and progress.get(
+                            "recording_kind",
+                            background.get("recording_kind", "chunk_jfr"),
+                        )
+                        == "chunk_jfr"
+                        and progress.get(
+                            "notify_user", background.get("notify_user", False)
+                        )
                         and time.time()
                         < progress["started_at"] + progress["duration_seconds"]
                         and not tasks.store.get("outbox", f"chunk-jfr-{result['id']}-0")
                     ):
                         tasks.message(
                             job,
-                            "区块录制已开始（共 60 秒）。如果现在能复现，请照常跑一趟，我会等录制结束后检查结果。",
+                            f"区块录制已开始（共 {int(progress['duration_seconds'])} 秒）。"
+                            "如果现在能复现，请照常跑一趟，我会等录制结束后检查结果。",
                             identity=f"chunk-jfr-{result['id']}",
                         )
                 else:
@@ -415,7 +429,7 @@ class AstrBotAgent:
 
         async def execute(record):
             if record.get("state") == "completed":
-                track(record["result"])
+                track(record["result"], record)
                 return record["result"]
             name, arguments = record["name"], copy.deepcopy(record["arguments"])
             if (
@@ -455,7 +469,7 @@ class AstrBotAgent:
                         record,
                         arguments_for(name, clean_arguments(arguments), internal=True),
                     )
-                    track(result)
+                    track(result, record)
                 except QueryError as exc:
                     result = {
                         "not_executed": True,

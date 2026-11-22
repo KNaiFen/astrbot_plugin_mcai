@@ -69,19 +69,24 @@ def record_request(store, task, stage, provider, model, usage):
     }
     today = date.today().isoformat()
     day_key = json.dumps([today, provider, model], ensure_ascii=False)
-    daily = store.get("model_usage_day", day_key)
-    rows = [
-        (
-            "model_usage_day",
-            day_key,
-            {
-                "date": today,
-                "provider": provider,
-                "model": model,
-                **totals([daily, increment] if daily else [increment]),
-            },
+    kinds = ["model_usage_day"]
+    if task is None:
+        kinds.append("model_usage_nontask")
+    rows = []
+    for kind in kinds:
+        daily = store.get(kind, day_key)
+        rows.append(
+            (
+                kind,
+                day_key,
+                {
+                    "date": today,
+                    "provider": provider,
+                    "model": model,
+                    **totals([daily, increment] if daily else [increment]),
+                },
+            )
         )
-    ]
     if task is not None:
         entries = store.get("model_usage_task", task) or {}
         key = json.dumps([stage, provider, model], ensure_ascii=False)
@@ -104,7 +109,7 @@ def cost(rows, prices):
                 continue
             currency, incoming, outgoing, cached = price
             amount = (
-                (row["input_tokens"] - row["cached_tokens"]) * incoming
+                max(0, row["input_tokens"] - row["cached_tokens"]) * incoming
                 + row["output_tokens"] * outgoing
                 + row["cached_tokens"] * cached
             ) / 1000000
@@ -122,6 +127,7 @@ def task_usage(store, task, prices=None):
             if row["purpose"] in ("审核模型", "审核历史压缩")
         ),
         "cost": cost(entries, prices),
+        "stages": [{**row, "cost": cost([row], prices)} for row in entries],
     }
 
 
@@ -134,8 +140,10 @@ def usage_report(store, prices):
     )
     tasks = [
         {
+            "id": row["id"],
             "name": row["name"],
             "group": row["group"],
+            "state": row["state"],
             **task_usage(store, row["id"], prices),
         }
         for row in store.all("task")
@@ -145,7 +153,12 @@ def usage_report(store, prices):
         key=lambda row: row["input_tokens"] + row["output_tokens"],
         reverse=True,
     )
+    non_task = [
+        row for row in store.all("model_usage_nontask") if row["date"] >= cutoff
+    ]
     return {
         "daily": [{**row, "cost": cost([row], prices)} for row in daily],
-        "tasks": tasks[:10],
+        "daily_summary": {**totals(daily), "cost": cost(daily, prices)},
+        "non_task_summary": {**totals(non_task), "cost": cost(non_task, prices)},
+        "tasks": tasks,
     }

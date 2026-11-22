@@ -143,10 +143,26 @@ def incident_routes(values, allowed):
     return routes
 
 
+LEGACY_TEST_FIELDS = {"test_address", "test_port"}
+
+
+def host_test_settings(config):
+    address, port = config.get("test_address", ""), config.get("test_port")
+    if isinstance(address, str):
+        address = address.strip()
+        if (not address and port is None) or (
+            address and type(port) is int and 1 <= port <= 65535
+        ):
+            return {"test_address": address, "test_port": port}
+    raise ValueError(
+        "全局测试服须同时填写可达地址（test_address）和有效端口（test_port，1–65535）"
+    )
+
+
 def normalize_instances(values, base, shell):
     if not isinstance(values, dict):
         raise ValueError("instances.json 必须是服务端名称到配置的对象")
-    result, directories, test_ports = {}, set(), set()
+    result, directories = {}, set()
     for name, value in values.items():
         if not re.fullmatch(r"[A-Za-z0-9_-]+", name) or not isinstance(value, dict):
             raise ValueError("实例名只允许字母、数字、下划线和短横线")
@@ -158,8 +174,7 @@ def normalize_instances(values, base, shell):
             "stop_timeout",
             "stop_command",
             "restart_prompt",
-            "test_address",
-            "test_port",
+            *LEGACY_TEST_FIELDS,
             "test_copy_paths",
             "incident_watch",
             *ALERT_DEFAULTS,
@@ -192,17 +207,6 @@ def normalize_instances(values, base, shell):
                     raise ValueError(f"{name}：{key} 必须是布尔值")
             elif type(setting) not in (int, float) or not 0 < setting < math.inf:
                 raise ValueError(f"{name}：{key} 必须是有限正数")
-        if "test_address" in value or "test_port" in value:
-            if (
-                not isinstance(value.get("test_address"), str)
-                or not value["test_address"].strip()
-                or type(value.get("test_port")) is not int
-                or not 1 <= value["test_port"] <= 65535
-            ):
-                raise ValueError(f"{name}：测试服需要可达地址和独立端口")
-            if value["test_port"] in test_ports:
-                raise ValueError("测试服端口不能重复")
-            test_ports.add(value["test_port"])
         if "test_copy_paths" in value and (
             not isinstance(value["test_copy_paths"], list)
             or any(
@@ -219,7 +223,11 @@ def normalize_instances(values, base, shell):
             raise ValueError("多个实例指向同一规范化目录，请只保留一个配置")
         directories.add(directory)
         configured = {
-            **value,
+            **{
+                key: item
+                for key, item in value.items()
+                if key not in LEGACY_TEST_FIELDS
+            },
             "directory": str(path),
             "powershell_path": shell,
         }
@@ -304,6 +312,7 @@ def load_host(path):
         (path.parent / config.get("data_dir", "runtime/host")).resolve()
     )
     config.update(host_storage_settings(config, path.parent, config["data_dir"]))
+    config.update(host_test_settings(config))
     if config.get("world_tools", {}).get("java_path"):
         config["world_tools"]["java_path"] = str(
             (path.parent / config["world_tools"]["java_path"]).resolve()

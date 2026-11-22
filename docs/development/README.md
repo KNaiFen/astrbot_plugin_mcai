@@ -55,14 +55,15 @@ py -3.12 -m venv .venv
 先定义要改变的行为和验证标准，沿用既有操作编号、锁、后台任务和状态记录。生产写入、审核、断点恢复和任务状态变更通过真实runner／HTTPS集成验证；低影响文档变更不需要重写或复制实现细节的单元测试。
 
 ```powershell
-.\.venv\Scripts\ruff.exe check main.py mcai tests scripts
-.\.venv\Scripts\ruff.exe format --check main.py mcai tests scripts
-git diff --check
+# 一键静态检查（Ruff、Git 空白、Node 语法、配置与版本一致、文档链接、Probe CoreChecks）
+.\.venv\Scripts\python.exe scripts/verify.py --mode static
+# 快速冒烟 / 完整核心回归 / 兼容矩阵 / 发行包全检（--mode release）
+.\.venv\Scripts\python.exe scripts/verify.py --mode quick
 ```
 
-测试场景与完整命令见[测试说明](testing.md)。实际模型、QQ和生产整合包的联调与模拟接口测试分开记录，不把行覆盖率当成所有MC版本兼容性证明。
+测试场景与完整命令见[测试说明](testing.md)。实际模型、QQ和生产整合包的联调与模拟接口测试分开记录，不把行覆盖率当成所有MC版本兼容性证明；`.github/workflows/ci.yml` 在 Windows runner 上使用固定 AstrBot v4.29.4 自动执行静态检查及核心／兼容矩阵。
 
-HTTPS夹具为每个实例另开独立终端，B使用实际辅助工作进程；多窗口、B重启、资源限制及真实CLI交互见`test_terminal_isolation.py`。网站响应、备份失败和扫描时序等故障注入用例通过测试侧`local_execution`保留当前进程的替身，产品没有跳过内存额度的执行选项。
+默认测试通过本地 HTTPS 配合内存控制台替身与进程内执行保持快速反馈；涉及真实终端、`server.py`、`Execution` 工作进程及内存限额的关键回归通过 `@pytest.mark.real_host` 和 `test_terminal_isolation.py` 保留完整独立进程验证（产品运行时没有跳过内存额度的选项）。
 
 B生命周期使用HostRunner：在aiohttp的pre_shutdown停止WebSocket输入之前等待已接受操作。嵌入或测试create_app时同样使用该runner，避免在on_shutdown内等待仍需终端响应的修复。
 

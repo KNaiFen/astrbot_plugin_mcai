@@ -1,5 +1,5 @@
-import { createManagement } from './management.js';
-import { styleSettings, button, setupEditors } from './controls.js';
+import { createManagement, pendingConfiguration, usageCells, usageColumns } from './management.js';
+import { styleSettings, button, node, setupEditors } from './controls.js';
 
 const bridge = window.AstrBotPluginView;
 function applyTheme(context = {}) {
@@ -25,6 +25,7 @@ function markSection() {
 markSection();
 window.addEventListener('hashchange', () => { markSection(); window.scrollTo(0, 0); });
 let host = null, poll = null;
+let catalog, readPriceBindings;
 function show(text, error = false) {
   const dialogError = document.querySelector('#management-dialog-error');
   if (error && dialogError.closest('dialog').open) { dialogError.hidden = false; dialogError.textContent = text; return; }
@@ -44,10 +45,45 @@ function values() {
   }
   if (!result.host_token) delete result.host_token;
   if (!result.curseforge_api_key) delete result.curseforge_api_key;
+  if (readPriceBindings) result.model_price_meta = readPriceBindings();
   return result;
 }
+function showCatalog(data) {
+  catalog = data;
+  document.querySelector('#model-price-status').textContent = catalog
+    ? `上次同步：${new Date(catalog.updated_at * 1000).toLocaleString()} · ${catalog.count.toLocaleString()} 个模型 · ${catalog.source}`
+    : '尚未同步上游价格，可手动填写单价。';
+}
+function pickPrice(model, apply) {
+  const search = node('input');
+  search.type = 'search';
+  search.setAttribute('aria-label', '搜索上游模型');
+  search.placeholder = '模型 ID、名称或上游提供商';
+  const entries = catalog?.models || [];
+  search.value = model && entries.some(entry => entry.model.toLowerCase().includes(model.toLowerCase())) ? model : '';
+  const results = node('div', null, 'data-list');
+  function render() {
+    const keywords = search.value.toLowerCase().trim().split(/\s+/);
+    const rows = entries.filter(entry => {
+      const text = `${entry.model} ${entry.name} ${entry.provider} ${entry.provider_name}`.toLowerCase();
+      return keywords.every(word => text.includes(word));
+    });
+    results.replaceChildren(node('p', entries.length ? `找到 ${rows.length} 个模型${rows.length > 50 ? '，显示前 50 个。' : '。'}` : '先同步上游模型价格，再搜索选用。', 'hint'));
+    for (const row of rows.slice(0, 50)) {
+      const control = button(`${row.name} · ${row.model} · ${row.provider_name} · USD ${row.input} / ${row.output} / ${row.cache}`, () => {
+        apply(row);
+        control.closest('dialog').close();
+      });
+      results.append(control);
+    }
+  }
+  search.oninput = render;
+  render();
+  management.modal('选择上游模型', search, results);
+  search.focus();
+}
 async function loadA() {
-  const data = await api('GET', 'settings');
+  const [data, prices] = await Promise.all([api('GET', 'settings'), api('GET', 'model/catalog')]);
   for (const name of ['provider_id', 'review_provider_id']) {
     const select = form.elements[name];
     select.replaceChildren(new Option(name === 'provider_id' ? '使用当前群模型' : '请选择审核模型', ''));
@@ -63,14 +99,20 @@ async function loadA() {
   form.elements.curseforge_api_key.value = '';
   form.elements.curseforge_api_key.placeholder = data.curseforge_configured ? 'A 已配置；留空保留' : '填写 CurseForge API 密钥';
   document.querySelector('#curseforge-state').textContent = data.curseforge_configured ? 'A 已保存密钥；不会回传原值。' : 'A 尚未配置 CurseForge 密钥。';
-  setupEditors(form, data, () => hostApi('servers'));
+  showCatalog(prices.catalog);
+  readPriceBindings = setupEditors(form, { ...data, bindings: prices.bindings }, () => hostApi('servers'),
+    { pick: pickPrice, models: () => catalog?.models || [] });
 }
 async function saveA() { await api('POST', 'settings', values()); }
-form.addEventListener('submit', event => { event.preventDefault(); action(event.submitter, async () => { await saveA(); show('A 配置已保存并生效。'); }); });
+form.addEventListener('submit', event => { event.preventDefault(); action(event.submitter, async () => {
+  await saveA();
+  show('A 配置已保存并生效。');
+  await loadModelUsage();
+}); });
 document.querySelector('#connection-test').onclick = function () { action(this, async () => { const result = await api('POST', 'connection/test', values()); show(`连接成功，B 配置了 ${result.instances} 个服务端。`); }); };
 function field(container, label, value, key) {
   const wrapper = document.createElement('label'); wrapper.append(document.createTextNode(label));
-  const input = document.createElement('input'); input.type = key === 'test_port' || key === 'stop_timeout' ? 'number' : 'text'; input.value = value ?? ''; input.dataset.key = key; wrapper.append(input); container.append(wrapper); return input;
+  const input = document.createElement('input'); input.type = key === 'stop_timeout' ? 'number' : 'text'; input.value = value ?? ''; input.dataset.key = key; wrapper.append(input); container.append(wrapper); return input;
 }
 const instanceAlerts = {
   alert_window: ['托管窗口掉线告警', true],
@@ -90,7 +132,7 @@ function instance(name = '', config = {}, state = {}) {
   status.className = 'instance-state';
   status.textContent = !name ? '未保存' : state.state_unknown ? '状态待确认' : state.running ? '运行中' : '已停服';
   if (name && !state.window_online) status.textContent += ' · 无托管连接';
-  if (state.configuration_pending) status.textContent += ' · 配置待生效';
+  if (state.configuration_pending) status.textContent += ` · ${pendingConfiguration(state)}`;
   if (state.selectable === false) status.textContent += ' · 待移除';
   status.classList.toggle('running', !!state.running && !state.state_unknown);
   remove.type = 'button'; remove.className = 'quiet'; remove.textContent = '移除配置'; remove.onclick = () => card.remove();
@@ -102,7 +144,7 @@ function instance(name = '', config = {}, state = {}) {
   const body = document.createElement('div'), options = document.createElement('div');
   summary.textContent = '高级选项'; body.className = 'details-body'; options.className = 'columns';
   advanced.append(summary, body); body.append(options);
-  for (const [key, label] of Object.entries({ java_path: '实例 Java 路径（可选）', encoding: 'BAT 编码（默认 auto）', stop_timeout: '停服超时秒（默认 120）', stop_command: 'MC 停服命令（默认 stop）', restart_prompt: '自动重启提示（默认约定提示）', test_address: '测试服可达地址', test_port: '测试服专用端口' })) field(options, label, config[key], key);
+  for (const [key, label] of Object.entries({ java_path: '实例 Java 路径（可选）', encoding: 'BAT 编码（默认 auto）', stop_timeout: '停服超时秒（默认 120）', stop_command: 'MC 停服命令（默认 stop）', restart_prompt: '自动重启提示（默认约定提示）' })) field(options, label, config[key], key);
   const paths = document.createElement('label'); paths.append('试服复制清单（每行一个相对路径）');
   const list = document.createElement('textarea'); list.dataset.key = 'test_copy_paths'; list.value = (config.test_copy_paths ?? []).join('\n'); paths.append(list); body.append(paths);
   const watch = document.createElement('label'); watch.className = 'toggle';
@@ -128,6 +170,11 @@ async function loadHost() {
   for (const [name, config] of Object.entries(host.instances)) instance(name, config, host.state.find(item => item.instance === name));
   for (const state of host.state.filter(item => item.selectable === false)) { const p = document.createElement('p'); p.textContent = `${state.instance}：待移除，当前进程与操作仍可管理。`; document.querySelector('#instances').append(p); }
   document.querySelector('#powershell-path').value = host.powershell_path; document.querySelector('#world-java').value = host.world_tools.java_path ?? ''; document.querySelector('#operations-memory').value = host.operations_memory_limit_mib ?? 8192; document.querySelector('#scheduled-backup-dir').value = host.scheduled_backup_dir ?? ''; document.querySelector('#host-workspace-dir').value = host.workspace_dir ?? ''; document.querySelector('#download-max-bytes').value = host.download_max_bytes;
+  document.querySelector('#host-test-address').value = host.test_address ?? '';
+  document.querySelector('#host-test-port').value = host.test_port ?? '';
+  const legacy = document.querySelector('#legacy-test-fields');
+  legacy.hidden = !host.legacy_test_fields?.length;
+  legacy.textContent = legacy.hidden ? '' : `${host.legacy_test_fields.join('、')} 的旧试服地址和端口已忽略。请在「B 主机」设置全局地址和端口；保存服务端列表时会移除旧字段。`;
   updateDownloadHint();
   document.querySelector('#effective-storage-paths').textContent = `当前 B 使用：备份 ${host.effective.scheduled_backup_dir}；试服 ${host.effective.workspace_dir}；单文件 ${diskSize(host.effective.download_max_bytes)}。`;
   showIncidentSettings(host);
@@ -152,7 +199,7 @@ document.querySelector('#save-instances').onclick = function () {
       }
       if (!name || instances[name]) throw new Error('配置名不能为空或重复。'); instances[name] = config;
     }
-    await api('POST', 'host', { instances, revision: host.revision }); await loadHost(); show('服务端配置已保存；运行中的启动变更会等待空闲。');
+    await api('POST', 'host', { instances, revision: host.revision }); await loadHost(); show('服务端配置已保存。待生效的字段会在实例卡片标出。');
   });
 };
 document.querySelector('#test-key').onclick = function () { action(this, async () => { await api('POST', 'host/curseforge/test'); show('CurseForge 凭据已从 A 端验证。'); }); };
@@ -167,6 +214,10 @@ document.querySelector('#save-host').onclick = function () {
     const backupDir = document.querySelector('#scheduled-backup-dir').value;
     const workspaceDir = document.querySelector('#host-workspace-dir').value;
     const downloadMax = Number(document.querySelector('#download-max-bytes').value);
+    const address = document.querySelector('#host-test-address').value.trim();
+    const port = document.querySelector('#host-test-port').value;
+    if (address !== (host.test_address ?? '')) data.test_address = address;
+    if ((port ? Number(port) : null) !== (host.test_port ?? null)) data.test_port = port ? Number(port) : null;
     if (!Number.isSafeInteger(downloadMax) || downloadMax <= 0) throw new Error('单文件下载上限须为正整数（字节）。');
     if (memory !== (host.operations_memory_limit_mib ?? 8192)) data.operations_memory_limit_mib = memory;
     if (powerShell !== host.powershell_path) data.powershell_path = powerShell;
@@ -350,7 +401,11 @@ function storageTable(title, columns, rows) {
   const body = table.createTBody();
   for (const values of rows.length ? rows : [['暂无记录']]) {
     const row = body.insertRow();
-    for (const value of values) row.insertCell().textContent = value;
+    for (const value of values) {
+      const cell = row.insertCell();
+      if (value instanceof Node) cell.append(value);
+      else cell.textContent = value;
+    }
     if (!rows.length) row.cells[0].colSpan = columns.length;
   }
   return block;
@@ -395,20 +450,43 @@ async function loadStorage(side, endpoint) {
   }
 }
 async function loadModelUsage() {
-  const { daily, tasks } = await api('GET', 'model/usage');
-  const costs = [...daily, ...tasks].some(row => row.cost.length);
-  const columns = ['请求', '输入 token', '输出 token', '缓存命中 token', '未返回用量', ...(costs ? ['估算费用'] : [])];
-  const cells = row => [
-    row.requests, row.input_tokens, row.output_tokens,
-    `${row.cached_tokens}${row.cache_missing ? `（${row.cache_missing} 次未提供）` : ''}`,
-    row.no_usage, ...(costs ? [row.cost.join('、') || '—'] : []),
-  ];
-  document.querySelector('#model-usage').replaceChildren(
-    storageTable('最近 30 天', ['日期', '提供商', '模型', ...columns], daily.map(row => [row.date, row.provider, row.model, ...cells(row)])),
-    storageTable('用量最高的 10 个任务', ['任务', '群', '审核请求', ...columns], tasks.map(row => [row.name, row.group, row.review_requests, ...cells(row)])),
-  );
+  const { daily, tasks, daily_summary, non_task_summary } = await api('GET', 'model/usage');
+  const container = document.querySelector('#model-usage');
+  const search = node('input'); search.type = 'search'; search.placeholder = '按任务、编号、群或状态搜索';
+  search.setAttribute('aria-label', '筛选模型用量任务');
+  const scope = node('select'); scope.add(new Option('全部任务', 'all')); scope.add(new Option('前 10', 'top'));
+  scope.setAttribute('aria-label', '任务展示范围');
+  search.value = container.querySelector('input')?.value || '';
+  scope.value = container.querySelector('select')?.value || 'top';
+  const taskTable = node('div');
+  const render = () => {
+    const query = search.value.trim().toLowerCase();
+    const match = tasks.filter(row => `${row.name} ${row.id} ${row.group} ${row.state}`.toLowerCase().includes(query));
+    taskTable.replaceChildren(storageTable(`任务用量 · 匹配 ${match.length.toLocaleString()} 项`,
+      ['任务', '群', '状态', '审核请求', ...usageColumns, '阶段'],
+      (scope.value === 'top' ? match.slice(0, 10) : match).map(row => [
+        row.name, row.group, row.state, row.review_requests.toLocaleString(), ...usageCells(row),
+        button('阶段明细', () => management.usageDetails(row.name, row)),
+      ])));
+  };
+  search.oninput = scope.onchange = render;
+  const toolbar = node('div', null, 'toolbar');
+  toolbar.append(search, scope);
+  const byDay = node('details');
+  byDay.append(node('summary', '按天与模型查看'),
+    storageTable('最近 30 天用量', ['日期', '提供商', '模型', ...usageColumns], daily.map(row => [row.date, row.provider, row.model, ...usageCells(row)])));
+  container.replaceChildren(storageTable('最近 30 天用量汇总', ['范围', ...usageColumns], [
+    ['全部请求', ...usageCells(daily_summary)], ['非任务请求', ...usageCells(non_task_summary)],
+  ]), node('p', '用量单位为 tokens；1 K = 1,000，1 M = 1,000,000。', 'hint'), byDay, toolbar, taskTable);
+  render();
 }
 document.querySelector('#refresh-model-usage').onclick = function () { action(this, loadModelUsage); };
+document.querySelector('#sync-model-prices').onclick = function () {
+  action(this, async () => {
+    showCatalog((await api('POST', 'model/catalog/sync')).catalog);
+    show('价格目录已同步。可选模型，或在已绑定行应用最新价。');
+  });
+};
 document.querySelector('#refresh-storage').onclick = function () {
   action(this, () => Promise.all([loadStorage('a', 'storage'), loadStorage('b', 'storage/host')]));
 };
@@ -560,7 +638,7 @@ document.querySelector('#export-diagnostics').onclick = function () {
   });
 };
 const hostApi = (view, params = {}) => api('GET', 'management/host', { view, ...params });
-const management = createManagement({ api, hostApi, bridge, action, show, loadHost, ensureHost: () => host ? Promise.resolve() : loadHost(), diskSize });
+const management = createManagement({ api, hostApi, bridge, action, show, loadHost, ensureHost: () => host ? Promise.resolve() : loadHost(), diskSize, storageTable });
 styleSettings(document);
 management.open(location.hash || '#servers');
 window.addEventListener('hashchange', () => management.open(location.hash || '#servers'));

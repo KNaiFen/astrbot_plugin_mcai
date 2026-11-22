@@ -15,7 +15,15 @@
 .\.venv\Scripts\python.exe scripts/setup_world_tools.py
 ```
 
-完整 Agent/群命令测试还需要安装 AstrBot v4.29.4 的依赖，并指定其源码路径。例如源码位于 `runtime/astrbot-4.29.4`：
+先通过 `scripts/verify.py` 执行静态与快速冒烟检查，或按需运行完整核心回归（自动识别仓库内的 `runtime/astrbot-4.29.4` 与 `runtime/astrbot-test`）：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/verify.py --mode static
+.\.venv\Scripts\python.exe scripts/verify.py --mode quick
+.\.venv\Scripts\python.exe scripts/verify.py --mode full
+```
+
+若手动调用 `pytest` 跑全量核心回归：
 
 ```powershell
 $env:ASTRBOT_ROOT = "$PWD/runtime/astrbot-test"
@@ -23,7 +31,7 @@ $env:PYTHONPATH = "$PWD/runtime/astrbot-4.29.4"
 .\.venv\Scripts\python.exe -m pytest -q --require-astrbot --durations=15 --junitxml=runtime/pytest.xml
 ```
 
-上述默认收集核心行为回归，保留真实runner、HTTPS、托管窗口、审核批准、备份修改、失败恢复及原编号去重。日常修改按受影响行为选择文件或节点；同一轮涉及多个范围时，合并成一条去重后的pytest命令。核心回归只跑一次，已包含的节点不再作为重复关卡。文档整理检查相关链接、示例与打包。
+上述默认收集核心行为回归，保留真实runner、HTTPS、托管窗口、审核批准、备份修改、失败恢复及原编号去重。默认 `host` 夹具采用内存控制台替身与进程内本地执行以避免数百次重复拉起 ConPTY 与子进程；真实终端、ConPTY、`Execution` 共享额度与多窗口进程隔离由 `@pytest.mark.real_host` 显式标记并在每轮核心回归中覆盖。日常修改按受影响行为选择文件或节点；同一轮涉及多个范围时，合并成一条去重后的pytest命令。核心回归只跑一次，已包含的节点不再作为重复关卡。文档整理检查相关链接、示例与打包。
 
 详细兼容矩阵按变更范围显式追加，不再让每次任务重复启动全部环境：
 
@@ -68,27 +76,27 @@ tests/test_plan_continuation.py::test_one_approval_runs_three_observed_batches_w
 | API 托管搜索 | 核心检查搜索续接与持久会话；专项检查流式／非流式、preview、降级、有限重试、来源及上下文隔离 | `test_settings_search.py`、`api_compatibility.py` |
 | 网页阅读 | HTML正文和链接、JSON分页、GB18030文本、持久引用、页内查找、跨任务引用拒绝、无正文/二进制/登录/404/超限错误 | `test_web_downloads.py` |
 | MOD与下载 | 两站项目/说明/版本/依赖/变更说明、版本和加载器筛选、CurseForge API/CDN凭据、无关重定向不带凭据、分发受限、哈希失败、大小限制、临时错误重试、网络等待取消、HTTPS响应丢失及工具检查点去重 | `test_web_downloads.py`、`test_mcai_workflow.py` |
-| MOD 源码修复、试服与发布 | A 工作区、B 测试端口和复制预检、试玩反馈、同制品发布、验收清理及恢复 | `test_mod_workspace.py`、`test_plan_continuation.py`、`test_client_recovery.py`、`scripts/e2e_mod_repair.py` |
+| MOD 源码修复、试服与发布 | A 工作区、B 测试端口和复制预检、试玩反馈、同制品发布、验收清理及恢复 | `test_mod_workspace.py`、`test_plan_continuation.py`、`test_client_recovery.py` |
 | 批准安装与经验 | 拒绝不安装、审核后暂存变化、旧文件备份/新增文件恢复、真实runner贯穿验收归档、归档失败重载重试、文档/索引中断去重、人工编辑保留、多案例并发、相关片段与不同目录隔离 | `test_mcai_workflow.py`、`test_web_downloads.py` |
-| 日志和文件查询 | 字面量/正则、大小写、空查询、无匹配、普通/gzip、损坏 gzip、UTF-8/UTF-16/GB18030、中文路径、重叠上下文去重、调用栈归属、跨日日期、时区转换、追加/轮转、空文件和缺失文件 | `test_diagnostics.py`、`test_query_edges.py` |
-| 维护工具与存档修复 | 哈希补丁／编码保留、后台等待／检索、JVM身份与卡死恢复、就绪观察、组件清单差异、身份批量NBT、坏邻居点恢复、方块打包／高度图与原生批准流程 | `test_host_maintenance.py`、`test_host_recovery.py`、`test_host_verification.py`、`test_host_inventory.py`、`test_host_nbt_batch.py`、`test_host_region_recovery.py`、`test_host_blocks.py` |
+| 日志和文件查询 | 字面量/正则、大小写、空查询、无匹配、普通/gzip、损坏 gzip、UTF-8/UTF-16/GB18030、中文路径、重叠上下文去重、调用栈归属、跨日日期、时区转换、追加/轮转、空文件和缺失文件 | `test_diagnostics.py`、`test_query_cli.py` |
+| 维护工具与存档修复 | 哈希补丁／编码保留、后台等待／检索、JVM身份与卡死恢复、就绪观察、组件清单差异、身份批量NBT、坏邻居点恢复、方块打包／高度图与原生批准流程 | `test_host_maintenance.py`、`test_host_recovery.py`、`test_host_verification.py`、`test_host_world.py` |
 | 大结果 | 行数和字符预算、全局事件序号不连续、重复读同一页、末页/空页、中文和 emoji 的长字段引用、按字符续读、首次大结果创建持久目录 | `test_audit_data.py`、`test_job_interactions.py`、`test_tool_contracts.py` |
 | 在线诊断 | 开服期间执行、工作子目录、中文和空格路径、stdout/stderr、跨输出分块的多字节字符、非零退出码、脚本错误后停止后续语句、无效超时、正常超时、父子进程取消 | `test_diagnostics.py`、`test_job_interactions.py` |
 | 后台协作 | 多请求复用同一操作、并发重复取消、取消已完成/失败任务、同实例扫描串行和排队取消、其他实例并行、扫描期间读控制台、修复前结束所属诊断和扫描、保留其他任务工作 | `test_diagnostics.py`、`test_job_interactions.py` |
 | 存档查询 | 核心检查真实片段、扫描及原生工具流程；专项检查旧／新实体区域、UUID表示、负坐标、过滤范围、条件和排名 | `test_diagnostics.py`、`test_agent_edges.py`、`world_compatibility.py` |
-| 存档修改和恢复 | 核心保留原生runner批准后的批量NBT、方块与区域恢复；专项保留数据类型、编解码、MCR／MCC及损坏邻居矩阵 | `test_host_nbt_batch.py`、`test_host_blocks.py`、`test_host_region_recovery.py`、`world_compatibility.py` |
-| 修复故障 | 同一目标多次修改只备份原始内容、重叠目录/文件备份、恢复目录时移除新文件、备份失败、替换失败、修复脚本异常/超时保留现场、跳过后续步骤、失败后保持停服、显式停服不被自动重启覆盖、跨实例备份拒绝 | `test_workflows.py`、`test_repair_edges.py` |
+| 存档修改和恢复 | 核心保留原生runner批准后的批量NBT、方块与区域恢复；专项保留数据类型、编解码、MCR／MCC及损坏邻居矩阵 | `test_host_world.py`、`world_compatibility.py` |
+| 修复故障 | 同一目标多次修改只备份原始内容、重叠目录/文件备份、恢复目录时移除新文件、备份失败、替换失败、修复脚本异常/超时保留现场、跳过后续步骤、失败后保持停服、显式停服不被自动重启覆盖、跨实例备份拒绝、有效步骤绑定与纯停服无依赖 | `test_repair_edges.py` |
 | 群任务状态 | 新反馈与来源、修复期间反馈、停止／暂停和重载、完整分段发送及失败续发；设置与实例占用边界保留独立故障场景 | `test_task_interactions.py`、`test_say_mode.py`、`test_audit_agent.py`、`test_review_resume.py` |
 | 真实 Agent 工具链 | 基础与按需加载工具的契约及原生 runner 流程，含Chat／Responses实际请求、错参后正确调用、五个探针入口、暂停续接、后台等待／分页／长字段／取消、操作记录与上下文历史、单回复多工具、未知工具后继续、步数上限、配置错误后恢复、中止和原编号检查点恢复 | `test_tool_contracts.py`、`test_agent_edges.py`、`test_review_resume.py`、`test_plan_continuation.py` |
 | 服内探针桥接 | HTTPS断线去重、结果身份核对、会话变化、超时状态不确定、晚到结果、已有结果导入、范围schema、分页及长字段、取消确认、修复协作、多实例隔离 | `test_probe.py` |
 | 工具参数 | 实际 Chat／Responses 请求中的工具 schema 及非法参数，一次验证完整定义，再验证错参纠正后的真实读取 | `test_tool_contracts.py` |
-| 网络和持久化 | 502/503/504 重试、保留请求和操作编号、非 JSON/损坏 JSON、永久错误快速失败、POST/GET 响应丢失时中止、修复/诊断不重复执行、插件重载、B 的任务重建中断状态、PID 身份不匹配时保留新进程 | `test_workflows.py`、`test_diagnostics.py`、`test_client_recovery.py`、`test_job_interactions.py` |
+| 网络和持久化 | 502/503/504 重试、保留请求和操作编号、非 JSON/损坏 JSON、永久错误快速失败、POST/GET 响应丢失时中止、修复/诊断不重复执行、插件重载、B 的任务重建中断状态、PID 身份不匹配时保留新进程 | `test_repair_edges.py`、`test_diagnostics.py`、`test_client_recovery.py`、`test_job_interactions.py` |
 | HTTPS 直连 | 首次生成/重启复用证书、中文和空格路径、IP 地址直连、指纹格式和匹配、错误令牌、损坏或缺失的证书、本机 CLI、TLS 响应丢失/暂时断网、操作去重、后台任务续读与取消、插件重载 | `test_https.py` |
 | 独立审核和续接 | 三个入口分别放行/拒绝、配置与协议错误、审核重试、材料缺失/超限、脚本变更、主上下文隔离、规则重载、检查点中断恢复、修复部分失败后再次审批 | `test_review_resume.py`、`test_model_recovery_summary.py` |
 | 原生模型适配与 API 摘要 | 核心保留实际适配器工具调用、多轮执行、重试和上下文压缩；专项保留思考程度、流式／非流式、进度、摘要与失败矩阵 | `test_tool_contracts.py`、`test_plan_continuation.py`、`test_model_recovery_summary.py`、`api_compatibility.py` |
 | 完整交互与诊断导出 | 拒绝命令原文、任务私有API请求／响应／摘要、独立审核、批量工具结果、消息发送成功／失败、关闭群摘要和ZIP回放 | `test_tracing.py`、`test_settings_search.py` |
 | Web 管理控制台 | AstrBot 请求上下文和真实 A→B HTTPS：定时计划校验和替换、配置保存和环境回显、正常启停与占用冲突、Probe 局部读取、任务短码和归档、故障与 gzip 附件、经验索引、备份清单及后台取消 | `test_web_management.py`、`test_settings_search.py` |
-| Windows 运维入口 | CLI列表／状态／启停／恢复与相对目录、attach半行／长行／新会话、输入拒绝、每实例Java及托管窗口交互 | `test_https.py`、`test_audit_host.py`、`test_console_cli.py`、`test_terminal_isolation.py` |
+| Windows 运维入口 | CLI列表／状态／启停／恢复与相对目录、attach半行／长行／新会话、输入拒绝、每实例Java及托管窗口交互 | `test_https.py`、`test_audit_host.py`、`test_terminal_isolation.py` |
 | 独立终端与共享额度 | tm/terminal、当前目录与-C、命名互斥、目录登记、真实补全/历史/中文/Ctrl+C、两个窗口与B强杀重连、会话和控制编号去重、9999行与字节上限、Job配置失败、共享额度耗尽和恢复、修复备份保留 | `test_terminal_isolation.py` |
 
 ## 单独复现

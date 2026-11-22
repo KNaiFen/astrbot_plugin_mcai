@@ -1,7 +1,6 @@
 """AstrBot plugin view APIs; all B access uses the existing authenticated client."""
 
 import asyncio
-import hashlib
 import json
 import time
 import uuid
@@ -47,6 +46,7 @@ from .client import HostClient, RemoteError
 from .configuration import incident_routes, powershell_path, powershell_version
 from .downloads import MODRINTH
 from .environment import executable_status
+from .model_prices import sync_upstream_prices
 from .model_usage import parse_prices, task_usage, usage_report
 from .monthly_logs import A_LOGS, archive_list
 from .paths import web_identity, workspace_root
@@ -83,6 +83,8 @@ class Settings:
             ("diagnostics", self.diagnostics, ["GET", "POST"]),
             ("diagnostics/outbox", self.outbox, ["POST"]),
             ("model/usage", self.model_usage, ["GET"]),
+            ("model/catalog", self.model_catalog, ["GET"]),
+            ("model/catalog/sync", self.model_catalog, ["POST"]),
             ("management/host", self.host_management, ["GET", "POST"]),
             ("management/tasks", self.manage_tasks, ["GET", "POST"]),
             ("management/knowledge", self.knowledge, ["GET", "POST"]),
@@ -557,6 +559,18 @@ class Settings:
             self.plugin.store, parse_prices(self.plugin.config.get("model_prices", []))
         )
 
+    async def model_catalog(self):
+        self.web_sender()
+        store = self.plugin.store
+        return {
+            "catalog": (
+                await sync_upstream_prices(store)
+                if request.method == "POST"
+                else store.get("model_catalog", "latest")
+            ),
+            "bindings": store.get("model_price_meta", "bindings") or {},
+        }
+
     def web_sender(self):
         if not request.username:
             raise ValueError("请登录 AstrBot Dashboard")
@@ -584,6 +598,7 @@ class Settings:
                 for key in (
                     "instance",
                     "live",
+                    "existing_only",
                     "kind",
                     "before",
                     "limit",
@@ -633,6 +648,19 @@ class Settings:
             key = web_identity(body["id"])
             store.log("web_job_cancel", sender=sender, job=key)
             return await self.maintenance_request("POST", f"/jobs/{key}/cancel")
+        if action == "close_test":
+            key, task_id = uuid.uuid4().hex, web_identity(body["task_id"])
+            store.log(
+                "web_close_test_window", sender=sender, operation=key, task_id=task_id
+            )
+            async with asyncio.timeout(25):
+                return await tasks.client.call(
+                    body["instance"],
+                    "test_server",
+                    {"mode": "close", "expected_directory": body["directory"]},
+                    operation_id=key,
+                    task_id=task_id,
+                )
         if action == "schedule":
             command = body["command"]
             if command not in ("create", "edit", "pause", "resume", "delete"):
@@ -735,6 +763,7 @@ class Settings:
                 in f"{job['name']} {job['group']} {job.get('instance') or ''} {job['id']}".casefold()
             ]
             result = []
+            prices = parse_prices(self.plugin.config.get("model_prices", []))
             for job in rows[(page - 1) * 30 : page * 30]:
                 plan = job.get("plan")
                 approved = job.get("approved_plan")
@@ -766,7 +795,7 @@ class Settings:
                         if approved
                         else None,
                         "continuation_status": approved["status"] if approved else None,
-                        "usage": task_usage(store, job["id"]),
+                        "usage": task_usage(store, job["id"], prices),
                         "token_limit": tasks.task_token_limit
                         * (1 + job.get("token_limit_renewals", 0)),
                     }
@@ -834,55 +863,20 @@ class Settings:
         sender = self.web_sender()
         knowledge, store = self.plugin.tasks.knowledge, self.plugin.store
         async with knowledge.lock:
-            if request.method == "GET" and "name" not in request.query:
-                index = knowledge.document("index.md")
-                documents = [
-                    "index.md",
-                    *(
-                        f"servers/{item.name}"
-                        for item in sorted(
-                            (knowledge.directory / "servers").glob("*.md")
-                        )
-                        if item.is_file()
-                    ),
-                ]
-                try:
-                    entries = knowledge.entries(index.read_text(encoding="utf-8"))
-                except ValueError as exc:
-                    return {
-                        "documents": documents,
-                        "index_error": str(exc),
-                        "entries": [],
-                    }
-                return {"documents": documents, "entries": entries}
-            body = await request.json() if request.method == "POST" else request.query
-            name = body["name"]
-            path = knowledge.document(name)
-            encoded = path.read_bytes()
-            revision = hashlib.sha256(encoded).hexdigest()
             if request.method == "GET":
-                return {
-                    "name": name,
-                    "text": encoded.decode("utf-8"),
-                    "revision": revision,
-                }
-            text = body["text"]
-            if not isinstance(text, str):
-                raise ValueError("正文必须是 Markdown 文本")
-            if body.get("revision") != revision:
-                raise ValueError("文档已变化，请重新打开后再保存")
-            if name == "index.md":
-                knowledge.entries(text, require_files=True)
-            temporary = knowledge.document(name).with_suffix(".tmp")
-            if temporary.is_symlink() or temporary.is_junction():
-                raise ValueError("文档临时路径不能是链接")
-            updated = text.encode("utf-8")
-            temporary.write_bytes(updated)
+                return knowledge.web_read(request.query.get("name"))
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("经验文档请求须为 JSON 对象")
+            name, result = knowledge.web_save(body)
             store.log(
-                "web_knowledge_saved", sender=sender, document=name, previous=revision
+                "web_knowledge_saved",
+                sender=sender,
+                document=name,
+                action=body.get("action") or "raw",
+                previous=body.get("revision", body.get("index_revision")),
             )
-            temporary.replace(path)
-            return {"saved": True, "revision": hashlib.sha256(updated).hexdigest()}
+            return result
 
     async def environment(self):
         self.web_sender()
@@ -1011,6 +1005,13 @@ class Settings:
                 )
             if "model_prices" in fields:
                 parse_prices(fields["model_prices"])
+            if "model_price_meta" in body and (
+                not isinstance(body["model_price_meta"], dict)
+                or not all(
+                    isinstance(row, dict) for row in body["model_price_meta"].values()
+                )
+            ):
+                raise ValueError("模型价格来源须为提供商到来源对象的映射")
             if fields.get("host_offline_alert_minutes", 3) < 1:
                 raise ValueError("B 失联告警分钟数至少为 1")
             if fields.get("auto_cleanup_days", 0) < 0:
@@ -1080,6 +1081,10 @@ class Settings:
                 shell = await asyncio.to_thread(powershell_path, shell)
                 if not await plugin.config.save_config_async(fields):
                     raise ValueError("配置已被更新的保存请求替代，请重新读取设置")
+                if "model_price_meta" in body:
+                    plugin.store.save(
+                        "model_price_meta", "bindings", body["model_price_meta"]
+                    )
                 plugin.tasks.workspace.root = workspace
                 plugin.tasks.workspace.powershell_path = shell
                 if "curseforge_api_key" in fields:

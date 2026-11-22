@@ -39,14 +39,14 @@ npm install --prefix runtime/probe-client --proxy=http://127.0.0.1:7890 --no-aud
 .\.venv\Scripts\python.exe scripts/test_probe_servers.py --installed --player
 ```
 
-模拟玩家不需要外部客户端或FML握手，可直接在隔离服验证：
+模拟玩家不需要外部客户端或FML握手，可直接在隔离服验证（`forge1710` 已合并进 `test_probe_servers.py`）：
 
 ```powershell
 .\.venv\Scripts\python.exe scripts/test_probe_servers.py --installed --fake-player
-.\.venv\Scripts\python.exe scripts/test_probe_1710.py --fake-player
+.\.venv\Scripts\python.exe scripts/test_probe_servers.py forge1710 --fake-player
 ```
 
-1.7.10 脚本默认验证 spark，将 `runtime/probe-build/spark-gtnh-0.0.16.jar` 放入隔离服 `mods/`，并在该隔离服的 `config/config.json` 设置 `"backgroundProfiler": false`，让采样从空闲开始；纯 Probe 环境可加 `--expect-spark absent`。模拟玩家回归保留原命令、区块跟踪、死亡、踢出和重进检查，并验证旁观能力、毒伤对照、移动时新旧区块变化、跨维传送、拉杆和定期右键停止。临时存档检查涵盖 `save-all`、删除、停服与已有 UUID 存档的字节一致性。
+1.7.10 目标默认验证 spark，将 `runtime/probe-build/spark-gtnh-0.0.16.jar` 放入隔离服 `mods/`，并在该隔离服的 `config/config.json` 设置 `"backgroundProfiler": false`，让采样从空闲开始；纯 Probe 环境可加 `--expect-spark absent`，换用 Java 21 可加 `--java21`。模拟玩家回归保留原命令、区块跟踪、死亡、踢出和重进检查，并验证旁观能力、毒伤对照、移动时新旧区块变化、跨维传送、拉杆和定期右键停止。临时存档检查涵盖 `save-all`、删除、停服与已有 UUID 存档的字节一致性。
 
 测试服务端只监听127.0.0.1随机端口，使用隔离世界，测试命令可生成、删除对象。Fixture源码仅在 `-PprobeFixture` 时编译；该负载类和配置不会进入发行JAR。普通构建含Java统计／聚合检查，真实测试覆盖负坐标、掉落物堆栈、骑乘、方块NBT、采样、重复通知、取消、未加载目标、1.21.1冻结状态。结果和日志在 `runtime/probe-build/`。
 
@@ -56,4 +56,4 @@ npm install --prefix runtime/probe-client --proxy=http://127.0.0.1:7890 --no-aud
 
 Python的HTTPS、任务去重、取消／修复协作、会话错误、分页、大字段及真实AstrBot runner由 `tests/test_probe.py`、`tests/test_agent_edges.py`验证。完整基线见[测试说明](testing.md)。
 
-`python scripts/test_probe_host.py`在隔离Fabric1.20.1安装目录验证真实HTTPS→ConPTY→MOD，含重连去重、取消确认和停服备份修复。该脚本会修改测试实例文件，先完成安装版准备，不能指向生产实例。
+`python scripts/test_probe_host.py` 在隔离 Fabric 1.20.1 安装目录验证真实 HTTPS→ConPTY→MOD，含重连去重、取消确认和停服备份修复；加 `--recovery` 验证强杀／重启 B 时原 MC 进程与采样重连不重采。核心 Java 校验 `CoreChecks` 可随时由 `python scripts/verify.py --mode static` 单独执行。该脚本会修改测试实例文件，先完成安装版准备，不能指向生产实例。
