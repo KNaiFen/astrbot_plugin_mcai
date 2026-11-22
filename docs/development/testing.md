@@ -115,4 +115,6 @@ tests/test_plan_continuation.py::test_one_approval_runs_three_observed_batches_w
 
 Python 行/分支覆盖率衡量执行过的 Python 代码。Java 辅助程序通过真实 JVM 的读写、压缩、外部文件和恢复结果验证；没有把 Python 覆盖率数字用于表示 Java 的覆盖率。
 
+内存诊断复验见完整源码的 `docs/development/records/probe-memory-2026-11-22.md`。`tests/test_memory_diagnostics.py` 启动隔离 JVM 生成真实 JFR 和 HPROF；验证停顿重合、分配首样本、支配路径、小堆降级及 B 端路径限制。
+
 真实模型与隔离服务端的专项记录仅涵盖所列模型和服务端组合。真实 QQ、用户的模型与 CurseForge 凭据以及生产整合包仍需在各自部署中验证。Python回归主要以BAT运行受控交互进程，另有上述真实Minecraft服验收。没有耗尽整机内存、模拟整机断电或真实磁盘损坏；共享额度用小Job限制验证，不能证明MC自身耗尽系统内存时Windows会如何处置其他进程。真实存档来源与许可见[第三方说明](third-party.md)。

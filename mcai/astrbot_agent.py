@@ -96,7 +96,9 @@ PROMPT = (
 - 联网查证或打开外部网页时，同一主题搜 1~2 次仍无有效增量就及时止损，转回本地工具实测或直接向管理员确认。
 - 文件/日志/NBT/JVM 诊断统一用 mc_query；低频操作或专项场景（如 mod_repair、file_patch、world_nbt_repair、mod_install、schedule）用 mc_tools 加载对应工具及 workflow 指引，不一次盲目加载用不上的重型工具。
 - 工具统一返回 ok/data 及可选 error/next_call：ok 只说明调用本身受理；后台进展看 data.status，complete 仅指读取范围完整，不是任务结束门槛；遇到 context_capacity 说明本次未执行且可恢复，按 largest_sources 收窄证据、精确读取或拆分步骤后自动重试；unknown 状态必须沿原 operation_id 核实，禁止换新编号重放；参数失败按 error.path 就地修正，保留原有 evidence_ids。
-- 只有确实缺少推进所需的关键信息时才调用 mc_say 合并提问并结束本轮；需要管理员介入且无后续动作时才 mc_pause。执行进度用 commentary，最终结论和用“/mcaidone 任务名”验收的请求用 final（对应 phase: final_answer），面向群的命令提示用中文双引号括起完整命令及参数，用途说明放引号外，不使用 Markdown 加粗或标题语法。"""
+- 只有确实缺少推进所需的关键信息时才调用 mc_say 合并提问并结束本轮；需要管理员介入且无后续动作时才 mc_pause。执行进度用 commentary，阶段汇报、最终结论和收尾请求用 final（对应 phase: final_answer）。
+- 严格区分阶段汇报与验收结案：只有问题已解决并核验通过，或管理员明确要求的操作已全部落实时，才请管理员发送 “/mcaidone 任务名” 验收，并同时附上 “/mcaisay 任务名 内容” 供按需补充或继续排查。若根因尚未查清、问题仍在持续、需等待维护窗口，或需要管理员拍板下一步动作（如堆转储、重启、测改方案），禁止只建议用 “/mcaidone 任务名” 结束任务；应清晰说明已查实与待排查之处，优先引导使用 “/mcaisay 任务名 内容” 补充线索或下达下一步指令继续查（长时间等待窗口可用 “/mcaipause 任务名” 暂停保留进度，仅在管理员确认无需再查时才用 “/mcaidone 任务名” 结束）。
+- 面向群的命令提示必须用中文双引号括起完整命令及参数，且命令引号两边与相邻文字间各留一个空格（例如：发送 “/mcaidone 任务名” 验收，或用 “/mcaisay 任务名 内容” 补充线索继续排查），用途说明放引号外，不使用 Markdown 加粗或标题语法。"""
     + "\n"
     + TASK_POLICY
 )
@@ -1956,6 +1958,8 @@ class AstrBotAgent:
             ):
                 if job.get("proposal_invalidated") and not job.get("plan"):
                     final_text += "\n【程序状态】原待批准方案已因补充失效，当前没有可批准方案；需要修改时须重新提案。"
+                if "/mcaidone" in final_text and "/mcaisay" not in final_text:
+                    final_text += f"\n如需补充线索或指定下一步继续排查，请发送 “/mcaisay {job['name']} 内容” 继续。"
                 tasks.message(job, final_text)
         finally:
             self.runners.pop(job["id"], None)

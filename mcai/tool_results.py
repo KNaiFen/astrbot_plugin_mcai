@@ -104,10 +104,12 @@ def model_result(name, arguments, result, operation_id=None):
         for row in data["items"]:
             body = row["body"]
             if probe == "metrics":
-                for key in ("worlds", "dimensions", "slow_tick_events"):
+                for key in ("worlds", "dimensions", "slow_tick_events", "state_events"):
                     if isinstance(items := body.get(key), list) and len(items) > 8:
                         body[key] = (
-                            items[-8:] if key == "slow_tick_events" else items[:8]
+                            items[-8:]
+                            if key in ("slow_tick_events", "state_events")
+                            else items[:8]
                         )
                         body[f"{key}_total"] = len(items)
                         data["details"] = {

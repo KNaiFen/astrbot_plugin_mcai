@@ -79,7 +79,7 @@ B生命周期使用HostRunner：在aiohttp的pre_shutdown停止WebSocket输入�
 - `astrbot_plugin_mcai.zip`：插件入口、配置schema、A所需模块、依赖清单、运行时规则模板、设置视图、README和分层文档。
 - `mcai_windows_host.zip`：Python项目、基础与实例配置示例、模块、规则模板、JAR与许可、README和分层文档。
 - `probe/`：八目标、各目标sources JAR、完整源码ZIP与许可；B包中同样附带。
-- `mcai-<版本>-source.zip`：来自 Git 跟踪清单的源码、构建脚本、测试和许可；未跟踪试验文件、运行数据和 Git 历史不打包。
+- `mcai-<版本>-source.zip`：来自 Git 跟踪清单的源码、构建脚本、测试和许可；开发 `AGENTS.md`、未跟踪试验文件、运行数据和 Git 历史不打包。
 
 A、B 包携带当前使用、设计和开发指南及相关许可。发行验证、历史记录和证据位于完整源码的 `docs/development/records/`。源码测试、开发脚本、上游副本及开发 `AGENTS.md` 不进入 A、B 安装包；指南中的测试和构建命令在完整源码中运行。JAR 随 B 包部署，运行时不下载。
 

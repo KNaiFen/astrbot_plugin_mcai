@@ -145,7 +145,7 @@ async def server_status(client, store, identity, instance, admin):
                 )
             row = next((row for row in rows if row["instance"] == instance), None)
             if row is None:
-                raise ValueError("实例不存在；用 /mcaiserver 查看实例 ID。")
+                raise ValueError("实例不存在；用 “/mcaiserver” 查看实例 ID。")
             lines = [f"{instance}：{state_text(row)}"]
             metrics = await reads.call(row, "metrics", {"view": "summary"})
             if admin:
@@ -252,7 +252,7 @@ async def run_question(tasks, reads, event, identity, text):
     explicit = first in instances
     selected = instances[first] if explicit else None
     if explicit and not rest:
-        return "请在实例 ID 后填写问题，例如 /mcaiask " + first + " 现在运行正常吗？"
+        return f"请在实例 ID 后填写问题，例如 “/mcaiask {first} 现在运行正常吗？”"
     question = rest[0] if explicit else text
     context = tasks.agent.context
     provider_id = tasks.agent.provider_id or await context.get_current_chat_provider_id(
@@ -295,7 +295,7 @@ async def run_question(tasks, reads, event, identity, text):
         nonlocal selected
         if name not in contracts:
             raise ValueError(
-                f"只读问答不允许调用 {name}；需要修改时请使用 /mcainew 建立任务。"
+                f"只读问答不允许调用 {name}；需要修改时请使用 “/mcainew 任务名 问题描述” 建立任务。"
             )
         validate(public, contracts[name][1])
         if name == "mc_instances":
@@ -311,7 +311,7 @@ async def run_question(tasks, reads, event, identity, text):
             if explicit or selected is not None:
                 raise ValueError("本次问答的目标已确定，不能切换实例。")
             if public["instance"] not in instances:
-                raise ValueError("实例不存在，请用户在 /mcaiask 后附上实例 ID。")
+                raise ValueError("实例不存在，请用户在 “/mcaiask” 后附上实例 ID。")
             selected = instances[public["instance"]]
             return {"instance": selected["instance"], "status": state_text(selected)}
         if name == "mc_tools":
@@ -333,8 +333,14 @@ async def run_question(tasks, reads, event, identity, text):
                 query, options = parse_query(arguments["argv"])
             except QueryHelp as exc:
                 return {"help": str(exc)}
-            if query == "mc_diagnostics" and options.get("mode") == "chunk_jfr":
-                raise ValueError("只读问答不启动 JFR 录制。")
+            if query == "mc_diagnostics" and options.get("mode") not in (
+                None,
+                "process",
+                "jvm",
+            ):
+                raise ValueError(
+                    "只读问答只开放 process 和 jvm 诊断；录制、类直方图和离线堆分析请使用排障任务。"
+                )
             action, arguments = query_operation(query, options)
         elif name in JOB_MODES:
             if arguments["job_id"] not in reads.jobs:
@@ -388,7 +394,7 @@ async def run_question(tasks, reads, event, identity, text):
         tasks.agent.rules() + "\n\n【本轮使用只读问答模式，以下限制优先】\n"
         "你正在处理 Minecraft 单次只读问答。用中文按证据简洁作答，避免披露敏感配置、凭据或无关私有信息。"
         "没有指定实例时根据问题与实例说明选一个；无法确定时回复请用户带实例 ID 重新提问。"
-        "如果需要修改、发命令或启停，解释依据并建议用 /mcainew 建任务，可引用本回答。"
+        "如果需要修改、发命令或启停，解释依据并建议用 “/mcainew 任务名 问题描述” 建任务，可引用本回答（面向群的命令提示用中文双引号括起，引号两边留空格）。"
         "第 8 步须根据已有证据作答，不再调用工具。\n"
         f"预选实例：{selected['instance'] if selected else '无'}\n"
     )
@@ -448,7 +454,7 @@ async def run_question(tasks, reads, event, identity, text):
     if final and final.role == "err" and not last_text:
         raise ValueError(final.completion_text)
     if selected is None:
-        return "未能确定要查询的实例，请在 /mcaiask 后带上实例 ID 再问。"
+        return "未能确定要查询的实例，请在 “/mcaiask” 后带上实例 ID 再问。"
     return (
         last_text.strip()
         or "在 8 步内未得到可确认的结论，请缩小问题范围或带上实例 ID 再问。"

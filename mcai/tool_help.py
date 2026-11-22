@@ -77,7 +77,7 @@ EXAMPLES = {
         ],
     },
     "mc_plan_finish": {"plan_id": "P", "summary": "已核对最后批次结果，方案执行结束"},
-    "mc_say": {"text": "请用“/mcaisay 任务名 内容”补充实际报错时间"},
+    "mc_say": {"text": "请用 “/mcaisay 任务名 内容” 补充实际报错时间"},
     "mc_pause": {"reason": "托管窗口未打开，需要管理员在服务端目录运行mcai tm"},
     "mc_mods": {
         "source": "modrinth",
@@ -109,7 +109,8 @@ GUIDANCE = {
     "使用已有查询CLI可直接完成的查询时优先mc_query。脚本修改使用mc_propose，声明备份路径。",
     "mc_artifact_read": "先读summary，再按概览的result_path精确取值。NBT对象优先查询CLI的children/selector。"
     "文本先mc_artifact_find取得offset，再读取必要原文。covered_by表示已有上下文保留的区间。",
-    "mc_profile": "Probe采样是实测tick耗时，spark是采样权重。解释来源、范围与窗口；计数不能替代耗时。"
+    "mc_chunks": "scheduled_backlog 查范围内已加载区块的待执行计划刻数量。先看积压，再用 mc_profile 定位实测耗时。",
+    "mc_profile": "Probe采样实测对象及可用区块阶段的tick耗时；spark报告采样权重。解释来源、范围与窗口。"
     "每实例一次采样；若已有外部spark采样，按实际冲突处理。",
     "mc_inspect": "实体使用实际UUID，方块使用全局方块坐标。只读已加载对象；未找到UUID不能证明已删除。",
 }

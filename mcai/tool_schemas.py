@@ -479,7 +479,7 @@ TOOLS = [
     ),
     (
         "mc_diagnostics",
-        "卡顿/卡死取证：process读资源，jvm取线程和堆信息；chunk_jfr限时60秒观察区块生成及受支持的区域读写。省略pid须唯一Java；后台沿next_call读取。",
+        "卡顿/内存取证：process读资源，jvm取线程和堆信息；chunk_jfr观察区块；memory_jfr限时录制GC、分配和老对象；class_histogram可能暂停JVM，按需使用；hprof_summary离线分析已有.hprof。在线模式省略pid须唯一Java；后台沿next_call读取。",
         variants(
             "mode",
             {
@@ -499,6 +499,21 @@ TOOLS = [
                     for mode in ("process", "jvm")
                 },
                 "chunk_jfr": ({"pid": {"type": "integer", "minimum": 1}}, ()),
+                "memory_jfr": (
+                    {
+                        "pid": {"type": "integer", "minimum": 1},
+                        "seconds": {"type": "integer", "minimum": 10, "maximum": 60},
+                    },
+                    (),
+                ),
+                "class_histogram": (
+                    {
+                        "pid": {"type": "integer", "minimum": 1},
+                        "top": {"type": "integer", "minimum": 1, "maximum": 100},
+                    },
+                    (),
+                ),
+                "hprof_summary": ({"path": STRING}, ("path",)),
             },
         ),
     ),
@@ -530,27 +545,29 @@ TOOLS = [
     ),
     (
         "mc_metrics",
-        "需Probe；返回全服和维度指标。spark可用时含TPS、MSPT、CPU、GC及原生窗口。window_seconds默认60，history返回近五分钟逐秒记录，维度无独立TPS。",
+        "需Probe；全服和维度的墙钟、主线程CPU、阶段及GC指标，含JVM堆/池/缓冲。history查秒级历史、加载变更和慢拍，默认省略空闲维度。spark指标单列。",
         contract(
             {
                 "window_seconds": {"type": "integer", "enum": [10, 60, 300]},
                 "history": {"type": "boolean"},
+                "include_idle_dimensions": {"type": "boolean"},
+                "history_step_seconds": {"enum": [1, 5]},
             }
         ),
     ),
     (
         "mc_chunks",
-        "需Probe；查已加载区块与直接ticket。forced_summary按维度和可验证模组汇总直接强加载，排除邻区传播和普通玩家ticket。小范围用scope=chunks与区块边界；scope=dimension扫全维度。",
+        "需Probe；查已加载区块与直接ticket。forced_summary汇总直接强加载，scheduled_backlog按待执行计划刻数量排行。小范围用scope=chunks与区块边界。",
         probe_range(
             {
                 "top": {"type": "integer", "minimum": 1, "maximum": 1000},
-                "view": {"enum": ["chunks", "forced_summary"]},
+                "view": {"enum": ["chunks", "forced_summary", "scheduled_backlog"]},
             }
         ),
     ),
     (
         "mc_runtime",
-        "需Probe；查实际版本、模组、启用的数据包、维度或设置。section默认summary；mods可带inventory_job_id比较本实例同目录的磁盘清单，版本相同不证明二进制相同。",
+        "需Probe；查运行时组件和设置。section=mods可用query按ID或名称过滤，或用inventory_job_id比较本实例的磁盘清单。",
         contract(
             {
                 "section": {
@@ -558,19 +575,21 @@ TOOLS = [
                 },
                 "dimension": STRING,
                 "inventory_job_id": STRING,
+                "query": {"type": "string", "minLength": 1, "maxLength": 256},
             }
         ),
     ),
     (
         "mc_objects",
-        "需Probe；按scope普查已加载对象，不加载区块。数量不代表耗时。",
+        "需Probe；普查已加载对象。category=blocks限chunks/player且最多16区块，按block_id过滤；group_by=object查坐标、type计数。数量不代表耗时。",
         probe_range(
             {
                 "category": {
                     "type": "string",
-                    "enum": ["all", "entities", "items", "block_entities"],
+                    "enum": ["all", "entities", "items", "block_entities", "blocks"],
                 },
                 "type": STRING,
+                "block_id": STRING,
                 "group_by": {"type": "string", "enum": ["chunk", "type", "object"]},
                 "top": {"type": "integer", "minimum": 1, "maximum": 1000},
             }
@@ -578,7 +597,7 @@ TOOLS = [
     ),
     (
         "mc_profile",
-        "需Probe；默认engine=probe实测对象tick（须scope，默认10秒，上限30）。慢拍用only_ticks_over_ms，对象坐标用group_by=object。spark采集调用栈权重（15至60秒，默认30），不支持区块范围。每实例一次；取消spark只停止等待。",
+        "需Probe；engine=probe实测对象和可用区块阶段的tick墙钟并标注窗口GC，group_by=object查瞬态实体细节。spark采集调用栈权重，mode=execution或allocation（依赖spark平台支持），不支持区块范围。每实例一次；取消spark只停止等待。",
         {
             "type": "object",
             "oneOf": [
@@ -589,7 +608,11 @@ TOOLS = [
                             "type": "integer",
                             "minimum": 1,
                             "maximum": 60000,
-                            "description": "只汇总全服tick耗时严格超过此毫秒阈值的实体和方块实体实测耗时。",
+                            "description": "只汇总全服tick耗时严格超过此毫秒阈值的实测耗时。",
+                        },
+                        "include_chunk_phases": {
+                            "type": "boolean",
+                            "description": "采集可用区块阶段；省略时chunk、type、dimension启用，object关闭，需Probe能力支持。",
                         },
                         "seconds": {"type": "integer", "minimum": 1, "maximum": 30},
                         "type": STRING,
@@ -603,6 +626,8 @@ TOOLS = [
                 contract(
                     {
                         "engine": {"enum": ["spark"]},
+                        "mode": {"enum": ["execution", "allocation"]},
+                        "alloc_live_only": {"type": "boolean"},
                         "seconds": {
                             "type": "integer",
                             "minimum": 15,
@@ -1140,7 +1165,7 @@ TOOLS = [
     ),
     (
         "mc_plan_finish",
-        "当前批次结果已结算后，结束带continuation的已批准多轮方案，记录实际结果。单次方案完成后直接报告；不调用本工具。不代替管理员验收，summary说明验证依据和未确定事项，随后用final报告并请求/mcaidone验收。",
+        "当前批次结果已结算后，结束带continuation的已批准多轮方案，记录实际结果。单次方案完成后直接报告；不调用本工具。不代替管理员验收，summary说明验证依据和未确定事项，随后用final报告，按规范在命令引号两边留空格给出 “/mcaidone 任务名” 验收提示，并附上 “/mcaisay 任务名 内容” 供继续补充或排查。",
         contract(
             {
                 "plan_id": {"type": "string", "minLength": 1},
@@ -1162,7 +1187,7 @@ TOOLS = [
     ),
     (
         "mc_pause",
-        "确无可行路径且需管理员处理时硬暂停，返回paused及resume_command。仅缺补充用mc_say提问并结束本轮，/mcaisay自动继续；硬暂停须/mcairesume。",
+        "确无可行路径且需管理员处理时硬暂停，返回paused及resume_command。仅缺补充或需要管理员指示下一步时优先用mc_say或final配合 “/mcaisay 任务名 内容” 继续，硬暂停须 “/mcairesume 任务名” 。",
         contract({"reason": {"type": "string", "minLength": 1}}, ("reason",)),
     ),
 ]
@@ -1319,7 +1344,7 @@ FIELD_HELP = {
     "instance": "mc_instances返回的实例名称，不是目录或QQ群名。",
     "reason": "本次目标选择依据，或确实需要管理员处理的具体暂停原因。",
     "directory": "经验索引返回的规范目录；省略使用当前绑定实例。",
-    "text": "面向群的必要提问，说明缺少的信息及/mcaisay 任务名 内容用法；长消息自动分段，不省略必要内容。",
+    "text": "面向群的必要提问，说明缺少的信息及 “/mcaisay 任务名 内容” 用法（命令引号两边留空格）；长消息自动分段，不省略必要内容。",
     "scope": "Probe取证范围；player/chunks/dimension分支需相应定位字段。",
     "player": "游戏名或UUID，不能使用QQ账号代替。",
     "radius_chunks": "玩家周围区块半径，省略采用Probe默认范围，上限32。",
@@ -1458,7 +1483,7 @@ TOOLS.extend(
             '故障详情["incidents","show","--id","事件编号"]；尾部用["incidents","console","--id","事件编号","--after","末行号减几十行"]。'
             '区块卡顿["diagnostics","chunk-jfr"]。进入recording后程序会通知群里可以复现；沿next_call等结果，不用mc_say重复通知或等待玩家回复。'
             '常用尾读["files","tail","--path","logs/latest.log","--line-count","30"]；'
-            '单轮JVM["diagnostics","jvm","--samples","1"]。'
+            '单轮JVM["diagnostics","jvm","--samples","1"]；内存采样["diagnostics","memory-jfr","--duration-seconds","25"]。'
             '已知格式直接执行；陌生参数直接读["类别","子命令","--help"]，独立帮助同轮调用，不逐级重复查看。'
             '顶层["--help"]用于不知道命令时。复杂参数用JSON字符串；布尔开关可用--选项/--no-选项。'
             "查询返回原结果及next_call；修改预览不写入，实际修改仍用mc_propose。",

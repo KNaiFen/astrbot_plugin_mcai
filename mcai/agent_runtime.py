@@ -231,8 +231,8 @@ async def model_request(
                 else f"{stage} API 已连续失败 3 次，正在继续重试。"
             )
             + f"错误类别：{state['error_type']}。\n"
-            f"暂停并保留进度：/mcaipause {job['name']}\n"
-            f"停止任务：/mcaistop {job['name']}",
+            f"暂停并保留进度：“/mcaipause {job['name']}”\n"
+            f"停止任务：“/mcaistop {job['name']}”",
             job["admin"],
             identity="api-retry-" + state["id"],
         )

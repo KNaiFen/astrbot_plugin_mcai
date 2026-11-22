@@ -29,7 +29,7 @@
 
 ## 安装前准备
 
-当前版本为 **0.20.0**，A、B 和托管窗口使用 `mcai-9`。见 [0.20.0 下载与校验和](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.20.0)及[发布说明](docs/usage/releases.md)。已有部署请先看[升级步骤](#更新时保留什么)。
+当前版本为 **0.20.1**，A、B 和托管窗口使用 `mcai-9`。见 [0.20.1 下载与校验和](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.20.1)及[发布说明](docs/usage/releases.md)。已有部署请先看[升级步骤](#更新时保留什么)。
 
 B 使用 `mcai_windows_host.zip`，其中附带可选的 Probe 0.5.0；A 使用 `astrbot_plugin_mcai.zip`。需要从源码安装时，见[构建说明](docs/development/README.md#构建与发行)。
 
@@ -197,7 +197,7 @@ Set-Location -LiteralPath 'D:\MCAI'
 .\.venv\Scripts\python.exe -m mcai host
 ```
 
-首次启动会生成证书，并显示类似：
+启动后当前窗口标题会变为 `MCAI-HOST`（退出时恢复原标题）；首次启动会生成证书，并显示类似：
 
 ```text
 HTTPS 监听：0.0.0.0:18765
@@ -274,7 +274,7 @@ Set-Location -LiteralPath 'D:\MCAI'
 
 在 AstrBot **插件管理页**使用 ZIP 安装入口，选择配套的 `astrbot_plugin_mcai.zip`，等待安装依赖并启用插件。找到显示名称为 **“MC 排障助手”**、插件标识为 `astrbot_plugin_mcai` 的插件，打开其**设置视图**，页面标题为“MCAI 设置”。
 
-也可以通过仓库地址安装：[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)。安装时为 A、B 与托管窗口选用同一版本：0.20.0 与 0.19.x 使用 `mcai-9`，0.18.0 使用 `mcai-8`。部署步骤见[安装前准备](#安装前准备)。
+也可以通过仓库地址安装：[插件仓库](https://github.com/KNaiFen/astrbot_plugin_mcai)。安装时为 A、B 与托管窗口选用同一版本：0.20.x 与 0.19.x 使用 `mcai-9`，0.18.0 使用 `mcai-8`。部署步骤见[安装前准备](#安装前准备)。
 
 若安装依赖时出现 `WinError 5`，并指向 `charset_normalizer` 或 `__mypyc*.pyd`，完全退出 AstrBot 后，按[安装依赖时拒绝访问](docs/usage/operations.md#安装依赖时拒绝访问)预装依赖，再启动 AstrBot 重试安装。
 
@@ -436,7 +436,7 @@ AI可以继续核对日志与现场。对涉及源码修复的 MOD，先按[试�
 
 ## 群命令速查
 
-下表中的方括号表示可选内容，实际发送时不用带方括号。群内提示用中文双引号标出完整命令及参数，实际发送时不用带引号。
+下表中的方括号表示可选内容，实际发送时不用带方括号。群内提示用中文双引号标出完整命令及参数（引号两边留空格），实际发送时不用带引号；如果不小心拼错指令、在 `mcai` 后多加空格或指令与参数间漏写空格，Bot 会给出最接近的指令建议。
 
 | 命令 | 谁可以用 | 用途 |
 |---|---|---|
@@ -479,7 +479,7 @@ B 的文件备份默认在 `data_dir/backups/操作编号/`。恢复前先核对
 
 ### 更新时保留什么
 
-升级到 0.20.0（`mcai-9`）时配套更新 A、B 和托管窗口。若要使用 Probe 高压采样开销优化与八目标模拟玩家通道修复，请同时换成本次 B 包中的 Probe 0.5.0。先完成或中止活动任务，再安排停服及备份。A 更新后在设置页核对三份规则的新版提示；升级不会自动覆盖现有规则，旧安装没有模板基线时会显示「基线未知」，请先查看差异。详见[升级步骤和保留清单](docs/usage/operations.md#升级到-0200)。
+升级到 0.20.1（`mcai-9`）时配套更新 A、B 和托管窗口。若要使用新的区块卡顿诊断、模拟玩家控制和 Mixin 兼容修复，请同时换成本次 B 包中的 Probe 0.5.0。先完成或中止活动任务，再安排停服及备份。A 更新后在设置页核对三份规则的新版提示；升级不会自动覆盖现有规则，旧安装没有模板基线时会显示「基线未知」，请先查看差异。详见[升级步骤和保留清单](docs/usage/operations.md#升级到-0201)。
 
 升级后须用 `/mcaiapply 任务名 短码` 批准方案。网页读取和下载只访问公网地址。「MCAI 设置 → 数据占用」新增两端占用统计和已结束任务的手动清理，清理前可先预览范围。
 

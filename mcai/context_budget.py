@@ -516,7 +516,7 @@ async def fit_history(
             f"{detail}；当前配置窗口{limit} tokens，所需输入约{required} tokens，"
             f"另预留输出{output_budget} tokens。原文和原操作编号保留。"
             f"请先确认服务商和模型支持的容量，在AstrBot提供商模型配置中将"
-            f"max_context_tokens调至至少{suggested}，保存后使用“/mcairesume {job['name']}”续接；"
+            f"max_context_tokens调至至少{suggested}，保存后使用 “/mcairesume {job['name']}” 续接；"
             "若模型不支持更大窗口，请保留当前任务证据，另建范围更小的任务。"
             "仅重复续接或要求群用户修改已返回结果不能解除此限制"
         )

@@ -119,7 +119,12 @@ EXAMPLES = {
             "by_type",
         ]
     ],
-    "diagnostics": [["diagnostics", "jvm", "--samples", "1"]],
+    "diagnostics": [
+        ["diagnostics", "jvm", "--samples", "1"],
+        ["diagnostics", "memory-jfr", "--duration-seconds", "25"],
+        ["diagnostics", "class-histogram", "--top", "20"],
+        ["diagnostics", "hprof-summary", "--path", "dumps/capture.hprof"],
+    ],
 }
 GUIDANCE = {
     "nbt": "nbt-path/relative-path是JSON键或下标数组。selector按uuid、position、slot或match定位对象。"
@@ -129,7 +134,8 @@ GUIDANCE = {
     "region-scan": "bounds为全局方块[minX,minY,minZ,maxX,maxY,maxZ]；先限定必要范围。计数不代表实测耗时。",
     "logs": "默认view=events返回完整多行异常归组、次数、代表栈及罕见组。先据此选择，再用view=value读必要原文；时间按实例本地ISO格式。",
     "diagnostics": "process采集CPU/I/O增量、内存和线程；jvm还采集实际JDK的参数、堆概要和线程快照。"
-    "samples默认3、范围1至5；interval-seconds默认1、范围0.1至10。省略pid需唯一Java，采集绑定实例会话和进程创建时间。",
+    "memory-jfr默认25秒（10至60），不查老对象GC Root；class-histogram可能暂停JVM；hprof-summary仅分析已有实例或任务范围内的文件。"
+    "在线模式省略pid需唯一Java，采集绑定实例会话和进程创建时间。",
 }
 GUIDANCE["nbt"] += (
     '\nselector格式：{"by":"uuid","uuid":"实际UUID"}；'

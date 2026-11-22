@@ -42,11 +42,17 @@ npm install --prefix runtime/probe-client --proxy=http://127.0.0.1:7890 --no-aud
 模拟玩家不需要外部客户端或FML握手，可直接在隔离服验证：
 
 ```powershell
-.\.venv\Scripts\python.exe scripts/test_probe_servers.py forge1165 forge1201 --installed --fake-player
+.\.venv\Scripts\python.exe scripts/test_probe_servers.py --installed --fake-player
 .\.venv\Scripts\python.exe scripts/test_probe_1710.py --fake-player
 ```
 
+1.7.10 脚本默认验证 spark，将 `runtime/probe-build/spark-gtnh-0.0.16.jar` 放入隔离服 `mods/`，并在该隔离服的 `config/config.json` 设置 `"backgroundProfiler": false`，让采样从空闲开始；纯 Probe 环境可加 `--expect-spark absent`。模拟玩家回归保留原命令、区块跟踪、死亡、踢出和重进检查，并验证旁观能力、毒伤对照、移动时新旧区块变化、跨维传送、拉杆和定期右键停止。临时存档检查涵盖 `save-all`、删除、停服与已有 UUID 存档的字节一致性。
+
 测试服务端只监听127.0.0.1随机端口，使用隔离世界，测试命令可生成、删除对象。Fixture源码仅在 `-PprobeFixture` 时编译；该负载类和配置不会进入发行JAR。普通构建含Java统计／聚合检查，真实测试覆盖负坐标、掉落物堆栈、骑乘、方块NBT、采样、重复通知、取消、未加载目标、1.21.1冻结状态。结果和日志在 `runtime/probe-build/`。
+
+加 `--chunk-diagnostics` 可用同一套安装版脚本检查熔岩流动、现代版侦测器红石时钟、阶段耗时、主动查询前后的已加载区块数，以及同一 UUID 移动跨区后的计时合并。该场景通过原版指令布置，在指定目标区块之外放置模拟玩家保持邻区运行，无需安装 Fixture。
+
+`test_probe_servers.py --memory-check` 在隔离服检查原生 heap、阶段计时、瞬态实体、在线方块和中断部分结果；现代版触发一次测试 GC。用 Fabric 1.21.1 的 `--fixture --memory-check --many-loaded` 进一步在拍内触发 GC 并在数千已加载区块、目标2 TPS时验证小范围查询。`test_probe_host.py --memory-check` 则通过真实 HTTPS 和托管窗口录制 `memory_jfr`、读取类直方图。不要将测试命令用于生产目录。
 
 Python的HTTPS、任务去重、取消／修复协作、会话错误、分页、大字段及真实AstrBot runner由 `tests/test_probe.py`、`tests/test_agent_edges.py`验证。完整基线见[测试说明](testing.md)。
 

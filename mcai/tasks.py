@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import difflib
 import hashlib
 import json
 import logging
@@ -30,6 +31,13 @@ logger = logging.getLogger(__name__)
 
 def occupies_instance(job):
     return job["state"] not in ("done", "stopped") or job.get("cancel_pending", False)
+
+
+def space_commands(text):
+    """Ensure Chinese-quoted /mcai commands are separated by spaces from adjacent text."""
+    text = re.sub(r"(?<=[^\s\n：“（，。；、])(“/mcai[^”\n]*”)", r" \1", text)
+    text = re.sub(r"(“/mcai[^”\n]*”)(?=[^\s\n”），。；、：])", r"\1 ", text)
+    return text
 
 
 def task_violations(job) -> list[str]:
@@ -190,14 +198,30 @@ class Tasks:
             self._saved_messages.pop(key, None)
 
     def find(self, group, name):
-        matches = [
+        active = [
             job
             for job in self.jobs.values()
-            if job["group"] == group
-            and job["name"] == name
-            and job["state"] not in ("done", "stopped")
+            if job["group"] == group and job["state"] not in ("done", "stopped")
         ]
+        matches = [job for job in active if job["name"] == name]
         if not matches:
+            stripped = name.strip("“”\"'「」")
+            if (
+                stripped
+                and stripped != name
+                and any(job["name"] == stripped for job in active)
+            ):
+                raise ValueError(
+                    f"没有这个进行中的任务「{name}」（指令中请勿保留引号或括号）。请改用任务名「{stripped}」，或使用 “/mcailist” 查看当前群任务。"
+                )
+            close = difflib.get_close_matches(
+                name, [job["name"] for job in active], n=2, cutoff=0.5
+            )
+            if close:
+                guesses = "、".join(f"「{item}」" for item in close)
+                raise ValueError(
+                    f"没有这个进行中的任务「{name}」，你是不是要找 {guesses} ？使用 “/mcailist” 查看当前群任务，或 “/mcaihelp” 查看用法。"
+                )
             raise ValueError(
                 "没有这个进行中的任务。使用 “/mcailist” 查看当前群任务，或 “/mcaihelp” 查看用法。"
             )
@@ -232,6 +256,7 @@ class Tasks:
 
         text = render_citations(self.store, job["id"], text)
         text = re.sub(r"\n\s*\n(?=[^\n]*/mcai[a-z]+\b)", "\n", text.strip())
+        text = space_commands(text)
         if not text:
             return
         self.log(job, "group_message", text=text)

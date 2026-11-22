@@ -1,4 +1,5 @@
 import asyncio
+import difflib
 import json
 import re
 import shutil
@@ -28,7 +29,7 @@ from .mcai.plans import approval_command, plan_text, schedule_time
 from .mcai.readonly import answer_question, server_status
 from .mcai.runtime_rules import install_rules
 from .mcai.storage import Store
-from .mcai.tasks import Tasks, occupies_instance
+from .mcai.tasks import Tasks, occupies_instance, space_commands
 from .mcai.tracing import trace_event
 from .mcai.workspace import Workspace
 
@@ -51,6 +52,125 @@ COMMANDS = {
 }
 GROUP_MESSAGE_PART_LIMIT = 1800
 DEFAULT_GROUP_FORWARD_THRESHOLD = 400
+HELP_TEXT = (
+    "MCAI 群命令指南\n"
+    "说明：任务名不含空格、最多 40 字；命令与参数间留空格；有唤醒前缀限制时请带前缀（默认 / ）或 @Bot。\n"
+    "\n"
+    "【快速查询（不建任务）】\n"
+    "• 查服务端状态（群成员，不调用模型）：\n"
+    "  “/mcaiserver [实例ID]” （例： “/mcaiserver” 或 “/mcaiserver cti” ）\n"
+    "• 只读 AI 问答（默认仅管理员，不改文件不发命令）：\n"
+    "  “/mcaiask [实例ID] 问题” （例： “/mcaiask cti 现在 TPS 为什么下降了？” ）\n"
+    "\n"
+    "【创建任务与补充线索】\n"
+    "• 创建任务（管理员）：\n"
+    "  “/mcainew 任务名 问题描述” （例： “/mcainew 主城卡顿 cti服昨天更新后一直掉TPS” ）\n"
+    "  也可回复/引用玩家消息后发送 “/mcainew 任务名 [补充说明]” ；任务名后的整段文字均作为内容，支持空格和换行，也可以直接附上或引用群文件和图片。\n"
+    "• 补充线索／继续排查（群成员）：\n"
+    "  “/mcaisay 任务名 内容” （例： “/mcaisay 主城卡顿 坐标 120 65 -300 附近复现” ）\n"
+    "  支持空格、换行及附带或引用群文件和图片；任务卡住、需要补条件或继续下达方向时都可用它推进。\n"
+    "• 控制成员补充（管理员）：\n"
+    "  “/mcaisaymode 任务名 false” （暂停普通成员补充）\n"
+    "  “/mcaisaymode 任务名 true” （恢复开启；管理员始终可用 “/mcaisay 任务名 内容” ）\n"
+    "\n"
+    "【查看进度、方案与定时计划】\n"
+    "• 活动任务列表（群成员）： “/mcailist [页码]” （省略页码默认第 1 页）\n"
+    "• 任务进度与用量（群成员）： “/mcaistatus 任务名”\n"
+    "• 待批或已批方案（群成员）： “/mcaiplan 任务名”\n"
+    "• 查看定时计划（群成员）： “/mcaischedule list”\n"
+    "• 管理定时计划（管理员）： “/mcaischedule pause|resume|delete 编号” （编号从 list 获取）\n"
+    "\n"
+    "【审批与任务控制（仅管理员）】\n"
+    "• 批准待执行方案： “/mcaiapply 任务名 短码” （例： “/mcaiapply 主城卡顿 9F2A7C” ）\n"
+    "• 暂停任务进度： “/mcaipause 任务名” （保留服务端占用与进度）\n"
+    "• 续接暂停任务： “/mcairesume 任务名” （会一并读取暂停期间保存的补充）\n"
+    "• 中止任务： “/mcaistop 任务名” （停止排查并释放服务端，不归档经验）\n"
+    "• 验收完成： “/mcaidone 任务名” （确认已解决或确认结束并后台归档经验）\n"
+    "\n"
+    "【帮助】\n"
+    "• 查看本帮助： “/mcaihelp”"
+)
+
+
+def command_typo_message(text):
+    """Return a helpful correction hint for mistyped /mcai... commands, or None."""
+    raw = text.strip()
+    has_slash = raw.startswith("/")
+    stripped = raw.removeprefix("/")
+    if not stripped:
+        return None
+    head, *rest = stripped.split(maxsplit=1)
+    tail = rest[0] if rest else ""
+    if head in COMMANDS:
+        if not has_slash:
+            return None
+        corrected = f"/{head} {tail}".strip() if tail else f"/{head}"
+        return f"多输入了一个 / （或 @Bot 时无需再加 /），请发送 “{corrected}” 。"
+    lower_head = head.lower()
+    if lower_head == "mcai":
+        if not tail:
+            return (
+                "请在 mcai 后直接接子命令（不加空格），例如查看帮助请发送 “/mcaihelp” ，"
+                "查看服务端状态请发送 “/mcaiserver” 。"
+            )
+        sub, *more = tail.split(maxsplit=1)
+        candidate = "mcai" + sub.lower()
+        if candidate in COMMANDS:
+            suggestion = f"/{candidate} {more[0]}".strip() if more else f"/{candidate}"
+            return (
+                f"MCAI 指令中间不加空格，你想使用的是不是 “{suggestion}” ？\n"
+                "发送 “/mcaihelp” 可查看全部指令格式。"
+            )
+        if sub.isascii():
+            close = difflib.get_close_matches(candidate, COMMANDS, n=2, cutoff=0.6)
+            if close:
+                guesses = " 或 ".join(f"“/{item}”" for item in close)
+                return (
+                    f"没有 “/{head} {sub}” 这个指令（指令名间不加空格）。"
+                    f"你是不是想用 {guesses} ？发送 “/mcaihelp” 可查看全部指令。"
+                )
+        return (
+            "请使用具体 MCAI 指令，例如查状态用 “/mcaiserver” ，建任务用 “/mcainew 任务名 问题描述” ；"
+            "发送 “/mcaihelp” 可查看全部指令。"
+        )
+    if lower_head in COMMANDS:
+        corrected = f"/{lower_head} {tail}".strip() if tail else f"/{lower_head}"
+        return f"指令区分大小写，请使用全小写： “{corrected}” 。"
+    matched = next(
+        (
+            cmd
+            for cmd in sorted(COMMANDS, key=len, reverse=True)
+            if lower_head.startswith(cmd)
+        ),
+        None,
+    )
+    if matched:
+        after = stripped[len(matched) :]
+        if matched == "mcaihelp":
+            return "直接发送 “/mcaihelp” 即可查看全部命令帮助（后面无需附加字符）。"
+        return (
+            f"指令和参数之间需要加空格，例如 “/{matched} {after}” 。\n"
+            "发送 “/mcaihelp” 可查看完整用法。"
+        )
+    if lower_head.startswith("mcai") and re.fullmatch(r"mcai[a-z0-9_-]*", lower_head):
+        close = difflib.get_close_matches(lower_head, COMMANDS, n=2, cutoff=0.55)
+        if close:
+            guesses = " 或 ".join(f"“/{item}”" for item in close)
+            return (
+                f"没有 “/{head}” 这个指令。你是不是想用 {guesses} ？\n"
+                "发送 “/mcaihelp” 可查看全部可用指令。"
+            )
+        return f"没有 “/{head}” 这个指令。请发送 “/mcaihelp” 查看全部可用指令。"
+    return None
+
+
+class McaiCommandAttemptFilter(filter.CustomFilter):
+    """Match woke group messages that appear to be mistyped mcai commands."""
+
+    def filter(self, event: AstrMessageEvent, cfg) -> bool:
+        if not event.is_at_or_wake_command:
+            return False
+        return command_typo_message(event.get_message_str()) is not None
 
 
 def message_parts(text):
@@ -161,7 +281,7 @@ class MCAI(Star):
             answer = await answer_question(
                 self.tasks, client, event, identity, question
             )
-            text = "「只读问答」：" + answer
+            text = space_commands("「只读问答」：" + answer)
             trace_event(self.store, "ask_answer", task=identity, reply=text)
             self.store.save(
                 "outbox",
@@ -222,7 +342,7 @@ class MCAI(Star):
                         "task": None,
                         "origin": origin,
                         "mention": None,
-                        "text": f"{summary}\n/mcainew 任务名 处理事件 {identity}",
+                        "text": f"{summary}\n可用 “/mcainew 任务名 处理事件 {identity}” 发起排查",
                         "sent": False,
                     },
                 )
@@ -307,7 +427,7 @@ class MCAI(Star):
                 key = "incident-" + row["id"]
                 if not self.store.get("outbox", key):
                     if row.get("type") in ("alert", "schedule"):
-                        body = f"{row['summary']}\n/mcainew 任务名 处理事件 {row['id']}"
+                        body = f"{row['summary']}\n可用 “/mcainew 任务名 处理事件 {row['id']}” 发起排查"
                     else:
                         body = row["summary"] + (
                             "，已保留现场。"
@@ -375,13 +495,13 @@ class MCAI(Star):
                 if health["status"] != "ready":
                     lines.insert(0, "B 调度降级：" + health["error"])
                 return "\n".join(lines) or "当前没有定时计划。"
-            if (
-                len(parts) != 2
-                or parts[0] not in ("pause", "resume", "delete")
-                or not re.fullmatch(r"[0-9a-f]{32}", parts[1])
-            ):
+            if not parts or parts[0] not in ("pause", "resume", "delete"):
                 raise ValueError(
-                    "用法：/mcaischedule list 或 /mcaischedule pause|resume|delete 编号"
+                    "用法：“/mcaischedule list” 查看定时计划，或管理员使用 “/mcaischedule pause|resume|delete 编号” （编号可从 list 获取）。"
+                )
+            if len(parts) != 2 or not re.fullmatch(r"[0-9a-f]{32}", parts[1]):
+                raise ValueError(
+                    f"请提供正确的 32 位定时计划编号（可先用 “/mcaischedule list” 查看）。\n用法：“/mcaischedule {parts[0]} 编号”"
                 )
             if not is_admin:
                 raise ValueError("只有管理员可暂停、恢复或删除定时计划。")
@@ -527,6 +647,7 @@ class MCAI(Star):
         event.send = traced_send
 
         def reply(text):
+            text = space_commands(text)
             trace_event(
                 self.store, "command_reply", **trace, reply=text, status="prepared"
             )
@@ -557,21 +678,12 @@ class MCAI(Star):
             }:
                 if not is_admin:
                     status = "rejected"
-                    yield reply("该指令仅管理员可用。")
+                    yield reply(
+                        "该指令仅管理员可用。普通成员可使用 “/mcaisay 任务名 内容” 补充线索，或 “/mcaihelp” 查看可用指令。"
+                    )
                     return
             if command == "mcaihelp":
-                yield reply(
-                    "管理员创建：“/mcainew 任务名 问题描述”（也可引用问题，附加补充说明）\n"
-                    "群成员补充：“/mcaisay 任务名 内容”\n"
-                    "创建和补充均将任务名后的整段文字作为内容，支持空格和换行，也可以直接附上或引用群文件和图片。\n"
-                    "管理员控制成员补充：“/mcaisaymode 任务名 false”（暂停）或 “/mcaisaymode 任务名 true”（开启）；管理员仍可补充\n"
-                    "查看：“/mcailist [页码]”、“/mcaistatus 任务名”、“/mcaiplan 任务名”\n"
-                    "直接查询：“/mcaiserver [实例ID]”（不调用模型）、“/mcaiask [实例ID] 问题”（只读，默认仅管理员）\n"
-                    "定时计划：“/mcaischedule list”；管理员可用 “/mcaischedule pause|resume|delete 编号”\n"
-                    "管理员批准：“/mcaiapply 任务名 短码”\n"
-                    "管理员暂停／续接：“/mcaipause 任务名”、“/mcairesume 任务名”\n"
-                    "管理员中止／验收：“/mcaistop 任务名”、“/mcaidone 任务名”"
-                )
+                yield reply(HELP_TEXT)
                 return
             if command == "mcaischedule":
                 text = await self.manage_schedules(tail, is_admin, sender)
@@ -593,7 +705,9 @@ class MCAI(Star):
                 if not is_admin and not self.config.get("allow_member_ask", False):
                     raise ValueError("该指令仅管理员可用。")
                 if not tail.strip():
-                    raise ValueError("用法：“/mcaiask [实例ID] 问题”")
+                    raise ValueError(
+                        "用法：“/mcaiask [实例ID] 问题”，例： “/mcaiask cti 现在 TPS 为什么下降了？” （不确定实例 ID 可省略，或先用 “/mcaiserver” 查看）。"
+                    )
                 if sender in self.ask_workers:
                     raise ValueError("你已有一条只读问答正在处理，请等结果返回。")
                 if not is_admin:
@@ -637,7 +751,7 @@ class MCAI(Star):
             if command == "mcainew":
                 if not name:
                     raise ValueError(
-                        "用法：“/mcainew 任务名 问题描述”，或引用问题后 “/mcainew 任务名 [补充说明]”"
+                        "用法：“/mcainew 任务名 问题描述”，例： “/mcainew 主城卡顿 cti服昨天更新后掉TPS” ；也可先回复/引用玩家消息后发 “/mcainew 任务名 [补充说明]” 。"
                     )
                 quoted = [
                     part for part in event.get_messages() if isinstance(part, Reply)
@@ -649,7 +763,7 @@ class MCAI(Star):
                     report = content.strip()
                 if not report.strip() and not attachments:
                     raise ValueError(
-                        f"用法：“/mcainew {name} 问题描述”，或引用一条包含问题的消息后 “/mcainew {name}”"
+                        f"请填写问题描述或附上文件/图片。\n用法：“/mcainew {name} 问题描述”，或先回复/引用一条包含问题的消息再发 “/mcainew {name}” 。"
                     )
                 task = uuid.uuid4().hex if attachments else None
                 workspace = self.tasks.workspace
@@ -687,19 +801,24 @@ class MCAI(Star):
                     yield reply("\n".join(notices))
                 return
             if not name:
-                usage = f"/{command} 任务名"
-                if command == "mcaisay":
-                    usage += " 内容"
-                elif command == "mcaisaymode":
-                    usage += " true|false"
-                elif command == "mcaiapply":
-                    usage += " 短码"
-                raise ValueError(f"用法：“{usage}”；忘记任务名可用 “/mcailist” 查看。")
+                hints = {
+                    "mcaisay": "用法：“/mcaisay 任务名 内容”，例： “/mcaisay 主城卡顿 坐标 120 65 -300 复现” ；忘记任务名可用 “/mcailist” 查看。",
+                    "mcaisaymode": "用法：“/mcaisaymode 任务名 true|false”（true 开启、false 暂停普通成员补充）；忘记任务名可用 “/mcailist” 查看。",
+                    "mcaiapply": "用法：“/mcaiapply 任务名 短码”，例： “/mcaiapply 主城卡顿 9F2A7C” ；忘记任务名可用 “/mcailist” 查看，查看短码可用 “/mcaiplan 任务名” 。",
+                }
+                raise ValueError(
+                    hints.get(
+                        command,
+                        f"用法：“/{command} 任务名”；忘记任务名可用 “/mcailist” 查看，或发送 “/mcaihelp” 查看全部用法。",
+                    )
+                )
             job = self.tasks.find(group, name)
             trace["task"] = job["id"]
             if command == "mcaisay":
                 if not content.strip() and not attachments:
-                    raise ValueError(f"用法：“/mcaisay {name} 内容”，请填写补充信息。")
+                    raise ValueError(
+                        f"用法：“/mcaisay {name} 内容”，请填写要补充的信息（也可直接附上或引用群文件、图片）。"
+                    )
                 records, notices = [], []
                 if attachments:
                     self.tasks.check_feedback(job, is_admin)
@@ -733,10 +852,10 @@ class MCAI(Star):
                         f"「{name}」：补充已保存；任务仍暂停，管理员使用 “/mcairesume {name}” 后会一起读取。"
                     )
             elif command == "mcaisaymode":
-                mode = content.strip()
+                mode = content.strip().lower()
                 if mode not in ("true", "false"):
                     raise ValueError(
-                        f"用法：“/mcaisaymode {name} true|false”；true 开启、false 暂停普通成员补充，管理员仍可补充。"
+                        f"参数应为 true 或 false（当前收到：{content.strip() or '空'}）。\n用法：“/mcaisaymode {name} true|false”；true 开启、false 暂停普通成员补充，管理员仍可补充。"
                     )
                 self.tasks.set_say_mode(job, mode == "true", sender)
                 yield reply(
@@ -878,6 +997,49 @@ class MCAI(Star):
         finally:
             trace_event(self.store, "command_result", **trace, status=status)
             # yield 的回复先经过发送阶段，再终止后续处理。
+            event.stop_event()
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=90)
+    @filter.custom_filter(McaiCommandAttemptFilter)
+    async def command_typo_hint(self, event: AstrMessageEvent):
+        text = event.get_message_str().strip()
+        hint = command_typo_message(text)
+        if not hint:
+            return
+        group = event.get_group_id()
+        sender = event.get_sender_id()
+        admin_ids = {str(item) for item in self.config.get("admin_ids", [])}
+        trace = {
+            "event_id": uuid.uuid4().hex,
+            "task": None,
+            "command": text.removeprefix("/").split(maxsplit=1)[0],
+            "text": text,
+            "group": group,
+            "sender": sender,
+            "is_admin": event.is_admin() or sender in admin_ids,
+            "quoted": [],
+        }
+        trace_event(self.store, "plugin_command", **trace)
+        if self.config.get("group_ids") and group not in {
+            str(item) for item in self.config["group_ids"]
+        }:
+            trace_event(
+                self.store,
+                "command_result",
+                **trace,
+                status="rejected",
+                reason="群不在允许范围",
+            )
+            event.stop_event()
+            return
+        try:
+            formatted = space_commands(hint)
+            trace_event(
+                self.store, "command_reply", **trace, reply=formatted, status="prepared"
+            )
+            yield event.plain_result(formatted)
+        finally:
+            trace_event(self.store, "command_result", **trace, status="typo_hint")
             event.stop_event()
 
     async def terminate(self):
