@@ -6,8 +6,10 @@ import json
 import os
 import re
 from collections import deque
+from contextlib import closing
 from pathlib import Path
 
+from .evidence import json_size
 from .paths import resolve_file
 from .text_files import BOMS, patch_text
 
@@ -17,19 +19,50 @@ LOG_HEADER = re.compile(
     r"(?P<time>\d\d:\d\d:\d\d(?:[.,]\d+)?)"
     r"(?(bracket)(?=\])|(?=\s|$))"
 )
+NUMBER = r"-?\d+(?:\.\d+)?"
+COORD_SEP = r"(?:\s*,\s*|\s+)"
+LOG_TIME_UNIT = r"(?:ms|ns|ticks?|s)\b(?![ \t]*=)"
+LOG_JITTER = re.compile(
+    r"(?P<fixed>\b(?:error(?:[_ -]?code)?|exit[_ -]?code|code|errno|status|port)\s*(?:[=:]\s*|\s+)"
+    r"(?:0x[0-9a-f]+|\d+)\b)"
+    rf"|(?P<coords>\bx\s*=\s*{NUMBER}{COORD_SEP}y\s*=\s*{NUMBER}{COORD_SEP}z\s*=\s*{NUMBER}\b"
+    rf"|\(\s*{NUMBER}\s*,\s*{NUMBER}\s*,\s*{NUMBER}\s*\))"
+    rf"|(?P<metric>\b(?:server_tick|tick|gap_ms|mspt|tps|ping)\s*=\s*){NUMBER}(?:[ \t]*{LOG_TIME_UNIT})?\b"
+    r"|(?P<worker>\bWorker-Main-)\d+\b"
+    r"|(?P<uuid>\b[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\b)"
+    r"|(?P<address>\b0x[0-9a-f]+\b|@[0-9a-f]{4,}\b)"
+    rf"|(?P<duration>(?<![\w.]){NUMBER}[ \t]*{LOG_TIME_UNIT})",
+    re.I,
+)
+LOG_MAX_FILES = 256
+LOG_MAX_LINES = 100_000
+LOG_MAX_SCAN_BYTES = 64 * 1024 * 1024
+LOG_MAX_LINE_CHARS = 120_000
+LOG_MAX_EVENT_BYTES = 256_000
+LOG_MAX_GROUPS = 1000
+LOG_RESULT_BYTES = 4 * 1024 * 1024
+LOG_LIMIT_NOTE = "日志事件或去重分组数量过多，本次扫描已达上限；以上结果为截断前统计，请缩小时间范围或文件名后分批排查。"
+
+
+class _LogSourceLimit(Exception):
+    pass
 
 
 class _LogSnapshot(io.RawIOBase):
-    def __init__(self, stream, size):
-        self.stream, self.remaining = stream, size
+    def __init__(self, stream, size, scan):
+        self.stream, self.remaining, self.scan = stream, size, scan
 
     def readable(self):
         return True
 
     def readinto(self, buffer):
-        data = self.stream.read(min(len(buffer), self.remaining))
+        available = LOG_MAX_SCAN_BYTES - self.scan.get("source_bytes", 0)
+        if self.remaining and not available:
+            raise _LogSourceLimit
+        data = self.stream.read(min(len(buffer), self.remaining, available))
         buffer[: len(data)] = data
         self.remaining -= len(data)
+        self.scan["source_bytes"] = LOG_MAX_SCAN_BYTES - available + len(data)
         return len(data)
 
 
@@ -108,7 +141,7 @@ def file_rows(directory, args):
         for row in log_rows(
             directory, {**args, "pattern": args.get("pattern", "**/*")}, lambda: False
         ):
-            if "error" in row:
+            if "error" in row or row.get("partial"):
                 yield row
             elif args.get("result", "lines") == "lines":
                 yield row
@@ -143,7 +176,7 @@ def file_rows(directory, args):
         raise ValueError("未知文件查询模式")
 
 
-def log_rows(directory, args, cancelled):
+def _log_rows(directory, args, cancelled, scan):
     expression = re.compile(
         args["query"] if args.get("regex") else re.escape(args["query"]),
         0 if args.get("case_sensitive") else re.I,
@@ -159,9 +192,14 @@ def log_rows(directory, args, cancelled):
     if end and end.tzinfo:
         end = end.astimezone().replace(tzinfo=None)
     before, after = args.get("before", 3), args.get("after", 8)
+    scanned_bytes = 0
     for path in find_files(directory, args.get("pattern", "logs/**/*.log*")):
         if cancelled():
             return
+        if scan["scanned_files"] >= LOG_MAX_FILES:
+            scan.update(truncated_reason="scan_files", event_complete=True)
+            return
+        scan["scanned_files"] += 1
         stat = path.stat()
         dated = re.search(r"\d{4}-\d\d-\d\d", path.name)
         date = dated.group() if dated else None
@@ -169,10 +207,11 @@ def log_rows(directory, args, cancelled):
         history = deque(maxlen=before)
         remaining, emitted = 0, 0
         unknown_reported = False
+        number = 0
         try:
             with (
                 shared_binary(path) as raw,
-                io.BufferedReader(_LogSnapshot(raw, stat.st_size)) as snapshot,
+                io.BufferedReader(_LogSnapshot(raw, stat.st_size, scan)) as snapshot,
                 io.TextIOWrapper(
                     gzip.GzipFile(fileobj=snapshot)
                     if path.suffix == ".gz"
@@ -180,12 +219,32 @@ def log_rows(directory, args, cancelled):
                     encoding=args.get("encoding", "utf-8"),
                 ) as stream,
             ):
-                number = 0
-                while line := stream.readline():
-                    number += 1
+                while True:
                     if cancelled():
                         return
+                    line = stream.readline(LOG_MAX_LINE_CHARS + 1)
+                    if not line:
+                        break
                     match = LOG_HEADER.match(line)
+                    scanned_bytes += len(line.encode("utf-8"))
+                    if (
+                        scan["scanned_lines"] >= LOG_MAX_LINES
+                        or scanned_bytes > LOG_MAX_SCAN_BYTES
+                        or len(line) > LOG_MAX_LINE_CHARS
+                    ):
+                        scan.update(
+                            truncated_reason=(
+                                "scan_lines"
+                                if scan["scanned_lines"] >= LOG_MAX_LINES
+                                else "scan_bytes"
+                                if scanned_bytes > LOG_MAX_SCAN_BYTES
+                                else "line_size"
+                            ),
+                            event_complete=number == 0 or bool(match),
+                        )
+                        return
+                    number += 1
+                    scan["scanned_lines"] += 1
                     if match:
                         line_date = match["iso"] or (
                             f"{match['year']}-{int(match['month']):02d}-{match['day']}"
@@ -249,6 +308,9 @@ def log_rows(directory, args, cancelled):
                     "source_changed": True,
                     "message": "查询期间源日志发生追加或轮转，结果只代表本次读取",
                 }
+        except _LogSourceLimit:
+            scan.update(truncated_reason="source_bytes", event_complete=number == 0)
+            return
         except (OSError, UnicodeError, EOFError) as exc:
             yield {
                 "path": path.relative_to(directory).as_posix(),
@@ -256,58 +318,143 @@ def log_rows(directory, args, cancelled):
             }
 
 
+def log_scan_summary(scan, scanned_events, unique_groups_total=0, omitted_groups=0):
+    return {
+        "scanned_files": scan["scanned_files"],
+        "scanned_events": scanned_events,
+        "unique_groups_total": unique_groups_total,
+        "omitted_groups": omitted_groups,
+        **(
+            {
+                "partial": True,
+                "truncated_reason": scan["truncated_reason"],
+                "note": LOG_LIMIT_NOTE,
+            }
+            if "truncated_reason" in scan
+            else {}
+        ),
+    }
+
+
+def log_rows(directory, args, cancelled):
+    scan = {"scanned_files": 0, "scanned_lines": 0}
+    size = 0
+    with closing(_log_rows(directory, args, cancelled, scan)) as rows:
+        for row in rows:
+            size += json_size(row) + 2
+            if size > LOG_RESULT_BYTES:
+                scan["truncated_reason"] = "result_bytes"
+                break
+            yield row
+    if "truncated_reason" in scan:
+        yield log_scan_summary(scan, scan["scanned_lines"])
+
+
 def log_groups(directory, args, cancelled, artifact):
-    """Group complete multiline events; only occurrence timestamps are normalized."""
+    """Group complete events using a normalized signature and retain the first original."""
     expression = re.compile(
         args["query"] if args.get("regex") else re.escape(args["query"]),
         0 if args.get("case_sensitive") else re.I,
     )
     groups, issues, event = {}, [], []
-    scanned = 0
+    scan = {"scanned_files": 0, "scanned_lines": 0}
+    scanned_events = event_bytes = 0
+    artifact_bytes = json_size({"groups": [], "issues": []})
+    omitted_new_group = False
+
+    def normalize(match):
+        if match["fixed"]:
+            return match[0]
+        if match["metric"] or match["worker"]:
+            return f"{match[match.lastgroup]}<n>"
+        return f"<{match.lastgroup}>"
 
     def finish():
+        nonlocal scanned_events, artifact_bytes, omitted_new_group
         if not event:
-            return
+            return True
+        scanned_events += 1
         text = "\n".join(row["text"] for row in event)
         if not expression.search(text):
-            return
-        signature = LOG_HEADER.sub("<time>", text, count=1)
+            return True
+        signature = LOG_JITTER.sub(normalize, LOG_HEADER.sub("<time>", text, count=1))
         key = hashlib.sha256((event[0]["path"] + "\n" + signature).encode()).hexdigest()
         first, last = event[0], event[-1]
-        if key in groups:
-            groups[key]["count"] += 1
-            groups[key]["last"] = {"line": last["line"], "time": last["time"]}
-            groups[key]["ranges"].append([first["line"], last["line"], first["time"]])
-        else:
-            groups[key] = {
+        span = [first["line"], last["line"], first["time"]]
+        end = {"line": last["line"], "time": last["time"]}
+        group = groups.get(key)
+        if group is None:
+            if len(groups) >= LOG_MAX_GROUPS:
+                scan["truncated_reason"] = "unique_groups"
+                omitted_new_group = True
+                return False
+            candidate = {
                 "group_id": key,
                 "path": first["path"],
                 "count": 1,
                 "first": {"line": first["line"], "time": first["time"]},
-                "last": {"line": last["line"], "time": last["time"]},
-                "ranges": [[first["line"], last["line"], first["time"]]],
-                "event": event.copy(),
+                "last": end,
+                "ranges": [span],
+                "event": event,
             }
+            added = json_size(candidate) + 2
+        else:
+            count = group["count"] + 1
+            added = (
+                json_size(span)
+                + 2
+                + len(str(count))
+                - len(str(group["count"]))
+                + json_size(end)
+                - json_size(group["last"])
+            )
+        if artifact_bytes + added > LOG_RESULT_BYTES:
+            scan["truncated_reason"] = "artifact_bytes"
+            omitted_new_group = group is None
+            return False
+        artifact_bytes += added
+        if group is None:
+            groups[key] = candidate
+        else:
+            group.update(count=count, last=end)
+            group["ranges"].append(span)
+        return True
 
-    for row in log_rows(
-        directory,
-        {**args, "query": "", "regex": False, "before": 0, "after": 0},
-        cancelled,
-    ):
-        if "text" not in row:
-            issues.append(row)
-            continue
-        scanned += 1
-        row["matched"] = bool(expression.search(row["text"]))
-        if event and (
-            row["path"] != event[-1]["path"]
-            or row["line"] != event[-1]["line"] + 1
-            or LOG_HEADER.match(row["text"])
-        ):
-            finish()
-            event = []
-        event.append(row)
-    finish()
+    with closing(
+        _log_rows(
+            directory,
+            {**args, "query": "", "regex": False, "before": 0, "after": 0},
+            cancelled,
+            scan,
+        )
+    ) as source:
+        for row in source:
+            if "text" not in row:
+                artifact_bytes += json_size(row) + 2
+                if artifact_bytes > LOG_RESULT_BYTES:
+                    scan["truncated_reason"] = "artifact_bytes"
+                    break
+                issues.append(row)
+                continue
+            if event and (
+                row["path"] != event[-1]["path"]
+                or row["line"] != event[-1]["line"] + 1
+                or LOG_HEADER.match(row["text"])
+            ):
+                if not finish():
+                    break
+                event, event_bytes = [], 0
+            row["matched"] = bool(expression.search(row["text"]))
+            event_bytes += json_size(row) + 2
+            if event_bytes > LOG_MAX_EVENT_BYTES:
+                scan["truncated_reason"] = "event_size"
+                break
+            event.append(row)
+        else:
+            if not cancelled() and scan.get("event_complete", True):
+                finish()
+    if cancelled():
+        return
     rows = list(groups.values())
     artifact.write_text(
         json.dumps({"groups": rows, "issues": issues}, ensure_ascii=False),
@@ -316,13 +463,22 @@ def log_groups(directory, args, cancelled, artifact):
     common = sorted(range(len(rows)), key=lambda i: -rows[i]["count"])[:24]
     rare = sorted(range(len(rows)), key=lambda i: rows[i]["count"])[:16]
     selected = list(dict.fromkeys([*common, *rare]))
+    unique_total = len(rows) + omitted_new_group
+    omitted = unique_total - len(selected)
+    summary_issues, issues_bytes = [], 0
+    for issue in issues:
+        issues_bytes += json_size(issue) + 2
+        if issues_bytes > 6000:
+            break
+        summary_issues.append(issue)
     yield {
         "view": "events",
-        "scanned_lines": scanned,
+        "scanned_lines": scan["scanned_lines"],
         "matching_events": sum(row["count"] for row in rows),
         "unique_groups": len(rows),
-        "omitted_groups": len(rows) - len(selected),
-        "issues": issues,
+        **log_scan_summary(scan, scanned_events, unique_total, omitted),
+        "issues": summary_issues,
+        **({"issue_count": len(issues)} if len(issues) > len(summary_issues) else {}),
         "reference": artifact.name,
         "message": "按完整日志事件归组，保留UUID、坐标、路径及代表原文。未展示组在reference中按result_path定向读取；原始时间范围与查询条件仍适用。",
     }

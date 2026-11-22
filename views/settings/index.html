@@ -3,23 +3,26 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MCAI 设置</title>
+  <title>MCAI 管理控制台</title>
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
 <main class="settings-page">
   <header class="page-heading">
-    <h1>MCAI 设置</h1>
-    <p>配置排障模型、群通知和 Minecraft 服务端。</p>
+    <h1>MCAI 管理控制台</h1>
+    <p>管理 Minecraft 服务端、定时维护和群内排障。</p>
   </header>
   <div class="settings-layout">
     <nav class="settings-nav" aria-label="设置分类">
-      <a href="#connection" aria-current="location"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>主机连接</a>
+      <a href="#servers" aria-current="location"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="7" rx="2"/><rect x="4" y="13" width="16" height="7" rx="2"/><path d="M8 7.5h.01M8 16.5h.01"/></svg>运行概览</a>
+      <a href="#maintenance"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg>定时维护</a>
+      <a href="#tasks"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5zM8 9h8M8 13h5"/></svg>任务看板</a>
+      <a href="#incidents"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s7-3 7-9V5l-7-3-7 3v8c0 6 7 9 7 9zm0-15v5m0 3h.01"/></svg>故障与告警</a>
+      <a href="#connection"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>A 主机与连接</a>
+      <a href="#host"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16m-4-14v4m-8 2v4m5 2v4"/></svg>B 主机</a>
       <a href="#models"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 3v3m6-3v3m-6 12v3m6-3v3M3 9h3m-3 6h3m12-6h3m-3 6h3"/></svg>模型与能力</a>
       <a href="#groups"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11.5a7.5 7.5 0 0 1-7.5 7.5H5l1.6-3.1A7.5 7.5 0 1 1 21 11.5Z"/><path d="M9 11.5h6"/></svg>群与通知</a>
-      <a href="#servers"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="7" rx="2"/><rect x="4" y="13" width="16" height="7" rx="2"/><path d="M8 7.5h.01M8 16.5h.01"/></svg>服务端</a>
-      <a href="#host"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16m-4-14v4m-8 2v4m5 2v4"/></svg>B 主机</a>
-      <a href="#incidents"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s7-3 7-9V5l-7-3-7 3v8c0 6 7 9 7 9zm0-15v5m0 3h.01"/></svg>主动留证</a>
+      <a href="#knowledge"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5"/></svg>经验知识库</a>
       <a href="#rules"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5zM9 9h6m-6 5h6"/></svg>运行时规则</a>
       <a href="#storage"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 13h16m-4 3h.01"/></svg>数据占用</a>
       <a href="#diagnostics"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9zm0 0v6h6M9 13h6m-6 4h6"/></svg>诊断导出</a>
@@ -41,7 +44,9 @@
             <div class="actions">
               <button type="button" id="connection-test" class="secondary">测试连接</button>
               <button type="submit">保存 A 设置</button>
+              <button type="button" id="check-a-environment" class="secondary">刷新 A 环境</button>
             </div>
+            <div id="a-environment" class="info-grid" aria-live="polite"></div>
           </div>
         </section>
         <section id="models" class="settings-section" aria-labelledby="models-title">
@@ -75,6 +80,7 @@
                 <p id="curseforge-state" class="hint"></p>
                 <div class="actions">
                   <button type="button" id="test-key" class="secondary">测试 A 端凭据</button>
+                  <button type="button" id="test-modrinth" class="secondary">检测 Modrinth 与代理</button>
                   <button type="button" id="clear-key" class="quiet">清空密钥</button>
                 </div>
               </div>
@@ -130,6 +136,9 @@
           <p>管理正式服、试服配置和每个实例的故障留证开关。</p>
         </header>
         <div class="panel">
+          <div class="toolbar"><button id="refresh-servers" type="button" class="secondary">刷新运行状态</button><button id="reload-host" type="button" class="secondary">立即重载 B 配置</button></div>
+          <div id="server-runtime" class="data-list" aria-live="polite"></div>
+          <h3 class="subheading">服务端配置</h3>
           <div class="actions">
             <button id="load-host" type="button" class="secondary">刷新 B 配置</button>
             <button id="add-instance" type="button" class="secondary">添加服务端</button>
@@ -149,10 +158,33 @@
             <label>PowerShell 7 路径<input id="powershell-path" placeholder="留空自动查找 pwsh.exe"></label>
             <label>存档工具 Java 21+ 路径<input id="world-java" placeholder="留空从 PATH 查找"></label>
             <label>辅助操作共享内存上限（MiB）<input id="operations-memory" type="number" min="64" step="1" value="8192"></label>
+            <label>定时备份根目录<input id="scheduled-backup-dir" placeholder="留空使用 B data_dir/backups"></label>
+            <label>隔离试服工作区根目录<input id="host-workspace-dir" placeholder="留空使用 B data_dir/workspaces"></label>
+            <label>单文件下载上限（字节）<input id="download-max-bytes" type="number" min="1" step="1" value="2147483648" aria-describedby="download-size-hint"></label>
           </div>
           <div class="actions"><button id="save-host" type="button">保存主机设置</button></div>
-          <p class="hint">PowerShell、存档 Java 与内存额度修改后需重启 B；托管窗口可继续运行。</p>
+          <p class="hint" id="download-size-hint"></p>
+          <p class="hint">主机设置重启 B 后生效。备份和试服目录必须与正式服目录分开；旧备份、已登记的备份计划及已有试服保留原路径。</p>
+          <p class="hint" id="effective-storage-paths"></p>
+          <div class="actions"><button id="check-b-environment" type="button" class="secondary">刷新 B 环境</button></div>
+          <div id="host-environment" class="info-grid" aria-live="polite"></div>
         </div>
+      </section>
+      <section id="maintenance" class="settings-section" aria-labelledby="maintenance-title">
+        <header class="section-heading"><h2 id="maintenance-title">定时维护</h2><p>Web 管理员可直接登记计划，B 使用现有调度器、实例锁和路径校验。</p></header>
+        <div class="panel">
+          <div class="toolbar"><button id="refresh-schedules" type="button" class="secondary">刷新计划</button><button id="new-schedule" type="button">创建计划</button><select id="schedule-kind-filter" aria-label="按计划类型筛选"><option value="">全部类型</option><option value="backup">备份</option><option value="restart">重启</option></select><select id="schedule-instance-filter" aria-label="按计划实例筛选"></select></div>
+          <p id="schedule-health" class="hint" role="status"></p>
+          <form id="schedule-form" class="settings-form" hidden>
+            <input type="hidden" name="id"><label>实例<select name="instance" id="schedule-instance"></select></label><label>类型<select name="kind"><option value="backup">定时备份</option><option value="restart">定时重启</option></select></label><label>本地时间<input name="at" type="time" required></label><label>周期（1=周一，7=周日，留空每天）<input name="weekdays" placeholder="1,2,3,4,5"></label><label>模式<select name="mode"><option value="online">在线</option><option value="offline">停服</option></select></label><label>保留份数<input name="retain" type="number" min="1" value="3"></label><label>备份路径（每行相对路径）<textarea name="paths" rows="2"></textarea></label><label>公告分钟（每行一个）<textarea name="announce_minutes" rows="2" placeholder="10&#10;1"></textarea></label><label class="switch-row"><span>成功通知</span><input class="switch" name="notify_success" type="checkbox"></label><div class="actions"><button type="submit">保存计划</button><button id="cancel-schedule" type="button" class="secondary">取消</button></div>
+          </form>
+          <p id="schedule-error" class="modal-error" role="alert"></p>
+          <div id="schedules" class="data-list" aria-live="polite"></div>
+        </div>
+      </section>
+      <section id="tasks" class="settings-section" aria-labelledby="tasks-title">
+        <header class="section-heading"><h2 id="tasks-title">任务看板</h2><p>沿用 Tasks 状态机；批准仍要求独立 AI 审核通过的当前短码。</p></header>
+        <div class="panel"><div class="toolbar"><select id="task-filter"><option value="active">活动任务</option><option value="all">全部历史</option><option value="waiting">等待中</option><option value="paused">已暂停</option><option value="done">已验收</option><option value="stopped">已中止</option></select><input id="task-search" placeholder="按任务名、群号或实例筛选"><button id="refresh-tasks" type="button" class="secondary">刷新</button></div><div id="task-board" class="data-list"></div></div>
       </section>
       <section id="incidents" class="settings-section" aria-labelledby="incidents-title">
         <header class="section-heading">
@@ -160,6 +192,7 @@
           <p>对已经开启留证的正式服生效；通知群在「群与通知」中配置。</p>
         </header>
         <div class="panel">
+          <div class="toolbar"><button id="refresh-events" type="button" class="secondary">刷新事故与告警</button><select id="event-instance" aria-label="按事件实例筛选"><option value="">全部实例</option></select><select id="event-kind" aria-label="按事件类型筛选"><option value="">全部类型</option><option value="exit">意外退出</option><option value="restart">连续启动失败</option><option value="unresponsive">卡死</option><option value="alert">健康告警</option><option value="schedule">定时维护</option></select></div><div id="events" class="data-list" aria-live="polite"></div><div id="connection-events" class="data-list" aria-live="polite"></div>
           <form id="incident-settings" class="details-body">
             <div class="columns">
               <label>启动失败统计窗口（秒）<input id="incident-restart-window" type="number" min="1" step="1" placeholder="120" aria-describedby="incident-window-hint"></label>
@@ -175,6 +208,10 @@
           </form>
         </div>
       </section>
+      <section id="knowledge" class="settings-section" aria-labelledby="knowledge-title">
+        <header class="section-heading"><h2 id="knowledge-title">经验知识库</h2><p>index.md 和 servers/*.md 经过路径校验、版本核对和原子写入。</p></header>
+        <div class="panel"><div class="toolbar"><select id="knowledge-file" aria-label="经验文档"></select><button id="load-knowledge" type="button" class="secondary">打开</button><button id="save-knowledge" type="button">保存</button></div><textarea id="knowledge-text" rows="18" spellcheck="false" aria-label="Markdown 正文" disabled></textarea><p id="knowledge-revision" class="hint"></p><div id="knowledge-links"></div></div>
+      </section>
       <section id="rules" class="settings-section" aria-labelledby="rules-title">
         <header class="section-heading">
           <h2 id="rules-title">运行时规则</h2>
@@ -186,7 +223,7 @@
             <h2 id="adopt-rule-title">采用新模板</h2>
             <p id="adopt-rule-message"></p>
             <div class="actions">
-              <button value="cancel" class="secondary" autofocus>取消</button>
+              <button value="cancel" class="secondary">取消</button>
               <button value="adopt">备份并覆盖</button>
             </div>
           </form>
@@ -203,6 +240,8 @@
           <div id="storage-a" class="storage-report" aria-live="polite"></div>
           <h3>B 端</h3>
           <div id="storage-b" class="storage-report" aria-live="polite"></div>
+          <div class="actions"><button type="button" id="refresh-storage-detail" class="secondary">刷新备份、作业和暂存</button></div>
+          <div id="storage-detail" class="data-list" aria-live="polite"></div>
           <div class="actions">
             <button type="button" data-vacuum="a" class="secondary">压缩 A 数据库</button>
             <button type="button" data-vacuum="b" class="secondary">压缩 B 数据库</button>
@@ -224,7 +263,7 @@
               <h3 id="logs-title">确认删除日志归档</h3>
               <p id="logs-confirm"></p>
               <div class="actions">
-                <button value="cancel" class="secondary" autofocus>取消</button>
+                <button value="cancel" class="secondary">取消</button>
                 <button value="delete">确认删除</button>
               </div>
             </form>
@@ -272,7 +311,7 @@
               <label class="toggle"><input id="confirm-cleanup-backups" type="checkbox">单独确认：删除所列 B 端正式服备份，删除后无法用这些备份恢复。</label>
             </div>
             <div class="actions">
-              <button type="submit" class="secondary" value="cancel" formnovalidate autofocus>取消</button>
+              <button type="submit" class="secondary" value="cancel" formnovalidate>取消</button>
               <button type="submit" value="execute">执行清理</button>
             </div>
           </form>
@@ -302,7 +341,7 @@
             <h3 id="discard-outbox-title">确认丢弃消息</h3>
             <p id="discard-outbox-message"></p>
             <div class="actions">
-              <button type="submit" class="secondary" value="cancel" autofocus>取消</button>
+              <button type="submit" class="secondary" value="cancel">取消</button>
               <button type="submit" value="discard">确认丢弃</button>
             </div>
           </form>
@@ -311,6 +350,7 @@
     </div>
   </div>
 </main>
+<dialog id="management-dialog" aria-labelledby="management-dialog-title"><h3 id="management-dialog-title"></h3><div id="management-dialog-body"></div><p id="management-dialog-error" class="modal-error" role="alert" hidden></p><div id="management-dialog-actions" class="actions"><form method="dialog"><button class="secondary">关闭</button></form></div></dialog>
 <script type="module" src="./app.js"></script>
 </body>
 </html>

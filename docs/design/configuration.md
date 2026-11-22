@@ -20,6 +20,8 @@ A设置的保存、生效与任务启动共用任务调度锁。保存期间新�
 
 ## AstrBot 视图与模型测试
 
+Web 管理视图的 GET 查询参数走桥接第二个参数；所有浏览器修改走 POST，由 A 转发到 B 的对应方法。运行数据和 Probe 实时采样按实例按需加载。A 代理环境只提供脱敏概况；B 主机新目录及下载上限与原有 PowerShell、Java、内存配置一起在重启后应用，实例热重载保留当前操作快照。单项模型重测只更新该项，`alpha_open` 和 `alpha_find` 先建立搜索会话。
+
 `views/settings` 通过 AstrBot v4.29.4 原生 bridge 的 apiGet/apiPost 调用插件注册接口，复用 Dashboard 管理员登录。A 的配置继续以 AstrBotConfig 保存，B 的配置经现有 HostClient 写入。主审模型分别覆盖请求配置，不改共享提供商。
 
 能力测试使用无生产工具的独立对话；测试结果写本地，按 provider/model/config/settings 哈希识别过期。短对话、流式、回显调用续接、原生搜索、alpha/search、commentary执行进度汇报和审核 JSON 分别记录。支持／未观察到／临时失败分开；只根据已验证事实自动配置，不因网络故障清空有效设置，不自动开启进度转发。

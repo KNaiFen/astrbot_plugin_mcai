@@ -64,6 +64,11 @@ def powershell_path(configured=""):
         raise ValueError(
             "未找到 PowerShell 7，请在 powershell_path 填写 pwsh.exe 的完整路径"
         )
+    powershell_version(candidate)
+    return str(Path(candidate).resolve())
+
+
+def powershell_version(candidate):
     result = subprocess.run(
         [
             str(candidate),
@@ -82,7 +87,7 @@ def powershell_path(configured=""):
     version = result.stdout.strip()
     if not re.fullmatch(r"7\.(?:[3-9]|[1-9][0-9]+)\.\d+(?:[-+].*)?", version):
         raise ValueError(f"需要 PowerShell 7.3+ 的 7.x 版本，当前为 {version}")
-    return str(Path(candidate).resolve())
+    return version
 
 
 def bat_codepage(path, encoding="auto", data=None):
@@ -244,6 +249,25 @@ def incident_capacity(value):
     return value
 
 
+def host_storage_settings(config, parent, data_dir):
+    directories = {}
+    for key, default in (
+        ("scheduled_backup_dir", "backups"),
+        ("workspace_dir", "workspaces"),
+    ):
+        value = config.get(key, "")
+        if not isinstance(value, str):
+            raise ValueError(f"{key} 必须是目录路径")
+        path = (parent / value if value.strip() else Path(data_dir) / default).resolve()
+        if path.exists() and not path.is_dir():
+            raise ValueError(f"{key} 不能指向文件：{path}")
+        directories[key] = str(path)
+    size = config.get("download_max_bytes", 2 * 1024**3)
+    if type(size) is not int or size < 1:
+        raise ValueError("单文件下载上限须为正整数（字节）")
+    return {**directories, "download_max_bytes": size}
+
+
 def load_host(path):
     path = Path(path).resolve()
     config = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -279,20 +303,7 @@ def load_host(path):
     config["data_dir"] = str(
         (path.parent / config.get("data_dir", "runtime/host")).resolve()
     )
-    value = config.get("scheduled_backup_dir", "")
-    if not isinstance(value, str):
-        raise ValueError("scheduled_backup_dir 必须是目录路径")
-    config["scheduled_backup_dir"] = str(
-        (path.parent / value).resolve()
-        if value.strip()
-        else Path(config["data_dir"]) / "backups"
-    )
-    config["workspace_dir"] = str(
-        (
-            path.parent
-            / config.get("workspace_dir", str(Path(config["data_dir"]) / "workspaces"))
-        ).resolve()
-    )
+    config.update(host_storage_settings(config, path.parent, config["data_dir"]))
     if config.get("world_tools", {}).get("java_path"):
         config["world_tools"]["java_path"] = str(
             (path.parent / config["world_tools"]["java_path"]).resolve()

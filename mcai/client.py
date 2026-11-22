@@ -54,7 +54,15 @@ class HostClient:
             await self.session.close()
 
     async def request(
-        self, method, path, *, stopped=None, data_factory=None, once=False, **kwargs
+        self,
+        method,
+        path,
+        *,
+        stopped=None,
+        data_factory=None,
+        once=False,
+        sink=None,
+        **kwargs,
     ):
         if self.session is None:
             self.session = aiohttp.ClientSession(
@@ -87,10 +95,10 @@ class HostClient:
                         except ValueError:
                             error = raw
                         raise RemoteError(f"HTTP {response.status}: {error}")
-                    result = await response.json()
                     if (
                         path.split("?")[0]
                         in ("/instances", "/configuration", "/storage/cleanup")
+                        or path.startswith("/management/")
                         or method == "POST"
                         and path.startswith("/operations/")
                         or path.endswith("?release=1")
@@ -100,7 +108,12 @@ class HostClient:
                         )
                     if delay > 0.5:
                         logger.info("与 MC 控制程序的连接已恢复")
-                    return result
+                    if sink is not None:
+                        async for chunk in response.content.iter_chunked(262144):
+                            await asyncio.to_thread(sink.write, chunk)
+                        sink.seek(0)
+                        return None
+                    return await response.json()
             except aiohttp.ServerFingerprintMismatch as exc:
                 raise RemoteError(
                     "服务端证书指纹不匹配，请核对 B 显示的指纹与 host_fingerprint"

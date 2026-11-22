@@ -1,6 +1,7 @@
 """Lightweight character estimates calibrated by completed API input usage."""
 
 import math
+from typing import Literal
 
 from astrbot.core.agent.context.token_counter import EstimateTokenCounter
 from astrbot.core.agent.message import Message
@@ -18,9 +19,26 @@ BASELINE_FACTORS = {
 }
 
 
+class DeveloperMessage(Message):
+    role: Literal["developer"] = "developer"
+
+
 def tokens(messages):
-    return EstimateTokenCounter().count_tokens(
-        [Message.model_validate(item) for item in messages]
+    counter = EstimateTokenCounter()
+    parsed = [
+        (DeveloperMessage if item["role"] == "developer" else Message).model_validate(
+            item
+        )
+        for item in messages
+    ]
+    return counter.count_tokens(parsed) + counter.count_tokens(
+        [
+            Message(role="assistant", content=part["encrypted"])
+            for item in messages
+            if isinstance(item.get("content"), list)
+            for part in item["content"]
+            if part["type"] == "think" and part.get("encrypted")
+        ]
     )
 
 
@@ -57,9 +75,21 @@ def estimated_input(store, provider, purpose, estimate):
 
 
 def record_usage(store, provider, purpose, estimate, response):
+    """Return whether the response can calibrate the local context estimate."""
     usage = response.usage
     if usage is None or usage.input <= 0:
-        return
+        return False
+    raw = getattr(response, "raw_completion", None)
+    output = (
+        raw.get("output", []) if isinstance(raw, dict) else getattr(raw, "output", [])
+    )
+    # Hosted search input usage includes model rounds outside the local request.
+    if any(
+        (item.get("type") if isinstance(item, dict) else getattr(item, "type", None))
+        == "web_search_call"
+        for item in output
+    ):
+        return False
     key = calibration_key(provider, purpose)
     previous = store.get("token_budget", key)
     ratios = [*(previous or {}).get("ratios", []), usage.input / max(1, estimate)][-16:]
@@ -83,3 +113,4 @@ def record_usage(store, provider, purpose, estimate, response):
             "samples": (previous["samples"] if previous else 0) + 1,
         },
     )
+    return True

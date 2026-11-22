@@ -54,6 +54,7 @@ def kernel():
 
 class MemoryJob:
     def __init__(self, mib=None):
+        self.limit_mib = mib
         self.api = kernel()
         self.name = "Local\\MCAI-operations-" + uuid.uuid4().hex
         self.handle = self.api.CreateJobObjectW(None, self.name)

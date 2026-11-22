@@ -2,6 +2,7 @@
 
 import copy
 
+from .playbooks import PLAYBOOKS
 from .tool_arguments import CHECK, describe_arguments, field_names, model_schema
 
 STRING = {"type": "string"}
@@ -81,7 +82,7 @@ SCRIPT_FILES = {
     "script_files": {
         "type": "array",
         "items": STRING,
-        "description": "引用的外部脚本实例内路径；内联脚本无需填写。",
+        "description": "引用的外部脚本路径（相对于实例根目录，不随 cwd 变化）；内联脚本无需填写。",
     },
     "script_encoding": {
         "type": "string",
@@ -430,7 +431,7 @@ def probe_range(fields):
 TOOLS = [
     (
         "mc_inventory",
-        "核对实例MOD/插件/数据包元数据、嵌套JAR、版本、依赖、重复ID及哈希；从JVM/JDK/主JAR识别运行版本，未知项明确未核实。baseline比较清单变化；后台结果沿next_call读取。",
+        "核对MOD/插件/数据包版本、嵌套JAR、依赖、重复ID及哈希；从JVM/JDK/主JAR识别运行版本。baseline比较清单变化。",
         contract({"baseline": STRING}),
     ),
     (
@@ -524,12 +525,12 @@ TOOLS = [
     ),
     (
         "mc_players",
-        "探针查询在线玩家或近五分钟现场，query 为游戏名或 UUID，省略列出全部；QQ 账号不能自动匹配。后台分页用 mc_job_read。",
+        "探针查询在线玩家或近五分钟现场；query 为游戏名或 UUID，省略列出全部。QQ 账号不能自动匹配。",
         contract({"query": STRING, "history": {"type": "boolean"}}),
     ),
     (
         "mc_metrics",
-        "需Probe；返回全服和维度指标；spark可用时含平均TPS、MSPT、CPU、GC及原生窗口，无需自算。window_seconds默认60，history返回近五分钟逐秒记录，维度无独立TPS。后台沿next_call读取，解释来源、时间与窗口。",
+        "需Probe；返回全服和维度指标。spark可用时含TPS、MSPT、CPU、GC及原生窗口。window_seconds默认60，history返回近五分钟逐秒记录，维度无独立TPS。",
         contract(
             {
                 "window_seconds": {"type": "integer", "enum": [10, 60, 300]},
@@ -539,7 +540,7 @@ TOOLS = [
     ),
     (
         "mc_chunks",
-        "需Probe；查看已加载区块状态及直接ticket。view=forced_summary按维度和可验证模组汇总直接强加载，不含邻区传播或普通玩家ticket。给了区块坐标或小范围时用scope=chunks与区块边界；scope=dimension会扫描该维度的全部已加载区块。后台沿next_call读取。",
+        "需Probe；查已加载区块与直接ticket。forced_summary按维度和可验证模组汇总直接强加载，排除邻区传播和普通玩家ticket。小范围用scope=chunks与区块边界；scope=dimension扫全维度。",
         probe_range(
             {
                 "top": {"type": "integer", "minimum": 1, "maximum": 1000},
@@ -549,7 +550,7 @@ TOOLS = [
     ),
     (
         "mc_runtime",
-        "需Probe；读取实际运行的版本、模组、已启用数据包、维度或生效设置。section默认summary；mods可带inventory_job_id，与本实例同目录已完成磁盘清单比较，版本相同不证明二进制相同。后台沿next_call读取。",
+        "需Probe；查实际版本、模组、启用的数据包、维度或设置。section默认summary；mods可带inventory_job_id比较本实例同目录的磁盘清单，版本相同不证明二进制相同。",
         contract(
             {
                 "section": {
@@ -562,7 +563,7 @@ TOOLS = [
     ),
     (
         "mc_objects",
-        "需Probe；普查已加载对象，不加载区块，数量不代表耗时。按scope限定范围，后台沿next_call读取。",
+        "需Probe；按scope普查已加载对象，不加载区块。数量不代表耗时。",
         probe_range(
             {
                 "category": {
@@ -577,7 +578,7 @@ TOOLS = [
     ),
     (
         "mc_profile",
-        "需Probe；engine默认probe，实测对象tick(须scope，默认10秒，上限30)。只看慢拍用only_ticks_over_ms，给具体对象和坐标用group_by=object。spark模式默认30秒、15至60秒，保存本地调用栈并解析采样权重，不支持区块范围。每实例一个；后台沿next_call读取。取消spark只停止等待，采样按原限时结束。",
+        "需Probe；默认engine=probe实测对象tick（须scope，默认10秒，上限30）。慢拍用only_ticks_over_ms，对象坐标用group_by=object。spark采集调用栈权重（15至60秒，默认30），不支持区块范围。每实例一次；取消spark只停止等待。",
         {
             "type": "object",
             "oneOf": [
@@ -627,7 +628,7 @@ TOOLS = [
     ),
     (
         "mc_inspect",
-        "需Probe；按UUID查已加载实体状态/骑乘关系，或按坐标读普通方块状态及方块实体。明确未加载/越界；UUID未找到不证明删除。nbt_path按需读取NBT，offset/limit分页。后台沿next_call读取。",
+        "需Probe；按UUID查已加载实体状态和骑乘关系，或按坐标查方块状态及方块实体。UUID未找到不证明删除。nbt_path读取NBT，offset/limit分页。",
         variants(
             "target",
             {
@@ -678,6 +679,11 @@ TOOLS = [
                 ),
             },
         ),
+    ),
+    (
+        "mc_knowledge",
+        "按经验索引中的编号读取当前实例的已验收案例，沿 next_call 续读。历史经验须核实当前现场。",
+        contract({"case_id": STRING, "offset": INTEGER}, ("case_id",)),
     ),
     (
         "mc_web",
@@ -825,7 +831,7 @@ TOOLS = [
     ),
     (
         "mc_console_read",
-        "读取当前窗口新输出。environment=test时读取当前任务隔离测试服。data含items/cursor/session_id/gap；pending_reads列长行尾部及后续页，完整页须全部续读，单条complete不清空其他待办。当前决定证据已足够可保留未读状态，complete不是任务验收门槛。next_call优先长行，用cursor续读，旧内容查mc_logs。",
+        "读取当前窗口新输出，environment=test读取本任务试服。pending_reads列长行尾部及后续页；单条complete只结束该行。按session_id和cursor续读；旧内容用mc_query logs。",
         contract(
             {
                 **PAGE,
@@ -849,7 +855,7 @@ TOOLS = [
     ),
     (
         "mc_console_send",
-        "向已绑定且运行中的服务端顺序发送诊断命令；environment=test可选择当前任务测试服。整批独立审核，无需人工批准。commands一条也用数组。data.status=sent仅表示发送，逐条状态及新输出保留，next_call读取后续控制台。spark tps等已有诊断可直接使用；修改、强制保存、启停用mc_propose。",
+        "向运行中的已绑定服务端按序发送经审核的诊断命令；environment=test选择本任务试服。commands用数组，sent只确认发送；沿next_call核对控制台实际输出。",
         contract(
             {
                 "commands": {
@@ -1466,9 +1472,7 @@ TOOLS.extend(
         ),
         (
             "mc_tools",
-            "按名称批量加载工具，下一次模型请求起可调用，并返回用法及示例。"
-            "当前任务保留已加载工具，暂停重启后恢复；重复调用可重读帮助。"
-            "可同时加载MOD源码修复指引，选择workflow=mod_repair。",
+            "按 names 加载工具并读用法；按 workflow 读专项指引。已加载工具随任务保留。",
             {
                 **contract(
                     {
@@ -1481,7 +1485,7 @@ TOOLS.extend(
                                 "enum": [tool[0] for tool in TOOLS],
                             },
                         },
-                        "workflow": {"enum": ["mod_repair"]},
+                        "workflow": {"enum": list(PLAYBOOKS)},
                     },
                 ),
                 "anyOf": [{"required": ["names"]}, {"required": ["workflow"]}],
@@ -1490,7 +1494,9 @@ TOOLS.extend(
     ]
 )
 BASE_TOOLS = frozenset(
-    "mc_instances mc_select_instance mc_status mc_history mc_say mc_pause "
+    "mc_instances mc_select_instance mc_status mc_history mc_knowledge mc_say mc_pause "
     "mc_job_read mc_job_wait mc_job_cancel mc_artifact_read mc_artifact_find "
-    "mc_operation_read mc_context_history mc_query mc_tools".split()
+    "mc_operation_read mc_context_history mc_query mc_tools "
+    "mc_players mc_metrics mc_chunks mc_objects mc_profile mc_inspect mc_runtime "
+    "mc_inventory mc_exec mc_console_send mc_console_read mc_console_line".split()
 )

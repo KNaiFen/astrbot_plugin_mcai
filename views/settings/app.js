@@ -1,23 +1,37 @@
+import { createManagement } from './management.js';
+import { styleSettings, button, setupEditors } from './controls.js';
+
 const bridge = window.AstrBotPluginView;
+function applyTheme(context = {}) {
+  const query = new URLSearchParams(location.search).get('theme');
+  document.documentElement.dataset.theme = (context.isDark ?? (query === 'dark')) ? 'dark' : 'light';
+}
+applyTheme();
 await bridge.ready();
+bridge.onContext(applyTheme);
 const form = document.querySelector('#a-settings'), notice = document.querySelector('#notice');
 const restartWindow = document.querySelector('#incident-restart-window');
 const incidentCapacity = document.querySelector('#incident-capacity');
 const incidentForm = document.querySelector('#incident-settings');
 const sections = document.querySelectorAll('.settings-nav a');
 function markSection() {
-  const current = Array.from(sections).find(link => link.hash === location.hash) ?? sections[0];
+  const current = Array.from(sections).find(link => link.hash === (location.hash || '#servers')) ?? sections[0];
   for (const link of sections) {
     if (link === current) link.setAttribute('aria-current', 'location');
     else link.removeAttribute('aria-current');
+    document.querySelector(link.hash).hidden = link !== current;
   }
 }
 markSection();
-window.addEventListener('hashchange', markSection);
+window.addEventListener('hashchange', () => { markSection(); window.scrollTo(0, 0); });
 let host = null, poll = null;
-function show(text, error = false) { notice.textContent = text; notice.classList.toggle('error', error); }
+function show(text, error = false) {
+  const dialogError = document.querySelector('#management-dialog-error');
+  if (error && dialogError.closest('dialog').open) { dialogError.hidden = false; dialogError.textContent = text; return; }
+  notice.textContent = text; notice.classList.toggle('error', error);
+}
 async function api(method, path, data) {
-  const response = method === 'GET' ? await bridge.apiGet(path) : await bridge.apiPost(path, data ?? {});
+  const response = method === 'GET' ? await bridge.apiGet(path, data) : await bridge.apiPost(path, data ?? {});
   if (response.status === 'error' || response.error) throw new Error(response.message || response.error);
   return response.data ?? response;
 }
@@ -49,6 +63,7 @@ async function loadA() {
   form.elements.curseforge_api_key.value = '';
   form.elements.curseforge_api_key.placeholder = data.curseforge_configured ? 'A 已配置；留空保留' : '填写 CurseForge API 密钥';
   document.querySelector('#curseforge-state').textContent = data.curseforge_configured ? 'A 已保存密钥；不会回传原值。' : 'A 尚未配置 CurseForge 密钥。';
+  setupEditors(form, data, () => hostApi('servers'));
 }
 async function saveA() { await api('POST', 'settings', values()); }
 form.addEventListener('submit', event => { event.preventDefault(); action(event.submitter, async () => { await saveA(); show('A 配置已保存并生效。'); }); });
@@ -103,13 +118,18 @@ function instance(name = '', config = {}, state = {}) {
     }
   }
   body.append(alerts);
-  card.append(advanced); document.querySelector('#instances').append(card);
+  card.append(advanced);
+  styleSettings(card);
+  setupEditors(card);
+  document.querySelector('#instances').append(card);
 }
 async function loadHost() {
   host = await api('GET', 'host'); document.querySelector('#instances').replaceChildren();
   for (const [name, config] of Object.entries(host.instances)) instance(name, config, host.state.find(item => item.instance === name));
   for (const state of host.state.filter(item => item.selectable === false)) { const p = document.createElement('p'); p.textContent = `${state.instance}：待移除，当前进程与操作仍可管理。`; document.querySelector('#instances').append(p); }
-  document.querySelector('#powershell-path').value = host.powershell_path; document.querySelector('#world-java').value = host.world_tools.java_path ?? ''; document.querySelector('#operations-memory').value = host.operations_memory_limit_mib ?? 8192;
+  document.querySelector('#powershell-path').value = host.powershell_path; document.querySelector('#world-java').value = host.world_tools.java_path ?? ''; document.querySelector('#operations-memory').value = host.operations_memory_limit_mib ?? 8192; document.querySelector('#scheduled-backup-dir').value = host.scheduled_backup_dir ?? ''; document.querySelector('#host-workspace-dir').value = host.workspace_dir ?? ''; document.querySelector('#download-max-bytes').value = host.download_max_bytes;
+  updateDownloadHint();
+  document.querySelector('#effective-storage-paths').textContent = `当前 B 使用：备份 ${host.effective.scheduled_backup_dir}；试服 ${host.effective.workspace_dir}；单文件 ${diskSize(host.effective.download_max_bytes)}。`;
   showIncidentSettings(host);
   if (host.error) show(`实例热重载错误：${host.error}`, true);
   else if (host.restart_required) show(`主机配置已保存，重启 B 后生效。当前运行：PowerShell ${host.effective.powershell_path}；存档 Java 配置 ${host.effective.world_tools.java_path || '默认'}；额度 ${host.effective.operations_memory_limit_mib} MiB。`);
@@ -123,6 +143,7 @@ document.querySelector('#save-instances').onclick = function () {
       const config = {}; let name = '';
       for (const input of card.querySelectorAll('input, textarea')) {
         const key = input.dataset.key;
+        if (!key) continue;
         if (key === 'name') name = input.value.trim();
         else if (key === 'incident_watch') { if (input.checked) config[key] = true; }
         else if (key in instanceAlerts) config[key] = input.type === 'checkbox' ? input.checked : Number(input.value || instanceAlerts[key][1]);
@@ -143,17 +164,29 @@ document.querySelector('#save-host').onclick = function () {
     const memory = Number(document.querySelector('#operations-memory').value);
     const powerShell = document.querySelector('#powershell-path').value;
     const java = document.querySelector('#world-java').value;
+    const backupDir = document.querySelector('#scheduled-backup-dir').value;
+    const workspaceDir = document.querySelector('#host-workspace-dir').value;
+    const downloadMax = Number(document.querySelector('#download-max-bytes').value);
+    if (!Number.isSafeInteger(downloadMax) || downloadMax <= 0) throw new Error('单文件下载上限须为正整数（字节）。');
     if (memory !== (host.operations_memory_limit_mib ?? 8192)) data.operations_memory_limit_mib = memory;
     if (powerShell !== host.powershell_path) data.powershell_path = powerShell;
     if (java !== (host.world_tools.java_path ?? '')) data.world_tools = { java_path: java };
+    if (backupDir !== (host.scheduled_backup_dir ?? '')) data.scheduled_backup_dir = backupDir;
+    if (workspaceDir !== (host.workspace_dir ?? '')) data.workspace_dir = workspaceDir;
+    if (downloadMax !== (host.download_max_bytes ?? 2 * 1024 ** 3)) data.download_max_bytes = downloadMax;
     if (!Object.keys(data).length) { show('主机设置没有改动。'); return; }
     const result = await api('POST', 'host', data);
-    Object.assign(host, data);
+    await loadHost();
     show(result.restart_required
-      ? '主机设置已保存。PowerShell、存档 Java 或内存额度需重启 B 后生效。'
+      ? '主机设置已保存，重启 B 后生效。'
       : '主机设置已保存并生效。');
   });
 };
+function updateDownloadHint() {
+  const bytes = Number(document.querySelector('#download-max-bytes').value);
+  document.querySelector('#download-size-hint').textContent = bytes > 0 ? `约 ${diskSize(bytes)}。1 MiB = 1,048,576 字节。` : '';
+}
+document.querySelector('#download-max-bytes').addEventListener('input', updateDownloadHint);
 function showIncidentSettings(data, loadValues = true) {
   if (loadValues) {
     restartWindow.value = data.incident_restart_window_seconds;
@@ -188,9 +221,16 @@ const statuses = { testing: '测试中', passed: '验证通过', unsupported: '�
 async function readTest() {
   const data = await api('GET', 'capabilities'), container = document.querySelector('#capabilities'); container.replaceChildren();
   if (data.stale) { const p = document.createElement('p'); p.textContent = '模型配置已变化，需要重新测试。'; container.append(p); }
-  for (const [name, item] of Object.entries(data.result?.items ?? {})) { const row = document.createElement('div'); row.className = 'capability'; row.textContent = `${names[name] ?? name}：${statuses[item.status] ?? item.status}${item.error ? '\n' + item.error : ''}`; container.append(row); }
+  for (const [name, item] of Object.entries(data.result?.items ?? {})) {
+    const row = document.createElement('details'); row.className = 'capability';
+    const summary = document.createElement('summary'); summary.textContent = `${names[name] ?? name}：${statuses[item.status] ?? item.status}`;
+    const detail = document.createElement('p'); detail.textContent = item.error || '本项由保存的模型配置发起。';
+    const retry = button('单项重测', () => action(retry, async () => { await api('POST', 'capabilities', { only: name }); show(`正在重测${names[name] ?? name}。`); startPolling(); }));
+    retry.disabled = data.running;
+    row.append(summary, detail, retry); container.append(row);
+  }
   if (data.result?.error) show(data.result.error, true);
-  if (!data.running) { clearInterval(poll); poll = null; if (data.result?.complete) await loadA(); }
+  if (!data.running && poll) { clearInterval(poll); poll = null; if (data.result?.complete && Object.keys(data.result.applied ?? {}).length) await loadA(); }
   return data;
 }
 function startPolling() { if (!poll) poll = setInterval(() => readTest().catch(error => { clearInterval(poll); poll = null; show(error.message, true); }), 1000); }
@@ -385,7 +425,7 @@ const logsOpen = document.querySelector('#open-logs'), logsDialog = document.que
 async function loadLogs() {
   logsOpen.disabled = true;
   const side = logsSide.value;
-  const { archives } = await api('GET', `storage/logs?side=${side}`);
+  const { archives } = await api('GET', 'storage/logs', { side });
   if (side !== logsSide.value) return;
   document.querySelector('#log-archives').replaceChildren(storageTable('已轮转日志', ['月份', '文件', '大小'],
     archives.map(item => [item.month, item.path, diskSize(item.bytes)])));
@@ -519,4 +559,11 @@ document.querySelector('#export-diagnostics').onclick = function () {
     await bridge.download('diagnostics/file', { filename: result.filename }, result.filename);
   });
 };
-try { await loadA(); const test = await readTest(); if (test.running) startPolling(); await loadRules(); await loadDiagnostics(); await loadModelUsage(); await loadHost(); } catch (error) { show(`读取失败：${error.message}`, true); }
+const hostApi = (view, params = {}) => api('GET', 'management/host', { view, ...params });
+const management = createManagement({ api, hostApi, bridge, action, show, loadHost, ensureHost: () => host ? Promise.resolve() : loadHost(), diskSize });
+styleSettings(document);
+management.open(location.hash || '#servers');
+window.addEventListener('hashchange', () => management.open(location.hash || '#servers'));
+const initial = await Promise.allSettled([loadA(), readTest(), loadRules(), loadDiagnostics(), loadModelUsage()]);
+if (initial[1].status === 'fulfilled' && initial[1].value.running) startPolling();
+for (const result of initial) if (result.status === 'rejected') show(result.reason.message, true);

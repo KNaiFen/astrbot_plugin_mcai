@@ -1,0 +1,444 @@
+import { button, node, options } from './controls.js';
+
+const $ = selector => document.querySelector(selector);
+const time = seconds => seconds == null ? '—' : new Date(seconds * 1000).toLocaleString();
+const lines = value => value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+const numbers = value => value.split(/[\s,，]+/).filter(Boolean).map(Number);
+const labels = { start: '启动', stop: '停止', restart: '重启', active: '已启用', paused: '已暂停', pending: '排队中', running: '运行中', waiting: '等待中', applying: '执行方案中', done: '已验收', stopped: '已中止', completed: '已完成', not_accepted: 'B 未受理', failed: '失败', cancelled: '已取消' };
+const eventKinds = { exit: '意外退出', restart: '连续启动失败', unresponsive: '无响应', alert: '健康告警', schedule: '定时维护', connection: 'B 连接' };
+const format = value => typeof value === 'object' && value !== null ? JSON.stringify(value, null, 2) : String(value ?? '—');
+const detail = value => node('pre', format(value), 'text-preview');
+
+function item(title, description, status) {
+  const row = node('article', null, 'data-item');
+  const heading = node('h3', title);
+  if (status) heading.append(' ', node('span', labels[status] || status, `badge${status === 'failed' ? ' danger' : ''}`));
+  row.append(heading);
+  if (description) row.append(node('p', description));
+  return row;
+}
+
+function facts(container, rows) {
+  container.replaceChildren(...rows.map(([key, value]) => {
+    const row = node('div'); row.append(node('strong', key), node('p', format(value))); return row;
+  }));
+}
+
+export function createManagement({ api, hostApi, bridge, action, show, loadHost, ensureHost, diskSize }) {
+  const dialog = $('#management-dialog');
+  const dialogBody = $('#management-dialog-body');
+  const dialogActions = $('#management-dialog-actions');
+  const post = (name, data) => api('POST', `management/${name}`, data);
+  const run = (label, handle, cls) => {
+    const control = button(label, () => action(control, handle), cls);
+    return control;
+  };
+  const listen = (selector, handler) => {
+    const control = $(selector); control.onclick = () => action(control, handler);
+  };
+  const load = (selector, callback) => {
+    const area = $(selector);
+    area.textContent = '正在读取…';
+    return callback(area).catch(error => { area.textContent = `读取失败：${error.message}`; });
+  };
+  function modal(title, ...children) {
+    $('#management-dialog-title').textContent = title;
+    dialogBody.replaceChildren(...children);
+    $('#management-dialog-error').hidden = true;
+    dialogActions.querySelectorAll(':scope > button').forEach(control => control.remove());
+    if (!dialog.open) dialog.showModal();
+  }
+  function confirm(title, description, callback) {
+    modal(title, node('p', description));
+    dialogActions.prepend(run('确认', async () => { try { await callback(); dialog.close(); } catch (error) { dialogBody.querySelector('.modal-error')?.remove(); dialogBody.append(node('p', error.message, 'modal-error')); } }, 'primary'));
+  }
+
+  function renderProbe(area, result) {
+    const probe = result.probe;
+    if (!probe.available) { area.textContent = probe.reason; return; }
+    const spark = probe.integrations?.spark;
+    const values = [
+      `Probe ${probe.version ?? '已安装'} · ${probe.loader ?? '加载器未知'}${probe.stale ? ' · 心跳已过期' : ''}`,
+      `spark：${spark?.available ? '就绪' : spark?.installed ? `已安装（${spark.reason ?? '未就绪'}）` : '未集成'}`,
+    ];
+    if (result.error) values.push(result.error);
+    if (Array.isArray(result.players)) values.push(`在线玩家（${result.players.length}）：${result.players.map(player => player.name).join('、') || '无'}`);
+    else if (result.players?.error) values.push(`玩家查询失败：${result.players.error}`);
+    if (Array.isArray(result.metrics)) {
+      const sample = result.metrics[0];
+      values.push(sample ? `近 10 秒：TPS ${sample.tps?.toFixed(2) ?? '—'} · MSPT ${sample.tick_ms?.mean?.toFixed(2) ?? '—'}` : '近 10 秒没有指标样本');
+    } else if (result.metrics?.error) values.push(`TPS / MSPT 查询失败：${result.metrics.error}`);
+    area.textContent = values.join('\n');
+  }
+  async function queryControl(row, area) {
+    const result = await post('host', { action: 'control_status', instance: row.instance, directory: row.canonical_directory });
+    area.textContent = `${result.id} · ${labels[result.status] || result.status}${result.error ? `：${result.error}` : ''}`;
+    if (!['pending', 'running'].includes(result.status)) {
+      show(area.textContent, result.status === 'failed');
+      await servers();
+    }
+  }
+  function servers() {
+    return load('#server-runtime', async area => {
+      const currentServers = (await hostApi('servers')).items;
+      area.replaceChildren();
+      if (!currentServers.length) area.textContent = 'B 尚未登记正式服。';
+      for (const row of currentServers) {
+        const state = row.state_unknown ? '状态待确认' : row.running ? '运行中' : '已停服';
+        const pids = (row.java_processes || []).map(process => process.pid).join('、');
+        const card = item(row.instance, `${row.directory}\n托管窗口：${row.window_online ? '在线' : '离线'} · 会话 ${row.session_id || '—'} · Java PID ${pids || '—'}\n实例：${row.selectable ? '可选' : '待移除'}${row.configuration_pending ? ' · 配置待生效' : ''}`, state);
+        if (row.occupant) {
+          const owner = node('p', `活动任务：${row.occupant.name}（${row.occupant.id}） · `);
+          const link = node('a', '打开任务看板'); link.href = '#tasks'; owner.append(link); card.append(owner);
+        }
+        for (const trial of row.tests || []) card.append(node('p', `隔离试服：${trial.task_name}（${trial.task_id}） · ${trial.address}:${trial.port} · 窗口${trial.window_online ? '在线' : '离线'}\n${trial.directory}`));
+        const probe = node('p', '正在读取 Probe 状态…');
+        const tracking = node('p', row.web_control ? `待核对：${row.web_control.id}` : '');
+        const actions = node('div', null, 'data-actions');
+        actions.append(run('刷新在线玩家与 TPS', async () => {
+          probe.textContent = '正在读取实时指标…';
+          try { renderProbe(probe, await hostApi('probe', { instance: row.instance, live: '1' })); }
+          catch (error) { probe.textContent = error.message; }
+        }));
+        const controlStatus = run('核对操作状态', () => queryControl(row, tracking));
+        controlStatus.hidden = !row.web_control;
+        for (const command of ['start', 'stop', 'restart']) {
+          const control = button(labels[command], () => confirm(`${labels[command]} ${row.instance}`, '操作会在 B 的托管窗口执行，提交后可按原编号核对。', async () => {
+            try {
+              const result = await post('host', { action: command, instance: row.instance, directory: row.canonical_directory });
+              tracking.textContent = `已提交 ${result.id} · ${labels[result.status] || result.status}`;
+              controlStatus.hidden = false;
+              actions.querySelectorAll('[data-control]').forEach(control => { control.disabled = true; });
+            } catch (error) { await servers(); throw error; }
+          }));
+          control.dataset.control = command;
+          control.disabled = !row.selectable || !row.window_online || row.state_unknown || !!row.occupant || !!row.web_control;
+          actions.append(control);
+        }
+        actions.append(controlStatus);
+        card.append(probe, actions, tracking); area.append(card);
+        hostApi('probe', { instance: row.instance }).then(result => renderProbe(probe, result), error => { probe.textContent = `Probe 状态读取失败：${error.message}`; });
+      }
+    });
+  }
+  listen('#refresh-servers', servers);
+  listen('#reload-host', async () => { await post('host', { action: 'reload' }); await Promise.all([loadHost(), servers()]); show('B 实例配置已重载。'); });
+
+  const scheduleForm = $('#schedule-form');
+  const scheduleFields = scheduleForm.elements;
+  let scheduleRows = [];
+  function scheduleMode() {
+    const isBackup = scheduleFields.kind.value === 'backup';
+    for (const name of ['mode', 'retain', 'paths', 'announce_minutes']) scheduleFields[name].closest('label').hidden = (name === 'announce_minutes') === isBackup;
+    scheduleFields.paths.required = isBackup;
+  }
+  function editSchedule(row) {
+    const spec = row?.spec || {};
+    scheduleFields.id.value = row?.id || '';
+    scheduleFields.instance.disabled = !!row;
+    scheduleFields.instance.value = row?.instance ?? scheduleFields.instance.options[0]?.value ?? '';
+    scheduleFields.kind.value = spec.kind || 'backup';
+    scheduleFields.at.value = spec.at || '';
+    scheduleFields.weekdays.value = (spec.weekdays || []).join(',');
+    scheduleFields.mode.value = spec.mode || 'online';
+    scheduleFields.retain.value = spec.retain || 3;
+    scheduleFields.paths.value = (spec.paths || []).join('\n');
+    scheduleFields.announce_minutes.value = (spec.announce_minutes ?? [10, 1]).join('\n');
+    scheduleFields.notify_success.checked = !!spec.notify_success;
+    $('#schedule-error').textContent = '';
+    scheduleMode(); scheduleForm.hidden = false; scheduleFields.at.focus();
+  }
+  scheduleFields.kind.onchange = scheduleMode;
+  function drawSchedules() {
+    const area = $('#schedules');
+    const kind = $('#schedule-kind-filter').value, instance = $('#schedule-instance-filter').value;
+    const rows = scheduleRows.filter(row => (!kind || row.spec.kind === kind) && (!instance || row.instance === instance));
+    area.replaceChildren();
+    if (!rows.length) area.textContent = '没有符合条件的计划。';
+    for (const row of rows) {
+      const spec = row.spec;
+      const backup = spec.kind === 'backup';
+      const periodic = spec.weekdays?.map(day => '一二三四五六日'[day - 1]).join('、');
+      const scope = backup ? `${spec.mode === 'online' ? '在线' : '停服'} · 保留 ${spec.retain} 份\n路径：${spec.paths.join('、')}` : `公告：${spec.announce_minutes.join('、') || '无'}${spec.announce_minutes.length ? ' 分钟前' : ''}`;
+      const result = row.last_result ? `${row.last_result.status}：${row.last_result.message || '—'}` : '尚无结果';
+      const card = item(`${row.instance} · 定时${backup ? '备份' : '重启'}`, `${row.id} · ${periodic ? `每周${periodic}` : '每天'} ${spec.at}（B 本地）\n${scope}\n${spec.notify_success ? '成功也通知' : '仅通知异常'} · 下次 ${row.next_local || '—'}\n上次：${result}`, row.state);
+      const actions = node('div', null, 'data-actions');
+      const update = async command => { await post('host', { action: 'schedule', command, id: row.id }); await schedules(); };
+      actions.append(button('编辑', () => editSchedule(row)), run(row.state === 'paused' ? '恢复' : '暂停', () => update(row.state === 'paused' ? 'resume' : 'pause')), button('删除', () => confirm('删除定时计划', `${row.instance} · ${row.id}。已启动的维护仍会结算。`, () => update('delete')), 'quiet'));
+      card.append(actions); area.append(card);
+    }
+  }
+  async function schedules() {
+    await load('#schedules', async () => {
+      const [result, servers] = await Promise.all([hostApi('schedules'), hostApi('servers')]);
+      scheduleRows = result.items;
+      const selectable = servers.items.filter(row => row.selectable).map(row => [row.instance, row.instance]);
+      options(scheduleFields.instance, selectable);
+      const names = new Set([...servers.items, ...scheduleRows].map(row => row.instance));
+      options($('#schedule-instance-filter'), [['', '全部实例'], ...[...names].map(name => [name, name])]);
+      $('#schedule-health').textContent = `调度器：${result.health.status === 'ready' ? '就绪' : '降级'}（${result.health.status}）${result.health.error ? ` · ${result.health.error}` : ''}`;
+      $('#new-schedule').disabled = !scheduleFields.instance.options.length;
+      drawSchedules();
+    });
+  }
+  $('#new-schedule').disabled = true;
+  $('#new-schedule').onclick = () => editSchedule();
+  $('#cancel-schedule').onclick = () => { scheduleForm.hidden = true; };
+  $('#schedule-kind-filter').onchange = $('#schedule-instance-filter').onchange = drawSchedules;
+  listen('#refresh-schedules', schedules);
+  scheduleForm.onsubmit = event => {
+    event.preventDefault();
+    action(event.submitter, async () => {
+      const errorArea = $('#schedule-error'); errorArea.textContent = '';
+      const f = scheduleFields, id = f.id.value, kind = f.kind.value;
+      const spec = { kind, at: f.at.value, notify_success: f.notify_success.checked };
+      const weekdays = numbers(f.weekdays.value);
+      if (weekdays.length) spec.weekdays = weekdays;
+      if (kind === 'backup') Object.assign(spec, { mode: f.mode.value, retain: Number(f.retain.value), paths: lines(f.paths.value) });
+      else spec.announce_minutes = numbers(f.announce_minutes.value);
+      try {
+        if ([...weekdays, ...(spec.announce_minutes || [])].some(value => !Number.isInteger(value))) throw new Error('星期及公告分钟须填写整数。');
+        await post('host', { action: 'schedule', command: id ? 'edit' : 'create', id, instance: f.instance.value, spec });
+        scheduleForm.hidden = true; await schedules(); show('定时计划已保存。');
+      } catch (error) { errorArea.textContent = error.message; }
+    });
+  };
+
+  function tasks(page = 1) {
+    return load('#task-board', async area => {
+      const { items, count } = await api('GET', 'management/tasks', { state: $('#task-filter').value, search: $('#task-search').value, page });
+      area.replaceChildren();
+      for (const row of items) {
+        const tokens = row.usage.input_tokens + row.usage.output_tokens;
+        const usage = `模型 ${row.usage.requests} 次（审核 ${row.usage.review_requests} 次） · ${tokens.toLocaleString()} token${row.token_limit ? ` / ${row.token_limit.toLocaleString()}（${Math.round(tokens * 100 / row.token_limit)}%）` : ' · 不限额'}`;
+        const card = item(row.name, `任务 ${row.id} · 群 ${row.group} · 实例 ${row.instance || '待识别'}\n${usage}${row.pause_reason ? `\n暂停原因：${row.pause_reason}` : ''}${row.pause_after_operation ? '\n修复结算后暂停' : ''}`, row.state);
+        if (row.model_retry) card.append(node('p', `最近模型重试：${row.model_retry.error || row.model_retry.category || format(row.model_retry)}`));
+        if (row.archive_error) card.append(node('p', `归档错误：${row.archive_error}`, 'modal-error'));
+        if (row.continuation) card.append(node('p', `多轮授权 ${row.continuation_status}\n范围：${row.continuation.scope}\n完成条件：${row.continuation.completion}`));
+        if (row.cancel_pending) card.append(node('p', '正在结算取消；实例仍被占用。'));
+        const actions = node('div', null, 'data-actions');
+        const update = async (action, data = {}) => { const result = await post('tasks', { id: row.id, action, ...data }); await tasks(page); return result; };
+        if (!row.cancel_pending && !['done', 'stopped'].includes(row.state)) {
+          const say = node('label', null, 'switch-row');
+          const input = node('input', null, 'switch'); input.type = 'checkbox'; input.checked = !row.say_paused; input.setAttribute('role', 'switch');
+          input.onchange = () => action(input, async () => { try { await update('say', { enabled: input.checked }); } catch (error) { input.checked = !row.say_paused; throw error; } });
+          say.append(node('span', '接收成员 say'), input);
+          const pause = row.state === 'paused';
+          actions.append(say, run(pause ? '续接' : '暂停', () => update(pause ? 'resume' : 'pause')), button('中止', () => confirm('中止任务', row.name, () => update('stop')), 'quiet'), button('验收', () => confirm('验收任务', row.name, () => update('done'))));
+        }
+        if (row.plan) {
+          actions.append(button('查看待批准方案', () => {
+            const code = node('input'); code.placeholder = '输入当前方案短码'; code.setAttribute('aria-label', '当前方案短码');
+            const error = node('p', '', 'modal-error');
+            modal(row.name, detail(row.plan.text), node('p', `短码：${row.plan.code}`), code, error);
+            dialogActions.prepend(run('批准方案', async () => {
+              try { await update('approve', { code: code.value }); dialog.close(); }
+              catch (exc) { error.textContent = exc.message; }
+            }, 'primary'));
+          }));
+        }
+        if (row.state === 'done' && row.archive_error) actions.append(run('重试归档', async () => { await update('archive'); show('归档已排队，刷新任务查看结果。'); }));
+        card.append(actions); area.append(card);
+      }
+      pages(area, page, count, tasks);
+    });
+  }
+  function pages(area, page, count, callback) {
+    if (!count) { area.append(node('p', '暂无记录。')); return; }
+    const max = Math.ceil(count / 30);
+    const pager = node('div', null, 'data-actions');
+    const previous = run('上一页', () => callback(page - 1)); previous.disabled = page <= 1;
+    const next = run('下一页', () => callback(page + 1)); next.disabled = page >= max;
+    pager.append(previous, node('span', `第 ${page} / ${max} 页 · ${count} 条`), next); area.append(pager);
+  }
+  listen('#refresh-tasks', () => tasks());
+  $('#task-filter').onchange = $('#task-search').onchange = () => tasks();
+
+  function logReader(id, mode, attachment) {
+    const section = node('section');
+    const output = node('div', null, 'text-preview');
+    let cursor = 0;
+    const next = run(mode === 'file' ? '预览附件' : '读取控制台', async () => {
+      const request = { id, mode, ...(attachment ? { attachment } : {}) };
+      const page = await hostApi('event', { ...request, after: cursor });
+      output.replaceChildren();
+      for (const line of page.items) {
+        const row = node('div');
+        const text = node('pre', `${line.seq}  ${line.body.output}`);
+        row.append(text);
+        if (line.next_offset != null) {
+          let offset = line.next_offset;
+          const more = run('读取本行后续', async () => {
+            const result = await hostApi('event', { ...request, line: line.seq, offset });
+            text.textContent = `${line.seq} · 偏移 ${offset}\n${result.body.output}`;
+            offset = result.next_offset;
+            more.hidden = offset == null;
+          });
+          row.append(more);
+        }
+        output.append(row);
+      }
+      if (!page.items.length) output.textContent = '没有可显示的内容。';
+      cursor = page.next_cursor ?? 0;
+      next.textContent = page.next_cursor == null ? '返回第一页' : '下一页';
+    });
+    section.append(next, output);
+    return section;
+  }
+
+  async function eventDetail(row) {
+    const entry = await hostApi('event', { id: row.id });
+    const title = `${entry.instance} · ${eventKinds[entry.type || entry.reason] || entry.type || entry.reason}`;
+    const summary = node('div', null, 'info-grid');
+    facts(summary, [['原因', entry.summary], ['时间', time(entry.time)], ['编号', entry.id], ['涉事 Java PID', entry.affected_java?.map?.(process => process.pid ?? process).join('、') || entry.affected_java?.pid || '—'], ['受影响操作', entry.operations?.join('、') || entry.operation_id || '—'], ['控制台', `${entry.console_status} · ${entry.console_count ?? 0} 行`], ['性能留证', entry.performance_status]]);
+    modal(title, summary);
+    if (entry.performance?.length) {
+      const performance = node('details'); performance.append(node('summary', '故障前 Probe 性能指标'), detail(entry.performance)); dialogBody.append(performance);
+    }
+    if (entry.console_count) dialogBody.append(logReader(entry.id, 'console'));
+    for (const launch of entry.launches) {
+      const section = node('section', null, 'data-item');
+      section.append(node('h4', `Java PID ${launch.pid} · ${time(launch.created)} → ${time(launch.exited_at)}`));
+      for (const file of launch.attachments) {
+        const block = node('details');
+        block.append(node('summary', `${file.path} · ${file.status}`));
+        if (file.status === 'saved') {
+          const filename = `${file.path.split('/').at(-1)}.gz`;
+          const fields = node('div', null, 'info-grid');
+          facts(fields, [['原文大小', diskSize(file.bytes)], ['SHA-256', file.sha256]]);
+          block.append(fields, run('下载 gzip', () => bridge.download('management/attachment', { id: entry.id, attachment: file.id }, filename)), logReader(entry.id, 'file', file.id));
+        } else if (file.reason) block.append(node('p', file.reason));
+        section.append(block);
+      }
+      dialogBody.append(section);
+    }
+  }
+
+  async function events(cursors = []) {
+    await load('#events', async area => {
+      const select = $('#event-instance');
+      const filters = { instance: select.value, kind: $('#event-kind').value };
+      if (cursors.length) filters.before = cursors.at(-1);
+      const data = await hostApi('events', filters);
+      if (data.instances) options(select, [['', '全部实例'], ...data.instances.map(value => [value, value])]);
+      area.replaceChildren(node('h3', '活跃健康告警'));
+      if (!data.active.length) area.append(node('p', '当前没有活跃健康告警。', 'hint'));
+      for (const alert of data.active) {
+        const row = item(`${alert.instance} · ${alert.reason}`, `自 ${time(alert.since)} · ${alert.id}`, '活跃');
+        row.append(run('查看详情', () => eventDetail(alert))); area.append(row);
+      }
+      area.append(node('h3', '事故与事件历史'));
+      if (!data.items.length) area.append(node('p', '当前筛选没有事件。', 'hint'));
+      for (const record of data.items) {
+        const row = item(`${record.instance} · ${eventKinds[record.type || record.reason] || record.reason}`, `${time(record.time)} · ${record.summary}`, record.type === 'alert' ? record.recovered ? '已恢复' : '告警' : record.status);
+        row.append(run('查看详情', () => eventDetail(record))); area.append(row);
+      }
+      const pager = node('div', null, 'data-actions');
+      if (cursors.length) pager.append(run('上一页', () => events(cursors.slice(0, -1))));
+      if (data.next_cursor != null) pager.append(run('下一页', () => events([...cursors, data.next_cursor])));
+      area.append(pager);
+    });
+  }
+  function connectionEvents(page = 1) {
+    return load('#connection-events', async area => {
+      const data = await api('GET', 'management/connections', { page });
+      area.replaceChildren(node('h3', 'B 失联与恢复（A 本地记录）'));
+      for (const row of data.items) area.append(item(row.summary, `${time(row.time)} · 自 ${time(row.since)} · ${row.error_category ?? '—'}`, row.recovered ? '已恢复' : '失联'));
+      pages(area, page, data.count, connectionEvents);
+    });
+  }
+  const refreshEvents = () => Promise.all([events(), connectionEvents()]);
+  listen('#refresh-events', refreshEvents);
+  $('#event-instance').onchange = $('#event-kind').onchange = () => events();
+
+  let documentVersion;
+  async function knowledgeList() {
+    const data = await api('GET', 'management/knowledge');
+    options($('#knowledge-file'), data.documents.map(name => [name, name]), 'index.md');
+    const associations = $('#knowledge-links');
+    associations.replaceChildren(node('h3', '索引关联'));
+    if (data.index_error) associations.append(node('p', data.index_error, 'modal-error'));
+    for (const entry of data.entries) associations.append(node('p', `${entry.directory} → ${entry.file}`));
+  }
+  async function openDocument() {
+    const name = $('#knowledge-file').value;
+    if (!name) return;
+    documentVersion = await api('GET', 'management/knowledge', { name });
+    $('#knowledge-text').disabled = false;
+    $('#knowledge-text').value = documentVersion.text;
+    $('#knowledge-revision').textContent = `正在编辑 ${name}`;
+  }
+  listen('#load-knowledge', async () => {
+    if (documentVersion && documentVersion.text !== $('#knowledge-text').value) {
+      confirm('打开经验文档', '当前文档尚有未保存的修改。', openDocument);
+    } else await openDocument();
+  });
+  listen('#save-knowledge', async () => {
+    if (!documentVersion) throw new Error('请先打开经验文档。');
+    const text = $('#knowledge-text').value;
+    const data = await post('knowledge', { name: documentVersion.name, revision: documentVersion.revision, text });
+    documentVersion = { ...documentVersion, revision: data.revision, text };
+    await knowledgeList(); show('经验文档已保存。');
+  });
+
+  const version = value => value.ready ? `${value.version} · ${value.path}` : `未就绪${value.path ? ` · ${value.path}` : ''} · ${value.error}`;
+  function environment(side) {
+    return load(side === 'a' ? '#a-environment' : '#host-environment', async area => {
+      if (side === 'a') {
+        const data = await api('GET', 'management/environment');
+        facts(area, [['PowerShell 7', version(data.powershell)], ['工作区辅助操作额度', `${data.memory_mib} MiB`], ...['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY'].map(key => [key, data.proxy[key] || '未设置'])]);
+      } else {
+        const data = await hostApi('environment');
+        facts(area, [['协议 / 版本', `${data.protocol} / ${data.version}`], ['监听地址', `${data.listen}:${data.port}`], ['数据目录', data.data_dir], ['证书 SHA-256', data.fingerprint], ['PowerShell 7', version(data.powershell)], ['存档 Java', version(data.java)], ...Object.entries(data.jars).map(([key, ready]) => [key, ready ? '就绪' : '缺失'])]);
+      }
+    });
+  }
+  listen('#check-a-environment', () => environment('a'));
+  listen('#check-b-environment', () => environment('b'));
+  listen('#test-modrinth', async () => { await post('modrinth'); show('A 已用当前代理设置访问 Modrinth API。'); });
+
+  function storage() {
+    return load('#storage-detail', async area => {
+      const data = await hostApi('storage');
+      area.replaceChildren(node('h3', '备份清单'));
+      if (!data.backups.length) area.append(node('p', '没有可读的备份清单。'));
+      for (const row of data.backups) {
+        const label = row.schedule_id ? `定时计划备份 · 计划 ${row.schedule_id}` : '修复备份';
+        const card = item(`${row.instance || '—'} · ${label}`, `${time(row.time)} · ${row.operation_id}`);
+        card.append(run('查看覆盖范围', async () => {
+          const manifest = await hostApi('backup', { id: row.operation_id });
+          modal('备份覆盖范围', node('p', row.path), detail(manifest.files));
+        }));
+        area.append(card);
+      }
+      area.append(node('h3', '当前及最近后台作业'));
+      if (!data.jobs.length) area.append(node('p', '没有后台作业。'));
+      for (const row of data.jobs) {
+        const card = item(`${row.instance} · ${row.kind}`, `${row.id} · 任务 ${row.task_id}\n${time(row.created)}${row.error ? ` · ${row.error}` : ''}`, row.status);
+        card.append(button('详情', () => modal('作业状态', detail(row))));
+        if (['running', 'pending'].includes(row.status)) card.append(button('取消作业', () => confirm('取消后台作业', `${row.instance} · ${row.id}`, async () => { await post('host', { action: 'job_cancel', id: row.id }); await storage(); })));
+        area.append(card);
+      }
+      area.append(node('h3', '暂存下载'));
+      if (!data.download_items.length) area.append(node('p', '没有暂存下载。'));
+      for (const row of data.download_items) area.append(item(row.filename, `来源 ${row.source} · 大小 ${diskSize(row.size)} · 任务 ${row.task_id}\nSHA-256 ${row.sha256}\n${row.referenced ? '已有安装引用' : '无安装引用'}`, row.ready ? '已暂存' : '等待上传'));
+    });
+  }
+  listen('#refresh-storage-detail', storage);
+
+  const opened = new Set();
+  return { open(hash) {
+    if (opened.has(hash)) return;
+    opened.add(hash);
+    const run = {
+      '#servers': () => Promise.all([servers(), ensureHost()]),
+      '#connection': () => environment('a'),
+      '#host': () => Promise.all([ensureHost(), environment('b')]),
+      '#maintenance': schedules,
+      '#tasks': tasks,
+      '#incidents': () => Promise.all([refreshEvents(), ensureHost()]),
+      '#knowledge': async () => { await knowledgeList(); await openDocument(); },
+    }[hash];
+    run?.().catch(error => show(error.message, true));
+  } };
+}

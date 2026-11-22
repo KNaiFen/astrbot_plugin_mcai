@@ -87,6 +87,7 @@ tests/test_plan_continuation.py::test_one_approval_runs_three_observed_batches_w
 | 独立审核和续接 | 三个入口分别放行/拒绝、配置与协议错误、审核重试、材料缺失/超限、脚本变更、主上下文隔离、规则重载、检查点中断恢复、修复部分失败后再次审批 | `test_review_resume.py`、`test_model_recovery_summary.py` |
 | 原生模型适配与 API 摘要 | 核心保留实际适配器工具调用、多轮执行、重试和上下文压缩；专项保留思考程度、流式／非流式、进度、摘要与失败矩阵 | `test_tool_contracts.py`、`test_plan_continuation.py`、`test_model_recovery_summary.py`、`api_compatibility.py` |
 | 完整交互与诊断导出 | 拒绝命令原文、任务私有API请求／响应／摘要、独立审核、批量工具结果、消息发送成功／失败、关闭群摘要和ZIP回放 | `test_tracing.py`、`test_settings_search.py` |
+| Web 管理控制台 | AstrBot 请求上下文和真实 A→B HTTPS：定时计划校验和替换、配置保存和环境回显、正常启停与占用冲突、Probe 局部读取、任务短码和归档、故障与 gzip 附件、经验索引、备份清单及后台取消 | `test_web_management.py`、`test_settings_search.py` |
 | Windows 运维入口 | CLI列表／状态／启停／恢复与相对目录、attach半行／长行／新会话、输入拒绝、每实例Java及托管窗口交互 | `test_https.py`、`test_audit_host.py`、`test_console_cli.py`、`test_terminal_isolation.py` |
 | 独立终端与共享额度 | tm/terminal、当前目录与-C、命名互斥、目录登记、真实补全/历史/中文/Ctrl+C、两个窗口与B强杀重连、会话和控制编号去重、9999行与字节上限、Job配置失败、共享额度耗尽和恢复、修复备份保留 | `test_terminal_isolation.py` |
 
@@ -107,6 +108,10 @@ tests/test_plan_continuation.py::test_one_approval_runs_three_observed_batches_w
 ```
 
 ## 验证范围
+
+2026-11-21 Web 控制台验证：以 AstrBot v4.29.4 的实际桥接脚本置于受限 iframe，父页模拟管理 API。Playwright 核对计划创建、编辑、暂停、恢复、删除、局部 Probe 刷新、任务短码弹窗、群输入及亮暗切换；1280px 桌面和 390px 下九个面板没有横向溢出。独立临时源码目录执行 `python scripts/build_release.py --package-only`，插件、B 和源码包的 ZIP CRC 通过，包含对应页面资源与 B 管理模块；使用了已有 Java／Probe 产物。A 机通过 `Downloads.request` 对真实 Modrinth 搜索 API 发出只读请求，收到 1 条结果。未使用真实 QQ、生产服务器或 CurseForge 私有凭据。
+
+同轮使用 Windows、Python 3.12、`PYTHONPATH=runtime/astrbot-4.29.4` 和隔离 `ASTRBOT_ROOT=runtime/astrbot-test`。`python -m pytest -q --require-astrbot --durations=15 --junitxml=runtime/mcai-web-pytest-final.xml` 结算为 514 通过、零跳过、98 条依赖弃用提示（22 分 38 秒）；最后补充的原编号防迟到断言和索引目录校验随 Web 相关节点复测，8 通过。`ruff check main.py mcai tests scripts`、`ruff format --check main.py mcai tests scripts`、`git diff --check` 和三个 JavaScript 模块的 `node --check` 均通过。
 
 Python 行/分支覆盖率衡量执行过的 Python 代码。Java 辅助程序通过真实 JVM 的读写、压缩、外部文件和恢复结果验证；没有把 Python 覆盖率数字用于表示 Java 的覆盖率。
 

@@ -46,7 +46,25 @@ def provider_identity(provider, settings):
     )
 
 
-async def test_capabilities(main, review, settings, progress, *, store=None):
+CAPABILITY_ITEMS = frozenset(
+    {
+        "conversation",
+        "image",
+        "stream",
+        "function_call",
+        "reasoning_effort",
+        "web_search",
+        "web_search_preview",
+        "alpha_search",
+        "alpha_open",
+        "alpha_find",
+        "progress",
+        "review_json",
+    }
+)
+
+
+async def test_capabilities(main, review, settings, progress, *, store=None, only=None):
     from astrbot.core.agent.tool import FunctionTool, ToolSet
 
     main = request_provider(main)
@@ -71,6 +89,12 @@ async def test_capabilities(main, review, settings, progress, *, store=None):
     }
 
     async def check(name, call):
+        if (
+            only
+            and name != only
+            and not (name == "alpha_search" and only in ("alpha_open", "alpha_find"))
+        ):
+            return None
         result["items"][name] = {"status": "testing"}
         progress(result)
         try:
@@ -134,7 +158,10 @@ async def test_capabilities(main, review, settings, progress, *, store=None):
         )
         return response.role != "err" and "MCAI_OK" in (response.completion_text or "")
 
-    await check("conversation", conversation)
+    await check(
+        "reasoning_effort" if only == "reasoning_effort" else "conversation",
+        conversation,
+    )
 
     async def image():
         response = await selected.text_chat(
@@ -228,7 +255,7 @@ async def test_capabilities(main, review, settings, progress, *, store=None):
         )
 
     await check("function_call", function_call)
-    if settings.get("reasoning_effort"):
+    if not only and settings.get("reasoning_effort"):
         result["items"]["reasoning_effort"] = result["items"]["conversation"].copy()
 
     if main.provider_config.get("type") == "openai_responses":
@@ -244,7 +271,11 @@ async def test_capabilities(main, review, settings, progress, *, store=None):
             return any(item.type == "web_search_call" for item in response.output)
 
         passed = await check("web_search", lambda: native_search("web_search"))
-        if not passed and result["items"]["web_search"]["status"] == "unsupported":
+        if only == "web_search_preview" or (
+            not only
+            and not passed
+            and result["items"]["web_search"]["status"] == "unsupported"
+        ):
             await check(
                 "web_search_preview", lambda: native_search("web_search_preview")
             )
@@ -313,6 +344,11 @@ async def test_capabilities(main, review, settings, progress, *, store=None):
                 store=store,
             ),
         )
+    elif only in ("alpha_open", "alpha_find"):
+        result["items"][only] = {
+            "status": "failed",
+            "error": "前置 alpha/search 未取得搜索结果",
+        }
 
     async def review_json():
         if review is None:
@@ -339,6 +375,12 @@ async def test_capabilities(main, review, settings, progress, *, store=None):
         return json.loads(response.completion_text) == {"decision": "allow"}
 
     await check("review_json", review_json)
+    if only:
+        result["items"] = {
+            only: result["items"].get(
+                only, {"status": "unsupported", "error": "当前提供商不支持此测试"}
+            )
+        }
     result["complete"] = True
     progress(result)
     return result

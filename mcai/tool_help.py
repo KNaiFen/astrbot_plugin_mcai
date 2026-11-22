@@ -10,6 +10,7 @@ EXAMPLES = {
     },
     "mc_status": {},
     "mc_history": {"mode": "search", "query": "启动失败"},
+    "mc_knowledge": {"case_id": "索引中的经验编号"},
     "mc_web": {"mode": "open", "url": "https://example.org/manual"},
     "mc_search": {"mode": "search", "query": "Minecraft watchdog server thread"},
     "mc_download": {"url": "https://example.org/mod.jar", "filename": "mod.jar"},
@@ -123,8 +124,6 @@ def tool_help(name):
             name, "按当前目标选择必要参数；编号、路径和坐标均取实际返回值。"
         ),
         "example": {"name": name, "arguments": EXAMPLES[name]},
-        "results": "工具返回ok/data及可选error/next_call。后台是否完成看data.status；complete只说明读取范围。"
-        "按next_call续读，failed报告实际效果，unknown沿原operation_id核实，不换编号重跑。",
     }
 
 

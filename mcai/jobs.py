@@ -403,6 +403,7 @@ class Jobs:
     async def collect(self, key, rows):
         iterator = iter(rows)
         count, errors = 0, 0
+        truncation = {}
         while not self.stopped(key):
             batch = await asyncio.to_thread(lambda: list(islice(iterator, 100)))
             if not batch:
@@ -411,10 +412,23 @@ class Jobs:
                 self.emit(key, row)
                 count += 1
                 errors += int("error" in row)
+                if row.get("partial") and row.get("truncated_reason"):
+                    truncation = {
+                        field: row[field]
+                        for field in (
+                            "partial",
+                            "truncated_reason",
+                            "scanned_files",
+                            "scanned_events",
+                            "unique_groups_total",
+                            "omitted_groups",
+                            "note",
+                        )
+                    }
             self.update(
                 key,
                 progress={"records": count},
-                summary={"errors": errors, "partial": bool(errors)},
+                summary={"errors": errors, "partial": bool(errors), **truncation},
             )
         if hasattr(iterator, "close"):
             iterator.close()

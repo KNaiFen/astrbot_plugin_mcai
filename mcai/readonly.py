@@ -50,6 +50,7 @@ READ_TOOLS = (
         "mc_instances",
         "mc_select_instance",
         "mc_history",
+        "mc_knowledge",
         "mc_status",
         "mc_query",
         "mc_console_read",
@@ -320,10 +321,12 @@ async def run_question(tasks, reads, event, identity, text):
         if selected is None:
             raise ValueError("请先确认实例；无法确定时请用户附上实例 ID。")
         arguments = arguments_for(name, public, internal=True)
-        if name == "mc_history":
+        if name in ("mc_history", "mc_knowledge"):
             directory = selected["canonical_directory"]
             if arguments.get("directory", directory) != directory:
                 raise ValueError("只读取本次所选实例的经验。")
+            if name == "mc_knowledge":
+                arguments = {**arguments, "mode": "case"}
             return tasks.knowledge.query(arguments, directory)
         if name == "mc_query":
             try:

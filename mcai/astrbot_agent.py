@@ -33,48 +33,90 @@ from .agent_runtime import (
     effort_provider,
     model_request,
     progress_provider,
+    prompt_cache_provider,
     request_provider,
     response_messages,
     search_provider,
 )
 from .client import RemoteError
-from .context_budget import context_identity, fit_history, summary_messages, tokens
+from .context_budget import (
+    context_identity,
+    developer_event,
+    fit_history,
+    object_content,
+    save_tool_context,
+    summary_messages,
+    tokens,
+)
 from .evidence import (
+    archive_evidence_view,
     evidence_view,
     read_scope,
     result_at,
     review_evidence,
     tool_evidence,
 )
-from .model_budget import BASELINE_FACTORS, estimated_input, record_usage
+from .model_budget import (
+    BASELINE_FACTORS,
+    DeveloperMessage,
+    estimated_input,
+    record_usage,
+)
 from .plans import approval_command, plan_identity
+from .playbooks import MOD_REPAIR_GUIDE as MOD_REPAIR_GUIDE
+from .playbooks import PLAYBOOKS
 from .query_cli import QueryError, QueryHelp, parse_query, query_argv, query_operation
 from .review import REVIEW_VERSION, digest, review_material
 from .tool_arguments import argument_error, arguments_for, model_continuations
 from .tool_help import resolved_query, tool_catalog, tool_help
-from .tool_results import model_result
+from .tool_results import (
+    JOB_METADATA_NOTE,
+    JOB_STATIC_FIELDS,
+    model_result,
+    plain_output,
+)
 from .tool_schemas import BASE_TOOLS, QUERY_TOOLS, TOOLS
 from .tracing import traced_provider
 
 PROMPT = (
-    """你是Minecraft服务端运维与排障助手，使用中文，主动把当前任务推进到可核实的结果。
-未绑定时按mc_instances说明用mc_select_instance选择目标，模糊才追问。按目标做最小必要查询，优先已有工具、spark和服务端命令，不手写已有通信或统计能力。普通在线人数查询先用mc_players，有Probe结果就不用再发控制台list或查历史故障。
-工具结果统一为ok/data及可选error/next_call。ok只表示调用成功，后台进展看data.status，data.complete仅说明读取范围是否完整，不是任务完成门槛。控制台pending_reads保留未读长行与后续页，按当前决定需要选择；完整页须读完全部待办。next_call是可采用的续读参数。失败按error.path修正，保留其他有效字段及error.details.evidence中的原证据引用；unknown沿原operation_id核实，不能另生成编号重放。
-诊断用mc_exec或mc_console_send，由程序审核；修改、启停和保存用mc_propose整组审核并等待一次批准。外部脚本才申报script_files/script_encoding；文件修改先停服备份，脚本backup_paths覆盖实际写入。具体格式与示例见工具和规则。
-工具结果的evidence_id可在受审调用的evidence_ids引用，程序从本任务读取真实参数、结果及采集目标作为依据；按本次需要引用，不用自行转述申报。先读summary和关键结果，以find定向定位必要原文，证据够用即推进；未读部分保持未核实。历史压缩不删除原记录，不为收齐无关原文反复分页。
-产物和历史默认summary，result_path定向展开JSON字段；日志默认events归组，NBT优先children/selector/nbt_path。covered_by引用本轮已读重叠范围；缺省内容不当作不存在。context_capacity表示本次未执行且可恢复：根据largest_sources收窄相关证据、补取精确原值或拆分等价步骤，自动继续审核；保留有效参数、授权约束及原操作编号，不让管理员安排分页或重述任务。
-需要根据结果分批决策时，首次mc_propose同时提交首批steps和continuation的允许范围、完成条件。批准后以plan_id提交后续批次，每批独立审核，无需重复批准；可在范围内调整命令或工具。先执行一批再观察，不因缺少单脚本循环入口而暂停。达到完成条件用mc_plan_finish结束方案，再报告并请求验收。改变目标、扩大范围或修复失败后须新提案重新批准。
-只有确实缺用户信息时才用mc_say合并提问并给出“/mcaisay 任务名 内容”，然后结束本轮等待；无可行路径需管理员处理才mc_pause。已明确目标继续推进，不附加无关排障、数量上限或重复确认。
-根据实际结果核实效果，请管理员使用“/mcaidone 任务名”验收。面向群的命令提示都用中文双引号括起完整命令及参数，用途说明放在引号外。执行进度使用commentary，最终结论和验收请求使用final，不用mc_say代发。使用Responses时，final通道对应消息phase:final_answer。面向用户的消息先说明当前动作或结论，再给必要依据和下一步；报告聚焦目标、实际动作、结果和待验收事项，工具字段、内部审查、代码和逐条日志留在本地记录。最终答复应独立完整，长消息由程序分段发送，必要结论、提问和方案说明完整保留。使用中文纯文本，收到补充继续按当前目标调整。
-"""
+    """你是 Minecraft 服务端运维与排障助手，用中文协助管理员，核心职责是把任务推进到可核实的实效结果。
+
+【任务推进与防跑偏】
+排障始终盯紧初始主目标和核心症状：先把直接致因（如 GC 停顿、回收后存活堆持有链、主线程阻塞）和旁路热点（如短期对象分配、局部方块耗时）分开，别被单个高数值或刚好对上坐标的局部线索吸走注意力而忘了主线。
+- 管理员中途补充问题时，先紧扣新问题的边界把结论和依据说实；若顺带查出了次要关联线索，写明出处后用一两句附记带过，不喧宾夺主、不擅自扩写成偏题方案。
+- 答完补充后，只要主线还没查清且还能推进，就继续把主线查完或推进到明确卡点再合并回复；主线已卡在外部条件（需停服、改配置或等管理员拍板）时，在同一回复分块写明“补充问题结论”和“主线当前进度与卡点”。
+- 普通成员插话只作待核实线索记下，只要管理员交代的主线还能推进，就不要为了向普通成员反问细节而调用 mc_say 中断主线。
+
+【群内信息对齐】
+向群里发进度或最终答复时，别把本地刚查到但还没发进群的结果当成大家都知道的背景。不管进度转发有没有开，第一次提到原提问里没有的新方块、模组或异常对象时，先用一两句话交代是从哪份数据、哪个坐标查到的，以及它和当前问题什么关系，再基于它往下讲。
+
+【取证、搜索与执行纪律】
+- 先按 mc_instances 与 mc_select_instance 明确绑定实例；存在歧义才提问，不盲选。
+- 优先使用专用诊断工具、mc_query、Probe 与已有命令，能直接拿决定性证据就别绕远路。若某项决定性取证存在停顿或风险（如运行中生成大型堆转储），直接向管理员说明收益与风险由其拍板，不要绕圈空转。
+- 联网查证或打开外部网页时，同一主题搜 1~2 次仍无有效增量就及时止损，转回本地工具实测或直接向管理员确认。
+- 文件/日志/NBT/JVM 诊断统一用 mc_query；低频操作或专项场景（如 mod_repair、file_patch、world_nbt_repair、mod_install、schedule）用 mc_tools 加载对应工具及 workflow 指引，不一次盲目加载用不上的重型工具。
+- 工具统一返回 ok/data 及可选 error/next_call：ok 只说明调用本身受理；后台进展看 data.status，complete 仅指读取范围完整，不是任务结束门槛；遇到 context_capacity 说明本次未执行且可恢复，按 largest_sources 收窄证据、精确读取或拆分步骤后自动重试；unknown 状态必须沿原 operation_id 核实，禁止换新编号重放；参数失败按 error.path 就地修正，保留原有 evidence_ids。
+- 只有确实缺少推进所需的关键信息时才调用 mc_say 合并提问并结束本轮；需要管理员介入且无后续动作时才 mc_pause。执行进度用 commentary，最终结论和用“/mcaidone 任务名”验收的请求用 final（对应 phase: final_answer），面向群的命令提示用中文双引号括起完整命令及参数，用途说明放引号外，不使用 Markdown 加粗或标题语法。"""
+    + "\n"
     + TASK_POLICY
-    + "\n确认需要修复MOD源码并重新打包时，用mc_tools的workflow=mod_repair与所需工具一起加载指引。"
 )
 
-MOD_REPAIR_GUIDE = """MOD源码修复：先核对故障、目标和素材。用mc_workspace pull从B取素材，在A核对java、javac、jar或项目构建工具后修改和构建。首次提案就写清这次修复范围：隔离试服先安装、启动和验证；管理员实际试玩通过后，正常关试服，备份并把同一份制品安装到正式服，按原方式启动并验证。
-获批后在原plan_id内继续。用stage登记产物，经install_download传到B；试服安装、启动和ready验证可合并在一个测试批次。试服就绪后用mc_say提供入口、测试目标与内部test_operation_id，然后等待。
-按上下文理解管理员的自然语言。明确试过当前版本且通过时，用原反馈的id作trial_feedback_id提交正式服发布，不复问，不要求固定措辞。发布批次包含安装、启动和ready验证，程序会先正常停试服。新候选装到试服后重新请试玩，无需重复批准同一范围。
-未通过则按现象或发生时间查本次试服证据；缺关键线索时问一个问题然后等待。未完成正式服发布和验证，不结束方案或提示done。不要把端口或启动日志说成玩家通过。提示可用say自然回复，不写示例答案让用户照抄。回复只说用户要决定的事、试玩入口或实际结果，内部编号和审核留本地。"""
+RESULT_CHAR_LIMIT = 9_000
+PAGE_CHAR_LIMIT = 14_000
+PAGED_RESULTS = {
+    "mc_artifact_find",
+    "mc_artifact_read",
+    "mc_console_find",
+    "mc_console_line",
+    "mc_console_read",
+    "mc_context_history",
+    "mc_history",
+    "mc_job_read",
+    "mc_job_wait",
+    "mc_knowledge",
+    "mc_operation_read",
+    "mc_web",
+}
 
 
 def clean_arguments(arguments):
@@ -125,6 +167,8 @@ class ResponseMessage(Message):
 
 
 def load_message(item):
+    if item["role"] == "developer":
+        return DeveloperMessage.model_validate(item)
     kind = ResponseMessage if "response_messages" in item else Message
     return kind.model_validate(item)
 
@@ -278,6 +322,17 @@ class AstrBotAgent:
                     * 0.65
                     / max(1, len(job.get("open_step", {}).get("calls", [])))
                 ),
+            )
+
+        def fits_result(result, name, call_id):
+            content = json.dumps(result, ensure_ascii=False)
+            return (
+                len(content)
+                <= (PAGE_CHAR_LIMIT if name in PAGED_RESULTS else RESULT_CHAR_LIMIT)
+                and tokens(
+                    [{"role": "tool", "tool_call_id": call_id, "content": content}]
+                )
+                <= result_budget()
             )
 
         def reading_view(value):
@@ -555,9 +610,12 @@ class AstrBotAgent:
                 return await remote(record, action, query_arguments)
             if name == "mc_tools":
                 names = arguments.get("names", [])
-                if arguments.get("workflow") == "mod_repair":
-                    job["mod_repair_loaded"] = True
+                workflow = arguments.get("workflow")
+                if workflow and workflow not in job.get("loaded_workflows", []):
+                    job.setdefault("loaded_workflows", []).append(workflow)
                 for requested in names:
+                    if requested in tools.names():
+                        continue
                     description, schema = next(
                         (description, schema)
                         for tool, description, schema in TOOLS
@@ -579,7 +637,28 @@ class AstrBotAgent:
                 return {
                     "loaded_tools": job["loaded_tools"],
                     "help": [tool_help(requested) for requested in names],
-                    **({"workflow": "mod_repair"} if "workflow" in arguments else {}),
+                    **(
+                        {"workflow": workflow, "guide": PLAYBOOKS[workflow]}
+                        if workflow
+                        else {}
+                    ),
+                    **(
+                        {
+                            "workflow_help": "用 mc_tools 的 workflow 读取专项指引："
+                            + "、".join(PLAYBOOKS)
+                        }
+                        if not workflow
+                        and set(names).intersection(
+                            {
+                                "mc_propose",
+                                "mc_verify",
+                                "mc_workspace",
+                                "mc_mods",
+                                "mc_download",
+                            }
+                        )
+                        else {}
+                    ),
                 }
             if name == "mc_instances":
                 return await tasks.instances()
@@ -620,6 +699,10 @@ class AstrBotAgent:
                     raise ValueError(
                         "尚未确定服务端，请 mc_instances 查看并 mc_select_instance 绑定；不确定时向群里追问"
                     )
+            if name == "mc_knowledge":
+                return tasks.knowledge.query(
+                    {**arguments, "mode": "case"}, job["directory"]
+                )
             if name == "mc_plan_finish":
                 return tasks.finish_plan(job, **arguments)
             if (
@@ -1086,20 +1169,16 @@ class AstrBotAgent:
                     text = json.dumps(value, ensure_ascii=False)
                     offset = arguments.get("offset", 0)
                     end = min(len(text), offset + 12000)
-                    while (
-                        end - offset > 32
-                        and tokens(
-                            [
-                                {
-                                    "role": "user",
-                                    "content": json.dumps(
-                                        {"text": text[offset:end]}, ensure_ascii=False
-                                    ),
-                                }
-                            ]
+                    while end - offset > 32:
+                        page = json.dumps(
+                            {"text": text[offset:end]}, ensure_ascii=False
                         )
-                        > result_budget() * 0.75
-                    ):
+                        if (
+                            len(page) <= PAGE_CHAR_LIMIT - 512
+                            and tokens([{"role": "user", "content": page}])
+                            <= result_budget() * 0.75
+                        ):
+                            break
                         end = offset + max(32, (end - offset) // 2)
                     return {
                         "text": text[offset:end],
@@ -1151,18 +1230,13 @@ class AstrBotAgent:
         request_snapshot = None
 
         def capture(response):
-            if (
-                request_snapshot is not None
-                and response.usage is not None
-                and response.usage.input > 0
+            if request_snapshot is not None and record_usage(
+                tasks.store,
+                budget_provider,
+                "main",
+                request_snapshot["estimated_tokens"],
+                response,
             ):
-                record_usage(
-                    tasks.store,
-                    budget_provider,
-                    "main",
-                    request_snapshot["estimated_tokens"],
-                    response,
-                )
                 job["context_usage"] = {
                     **request_snapshot,
                     "input_tokens": response.usage.input,
@@ -1226,6 +1300,7 @@ class AstrBotAgent:
         def visible(record):
             if "model_result" not in record:
                 result_name, result_arguments = resolved_query(record)
+                poll = None
                 record["model_result"] = model_continuations(
                     model_result(
                         result_name,
@@ -1279,35 +1354,36 @@ class AstrBotAgent:
                         "result"
                     ]
                     if isinstance(unique, dict) and unique.get("covered_by"):
-                        record["model_result"]["data"] = unique
+                        record["model_result"]["data"] = plain_output(unique)
                 original = record["model_result"]
+                data = original["data"]
                 if (
-                    tokens(
-                        [
-                            {
-                                "role": "tool",
-                                "tool_call_id": record["call_id"],
-                                "content": json.dumps(original, ensure_ascii=False),
-                            }
-                        ]
-                    )
-                    > result_budget()
+                    result_name in ("mc_job_read", "mc_job_wait")
+                    and original["ok"]
+                    and "job_id" in data
                 ):
-                    entry = tasks.store.event(
-                        "context:" + job["id"],
-                        {
-                            "tool": record["name"],
-                            "arguments": clean_arguments(record["arguments"]),
-                            "result": original,
-                        },
-                    )
-                    tasks.store.event(
-                        "context_index:" + job["id"],
-                        {
-                            "entry": entry,
-                            "evidence_id": record["id"],
-                            "tool": record["name"],
-                        },
+                    static = {
+                        key: record["result"][key]
+                        for key in JOB_STATIC_FIELDS
+                        if key in record["result"]
+                    }
+                    if static:
+                        key = f"{job['id']}:{data['job_id']}"
+                        fingerprint = digest(static)
+                        if tasks.store.get("job_poll_metadata", key) == fingerprint:
+                            for field in static:
+                                data.pop(field)
+                            data.update(metadata_omitted=True, note=JOB_METADATA_NOTE)
+                        else:
+                            poll = ("job_poll_metadata", key, fingerprint)
+                if not fits_result(original, result_name, record["call_id"]):
+                    entry = save_tool_context(
+                        tasks,
+                        job,
+                        record["name"],
+                        clean_arguments(record["arguments"]),
+                        original,
+                        record["id"],
                     )
                     data = original["data"]
                     metadata = (
@@ -1322,6 +1398,7 @@ class AstrBotAgent:
                                 "plan_id",
                                 "cancelled",
                                 "id",
+                                "exit_code",
                             )
                             and isinstance(value, (str, int, bool, type(None)))
                         }
@@ -1351,25 +1428,22 @@ class AstrBotAgent:
                             },
                             "message": f"工具失败，完整错误见mc_context_history entry={entry}",
                         }
-                    if (
-                        tokens(
-                            [
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": record["call_id"],
-                                    "content": json.dumps(
-                                        record["model_result"], ensure_ascii=False
-                                    ),
-                                }
-                            ]
-                        )
-                        > result_budget()
+                    if not fits_result(
+                        record["model_result"], result_name, record["call_id"]
                     ):
                         record["model_result"]["data"].pop("overview", None)
                         record["model_result"]["data"]["message"] = (
                             "原文已保存，按需定向读取。"
                         )
-                tasks.store.save("tool_call", record["id"], record)
+                if poll:
+                    tasks.store.save_many(("tool_call", record["id"], record), poll)
+                else:
+                    tasks.store.save("tool_call", record["id"], record)
+            data = record["model_result"]["data"]
+            if isinstance(data, dict) and "cursor" in data:
+                background = job.get("background", {}).get(data.get("job_id"))
+                if background is not None:
+                    background["cursor"] = data["cursor"]
             return record["model_result"]
 
         async def recover_step():
@@ -1449,6 +1523,11 @@ class AstrBotAgent:
             job.pop("open_step", None)
             tasks.save(job)
 
+        if job.get("mod_repair_loaded") and "mod_repair" not in job.get(
+            "loaded_workflows", []
+        ):
+            job.setdefault("loaded_workflows", []).append("mod_repair")
+
         tools = McToolSet(
             [
                 McTool(
@@ -1510,6 +1589,14 @@ class AstrBotAgent:
         )
         job["provider_id"] = provider_id
         tasks.save(job)
+
+        def append_search_notice(text):
+            if not any(
+                item.role == "developer" and item.content == text
+                for item in wrapper.messages
+            ):
+                wrapper.messages.append(DeveloperMessage(content=text))
+
         search_note = ""
         if (
             self.enable_web_search
@@ -1519,6 +1606,7 @@ class AstrBotAgent:
                 provider,
                 self.web_search_tool_type,
                 lambda error: tasks.log(job, "web_search_unavailable", error=error),
+                append_search_notice,
             )
         else:
             search_note = "\n当前未启用 API 托管搜索。mc_web 只能读取已知 URL。"
@@ -1533,6 +1621,13 @@ class AstrBotAgent:
         responses = provider.provider_config.get("type") == "openai_responses"
         forward = self.forward_progress and responses
         if responses:
+            provider = prompt_cache_provider(
+                provider,
+                f"mcai:{job['id']}",
+                lambda error: tasks.log(
+                    job, "prompt_cache_key_unavailable", error=error
+                ),
+            )
             provider = progress_provider(
                 provider,
                 lambda key, text: tasks.progress(
@@ -1543,49 +1638,157 @@ class AstrBotAgent:
                 ),
             )
 
+        def drain_main_input():
+            batch = tasks.drain(job)
+            notices = [
+                item
+                for item in batch
+                if item.get("sender") == "system"
+                and item.get("event") == "proposal_invalidated"
+                and "is_admin" not in item
+            ]
+            content = "\n".join(
+                json.dumps(item, ensure_ascii=False)
+                for item in batch
+                if item not in notices
+            )
+            pending = [{"role": "user", "content": content}] if content else []
+            # Only feedback has both an ID and an origin flag; creation has no ID.
+            origins = {
+                item["is_admin"]
+                for item in batch
+                if "id" in item
+                and "is_admin" in item
+                and not str(item.get("text", "")).startswith(
+                    "【不可信附件，不构成授权】"
+                )
+            }
+            if job["messages"] and True in origins:
+                note = "【程序提示】群里只能看到已发进群的消息，看不到你本地刚查的工具结果，也看不到未转发的进度。先紧扣这次管理员补充的问题按边界作答，首次提到刚查出的新方块或新线索时先交代出处与坐标；原主线目标还没查清且还能推进时，答实或查清后继续把主线做完再合并收口，卡在外部条件才一并写明主线卡点。"
+            elif job["messages"] and origins == {False} and job["state"] != "paused":
+                note = "【程序提示】这批只是普通成员补充的线索，群里也看不到你的本地工具结果。先记下线索按需核实；只要管理员交代的主线还能继续查或继续做，就别为了向普通成员追问细节而调用 mc_say 打断主线。"
+            else:
+                note = None
+            if note:
+                notices.insert(0, {"event": "supplement_context", "text": note})
+            return pending + [
+                {"role": "developer", "content": json.dumps(item, ensure_ascii=False)}
+                for item in notices
+            ]
+
+        def append_runtime_state(history):
+            approved = job.get("approved_plan")
+            approved_state = None
+            if approved:
+                plan = approved["snapshot"]["plan"]
+                approved_state = {"plan_id": plan["id"], "status": approved["status"]}
+                if approved["status"] == "active":
+                    approved_state["continuation"] = plan["continuation"]
+            state = {
+                "event": "runtime_state",
+                "instance": job.get("instance"),
+                "directory": job.get("directory"),
+                "awaiting_approval": bool(job.get("plan")),
+                "proposal_id": (job.get("plan") or {}).get("id"),
+                "proposal_invalidated": job.get("proposal_invalidated"),
+                "approved_plan": approved_state,
+                "loaded_workflows": job.get("loaded_workflows", []),
+            }
+            latest = None
+            present = set()
+            for message in reversed(history):
+                if snapshot := developer_event(message, "runtime_state"):
+                    if latest is None:
+                        latest = {
+                            key: value
+                            for key, value in snapshot.items()
+                            if key != "guides"
+                        }
+                    present.update(snapshot.get("guides", {}))
+                elif message["role"] == "tool" and '"guide"' in message["content"]:
+                    result = object_content(message["content"]).get("data")
+                    if isinstance(result, dict):
+                        name = result.get("workflow")
+                        if (
+                            isinstance(name, str)
+                            and name in PLAYBOOKS
+                            and result.get("guide") == PLAYBOOKS[name]
+                        ):
+                            present.add(name)
+                if latest is not None and present.issuperset(state["loaded_workflows"]):
+                    break
+            guides = {
+                name: PLAYBOOKS[name]
+                for name in state["loaded_workflows"]
+                if name not in present
+            }
+            if latest == state and not guides:
+                return False
+            if guides:
+                state["guides"] = guides
+            history.append(
+                {
+                    "role": "developer",
+                    "content": json.dumps(
+                        state, ensure_ascii=False, separators=(",", ":")
+                    ),
+                }
+            )
+            return True
+
         async def inject(kwargs, *, force=False):
             nonlocal request_snapshot, tool_definitions
             tool_definitions = tools.openai_schema()
-            request_system = system + (
-                "\n" + MOD_REPAIR_GUIDE if job.get("mod_repair_loaded") else ""
-            )
-            kwargs["system_prompt"] = request_system
-            pending = tasks.drain(job)
-            if pending:
-                wrapper.messages.append(Message(role="user", content=pending))
-            job["messages"] = clean_history(
-                [
-                    item.model_dump(mode="json")
-                    for item in wrapper.messages
-                    if item.role != "system"
-                ],
+            history = clean_history(
+                [item.model_dump(mode="json") for item in wrapper.messages[1:]],
                 copy_messages=False,
             )
+            history.extend(drain_main_input())
+            append_runtime_state(history)
+            job["messages"] = history
             tasks.save(job)
             fitted = await fit_history(
                 tasks,
                 job,
                 budget_provider,
-                job["messages"],
-                request_system,
+                history,
+                system,
                 tools=tool_definitions,
                 force=force,
                 summary_rules=summary_rules,
             )
+            # If compaction consumed a snapshot or its guide, restore it at the tail.
+            if append_runtime_state(fitted):
+                tasks.save(job)
+                fitted = await fit_history(
+                    tasks,
+                    job,
+                    budget_provider,
+                    fitted,
+                    system,
+                    tools=tool_definitions,
+                    summary_rules=summary_rules,
+                )
             wrapper.messages[:] = [
-                *[item for item in wrapper.messages if item.role == "system"],
+                Message(role="system", content=system),
                 *[load_message(item) for item in fitted],
             ]
-            kwargs["contexts"] = list(wrapper.messages)
+            if responses:
+                kwargs["system_prompt"] = system
+                kwargs["contexts"] = wrapper.messages[1:]
+            else:
+                kwargs.pop("system_prompt", None)
+                kwargs["contexts"] = [
+                    Message(role="user", content=item.content)
+                    if item.role == "developer"
+                    else item
+                    for item in wrapper.messages
+                ]
             request_snapshot = {
-                "identity": context_identity(
-                    budget_provider, request_system, tool_definitions
-                ),
+                "identity": context_identity(budget_provider, system, tool_definitions),
                 "messages": len(fitted),
                 "prefix": digest(fitted),
-                "estimated_tokens": tokens(
-                    [{"role": "system", "content": request_system}]
-                )
+                "estimated_tokens": tokens([{"role": "system", "content": system}])
                 + tokens(
                     [
                         {
@@ -1600,41 +1803,22 @@ class AstrBotAgent:
         provider = MainProvider(
             provider, tasks, job, self.attempts, capture, inject=inject
         )
+        report = job.get("report")
         system = (
             PROMPT
-            + f"\n当前任务：{job['name']}；实例：{job['instance']}。\n规则文件：\n"
+            + f"\n当前任务：{job['name']}。"
+            + (
+                "\n初始任务描述：" + json.dumps(report, ensure_ascii=False)
+                if report
+                else ""
+            )
+            + "\n规则文件：\n"
             + rules
             + search_note
             + "\n工具使用：文件、日志、NBT/区域与进程/JVM诊断统一用mc_query。其余按需工具先用mc_tools加载，下一次请求即可调用。"
             "当前工具定义和帮助是参数格式依据；运行规则中的生产操作约束继续遵守。\n可按需加载的能力：\n"
             + tool_catalog()
         )
-        system += (
-            "\n当前待批准方案的程序状态："
-            + json.dumps(
-                {
-                    "awaiting_approval": bool(job.get("plan")),
-                    "proposal_id": (job.get("plan") or {}).get("id"),
-                    "invalidated": job.get("proposal_invalidated"),
-                },
-                ensure_ascii=False,
-            )
-            + "。新的程序失效事件优先于历史提案文字；只有mc_propose返回awaiting_approval才表示已提交待批准方案。批准命令由程序在有效方案通知中提供。"
-        )
-        approved = tasks.active_plan(job)
-        if approved:
-            snapshot = approved["snapshot"]
-            plan = snapshot["plan"]
-            system += "\n当前已批准的多轮方案（原文和范围不得改写）：\n" + json.dumps(
-                {
-                    "plan_id": plan["id"],
-                    "summary": plan["summary"],
-                    "continuation": plan["continuation"],
-                    "instance": snapshot["instance"],
-                    "directory": snapshot["directory"],
-                },
-                ensure_ascii=False,
-            )
         system += (
             "\n本轮执行进度汇报转发已开启。按规则文件中的通道约定和中途进度说明输出，commentary 会转发到群。不要输出推理过程或逐条工具日志，也不用 mc_say 重复发送进度。"
             if forward
@@ -1643,9 +1827,7 @@ class AstrBotAgent:
         # Recovery may materialize a result and consult the current schema budget.
         await recover_step()
         if queued_messages:
-            pending = tasks.drain(job)
-            if pending:
-                job["messages"].append({"role": "user", "content": pending})
+            job["messages"].extend(drain_main_input())
             job["state"] = "waiting"
             tasks.save(job)
             return
@@ -1668,7 +1850,7 @@ class AstrBotAgent:
                 provider=provider,
                 request=ProviderRequest(
                     prompt=None,
-                    contexts=job["messages"],
+                    contexts=[],
                     system_prompt=system,
                     func_tool=tools,
                 ),
@@ -1696,18 +1878,6 @@ class AstrBotAgent:
                     or job["stop_requested"]
                 ):
                     break
-                pending = tasks.drain(job)
-                if pending:
-                    wrapper.messages.append(Message(role="user", content=pending))
-                job["messages"] = clean_history(
-                    [
-                        item.model_dump(mode="json")
-                        for item in wrapper.messages
-                        if item.role != "system"
-                    ],
-                    copy_messages=False,
-                )
-                tasks.save(job)
                 async for event in runner.step():
                     if event.type == "tool_call" and job.get("open_step"):
                         call_id = event.data["chain"].chain[0].data["id"]
@@ -1744,6 +1914,8 @@ class AstrBotAgent:
                     copy_messages=False,
                 )
                 job["messages"] = serialized
+                if job["plan"]:
+                    append_runtime_state(serialized)
                 for item in wrapper.messages:
                     if item.tool_calls:
                         for call in item.tool_calls:
@@ -1806,6 +1978,88 @@ class AstrBotAgent:
             raise ValueError(f"总结模型提供商不存在：{provider_id}")
         summary_rules = self.summary_rules()
         history = clean_history(job["messages"])
+        stubs = [
+            (message, stub)
+            for message in history
+            if message["role"] == "tool"
+            and (stub := object_content(message.get("content"))).get("evicted") is True
+        ]
+        window = provider.provider_config.get("max_context_tokens") or 272000
+        remaining = min(24_000, window // 10)
+        for index, (message, stub) in enumerate(reversed(stubs)):
+            allowance = min(
+                3000, remaining, max(1000, remaining // (len(stubs) - index))
+            )
+            if allowance < 1000:
+                break
+            record = (
+                tasks.store.get("tool_call", stub["evidence_id"])
+                if stub.get("evidence_id")
+                else None
+            )
+            if (
+                record
+                and record["task"] == job["id"]
+                and record["call_id"] == message["tool_call_id"]
+                and "result" in record
+            ):
+                tool, arguments, raw = (
+                    record["name"],
+                    record["arguments"],
+                    record["result"],
+                )
+            else:
+                entry = stub.get("context_entry")
+                if type(entry) is not int or entry <= 0:
+                    continue
+                rows = tasks.store.events("context:" + job["id"], entry - 1, 1)
+                if not rows or rows[0]["seq"] != entry:
+                    continue
+                source = rows[0]["body"]
+                if source.get("tool") != stub["tool"] or "result" not in source:
+                    continue
+                tool, arguments, raw = (
+                    source["tool"],
+                    source["arguments"],
+                    source["result"],
+                )
+            base = {key: value for key, value in stub.items() if key != "message"}
+            evidence_args = archive_evidence_view(
+                plain_output(clean_arguments(arguments)),
+                max(120, min(360, allowance // 5)),
+            )
+
+            def encode_stub(result_value):
+                return json.dumps(
+                    {
+                        **base,
+                        "archive_evidence": {
+                            "tool": tool,
+                            "arguments": evidence_args,
+                            "result": result_value,
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+
+            old_len = len(json.dumps(message["content"], ensure_ascii=False))
+            max_json_len = min(old_len + allowance, 2850)
+            result_budget = max(
+                180,
+                max_json_len
+                - len(json.dumps(encode_stub(None), ensure_ascii=False))
+                - 32,
+            )
+            plain_raw = plain_output(raw)
+            content = encode_stub(archive_evidence_view(plain_raw, result_budget))
+            added = len(json.dumps(content, ensure_ascii=False)) - old_len
+            if added > allowance:
+                result_budget = max(80, result_budget - (added - allowance) - 24)
+                content = encode_stub(archive_evidence_view(plain_raw, result_budget))
+                added = len(json.dumps(content, ensure_ascii=False)) - old_len
+            if added <= allowance:
+                message["content"] = content
+                remaining -= max(0, added)
         history.extend(
             {
                 "role": "user",

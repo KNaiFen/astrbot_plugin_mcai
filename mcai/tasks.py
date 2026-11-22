@@ -18,6 +18,7 @@ from .model_usage import task_usage
 from .paths import resolve_file
 from .plans import approval_command, plan_identity, plan_text
 from .review import digest
+from .tool_results import plain_output
 from .web import WebPages
 
 MESSAGE_RETRY_DELAYS = (2, 5, 10, 30, 60)
@@ -650,6 +651,12 @@ class Tasks:
                     for other in self.jobs.values()
                 ):
                     raise ValueError("该服务端已有进行中的排障任务，请向原任务补充反馈")
+                if control := self.store.get("web_control", directory):
+                    result = await self.web_control_status(control)
+                    if result is None or result["status"] in ("pending", "running"):
+                        raise ValueError(
+                            "服务端有待核对的网页启停操作，请在网页服务端面板刷新操作状态后重试"
+                        )
                 if cleanup is not None or not old or old == directory:
                     job.update(instance=instance, directory=directory)
                     self.save(job)
@@ -707,6 +714,28 @@ class Tasks:
             "old_plan_invalidated": old is not None and old != directory,
             "history": history,
         }
+
+    async def web_control_status(self, control, *, seal=False):
+        path = f"/operations/{control['id']}"
+        async with asyncio.timeout(5):
+            response = await self.client.request("GET", path + "?release=1", once=True)
+            if response["operation_store"] != control["store"]:
+                raise ValueError("B 操作库已变化，请连接原 B 核对网页启停结果")
+            result = response["operation"]
+            if result is None and seal:
+                result = await self.client.request(
+                    "POST",
+                    path + "/cancel",
+                    once=True,
+                    params={"unaccepted": "1", "operation_store": control["store"]},
+                )
+        if result is not None and result["status"] not in ("pending", "running"):
+            with self.store.db:
+                self.store.db.execute(
+                    "DELETE FROM records WHERE kind='web_control' AND id=?",
+                    (control["directory"],),
+                )
+        return result
 
     def archive_later(self, job):
         if job["id"] not in self.archive_workers:
@@ -832,9 +861,8 @@ class Tasks:
             self.wake(job)
 
     def drain(self, job):
-        pending = job["pending"]
-        job["pending"] = []
-        return "\n".join(json.dumps(item, ensure_ascii=False) for item in pending)
+        pending, job["pending"] = job["pending"], []
+        return pending
 
     def propose(
         self,
@@ -1444,7 +1472,9 @@ class Tasks:
                                     {
                                         "sender": "system",
                                         "text": "后台诊断任务结束："
-                                        + json.dumps(result, ensure_ascii=False),
+                                        + json.dumps(
+                                            plain_output(result), ensure_ascii=False
+                                        ),
                                     }
                                 )
                                 background.pop(key)

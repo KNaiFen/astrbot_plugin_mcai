@@ -1,16 +1,32 @@
 """AstrBot plugin view APIs; all B access uses the existing authenticated client."""
 
 import asyncio
+import hashlib
 import json
 import time
+import uuid
 from contextlib import AsyncExitStack
 from pathlib import Path
+from tempfile import TemporaryFile
+from urllib.parse import urlsplit
+from urllib.request import getproxies
 
 import aiohttp
-from astrbot.api.web import error_response, file_response, json_response, request
+from astrbot.api.web import (
+    error_response,
+    file_response,
+    json_response,
+    request,
+    stream_response,
+)
 
 from .astrbot_agent import AstrBotAgent
-from .capabilities import detected_settings, provider_identity, test_capabilities
+from .capabilities import (
+    CAPABILITY_ITEMS,
+    detected_settings,
+    provider_identity,
+    test_capabilities,
+)
 from .cleanup import (
     A_CATEGORIES,
     B_CATEGORIES,
@@ -28,13 +44,17 @@ from .cleanup import (
     settled,
 )
 from .client import HostClient, RemoteError
-from .configuration import incident_routes, powershell_path
-from .model_usage import parse_prices, usage_report
+from .configuration import incident_routes, powershell_path, powershell_version
+from .downloads import MODRINTH
+from .environment import executable_status
+from .model_usage import parse_prices, task_usage, usage_report
 from .monthly_logs import A_LOGS, archive_list
-from .paths import workspace_root
+from .paths import web_identity, workspace_root
+from .plans import plan_identity, plan_text
 from .review import digest
 from .runtime_rules import change_rule, rules_status
 from .storage_usage import STORAGE_TIMEOUT, a_storage
+from .tasks import occupies_instance
 from .tracing import export_cleanup, export_diagnostics
 
 
@@ -63,6 +83,12 @@ class Settings:
             ("diagnostics", self.diagnostics, ["GET", "POST"]),
             ("diagnostics/outbox", self.outbox, ["POST"]),
             ("model/usage", self.model_usage, ["GET"]),
+            ("management/host", self.host_management, ["GET", "POST"]),
+            ("management/tasks", self.manage_tasks, ["GET", "POST"]),
+            ("management/knowledge", self.knowledge, ["GET", "POST"]),
+            ("management/environment", self.environment, ["GET"]),
+            ("management/connections", self.connection_events, ["GET"]),
+            ("management/modrinth", self.modrinth, ["POST"]),
         ):
             plugin.context.register_web_api(
                 "/astrbot_plugin_mcai/" + route,
@@ -75,6 +101,12 @@ class Settings:
             self.diagnostic_file,
             ["GET"],
             "MCAI 诊断下载",
+        )
+        plugin.context.register_web_api(
+            "/astrbot_plugin_mcai/management/attachment",
+            self.attachment,
+            ["GET"],
+            "MCAI 故障留证附件下载",
         )
 
     def handler(self, callback):
@@ -525,6 +557,418 @@ class Settings:
             self.plugin.store, parse_prices(self.plugin.config.get("model_prices", []))
         )
 
+    def web_sender(self):
+        if not request.username:
+            raise ValueError("请登录 AstrBot Dashboard")
+        return f"web:{request.username}"
+
+    async def host_management(self):
+        sender = self.web_sender()
+        tasks, store = self.plugin.tasks, self.plugin.store
+        if request.method == "GET":
+            view = request.query["view"]
+            paths = {
+                "schedules": "/schedules",
+                "servers": "/management/servers",
+                "probe": "/management/probe",
+                "events": "/management/events",
+                "event": "/management/event",
+                "storage": "/management/storage",
+                "backup": "/management/backup",
+                "environment": "/management/environment",
+            }
+            if view not in paths:
+                raise ValueError("未知的 B 管理视图")
+            params = {
+                key: request.query[key]
+                for key in (
+                    "instance",
+                    "live",
+                    "kind",
+                    "before",
+                    "limit",
+                    "id",
+                    "mode",
+                    "after",
+                    "attachment",
+                    "line",
+                    "offset",
+                )
+                if key in request.query
+            }
+            if view == "schedules":
+                params["health"] = "1"
+            async with asyncio.timeout(24 if view == "environment" else 9):
+                result = await self.maintenance_request(
+                    "GET", paths[view], params=params
+                )
+            if view == "servers":
+                occupancy = {
+                    job.get("directory"): job
+                    for job in tasks.jobs.values()
+                    if occupies_instance(job)
+                }
+                for row in result["items"]:
+                    directory = row["canonical_directory"]
+                    job = occupancy.get(directory)
+                    row["occupant"] = (
+                        {key: job[key] for key in ("id", "name", "state")}
+                        if job
+                        else None
+                    )
+                    row["web_control"] = store.get("web_control", directory)
+                    for trial in row.get("tests", []):
+                        archived = store.get("task", trial["task_id"])
+                        trial["task_name"] = (
+                            archived["name"] if archived else trial["task_id"]
+                        )
+            return result
+
+        body = await request.json()
+        action = body["action"]
+        if action == "reload":
+            store.log("web_reload_instances", sender=sender)
+            return await self.maintenance_request("POST", "/configuration/reload")
+        if action == "job_cancel":
+            key = web_identity(body["id"])
+            store.log("web_job_cancel", sender=sender, job=key)
+            return await self.maintenance_request("POST", f"/jobs/{key}/cancel")
+        if action == "schedule":
+            command = body["command"]
+            if command not in ("create", "edit", "pause", "resume", "delete"):
+                raise ValueError("未知的定时计划管理动作")
+            path = (
+                "/schedules"
+                if command == "create"
+                else f"/schedules/{web_identity(body['id'])}"
+            )
+            payload = {"action": command, "sender": sender}
+            if command in ("create", "edit"):
+                payload.update(instance=body["instance"], spec=body["spec"])
+            async with asyncio.timeout(9):
+                return await self.maintenance_request("POST", path, json=payload)
+        if action not in ("start", "stop", "restart", "control_status"):
+            raise ValueError("未知的正式服管理动作")
+        async with tasks.create_lock, asyncio.timeout(12):
+            directory, name = body["directory"], body["instance"]
+            if action == "control_status":
+                control = store.get("web_control", directory)
+                if control is None or control["instance"] != name:
+                    raise ValueError("没有待核对的网页启停操作")
+                return await tasks.web_control_status(control, seal=True)
+            rows = await self.maintenance_request("GET", "/instances")
+            if not any(
+                row["instance"] == name and row["canonical_directory"] == directory
+                for row in rows
+            ):
+                raise ValueError("实例目录已变化，请刷新后重试")
+            if any(
+                job.get("directory") == directory and occupies_instance(job)
+                for job in tasks.jobs.values()
+            ):
+                raise ValueError("实例已有活动群任务，请前往任务看板处理")
+            if previous := store.get("web_control", directory):
+                result = await tasks.web_control_status(previous)
+                if result is None or result["status"] in ("pending", "running"):
+                    raise ValueError("存在待核对的网页启停操作，请先刷新原编号")
+            origin = await self.maintenance_request(
+                "GET", "/instances?operation_store=1"
+            )
+            key = uuid.uuid4().hex
+            control = {
+                "id": key,
+                "store": origin["operation_store"],
+                "directory": directory,
+                "instance": name,
+                "action": action,
+                "sender": sender,
+            }
+            store.log("web_instance_control", **control)
+            store.save("web_control", directory, control)
+            try:
+                return await self.maintenance_request(
+                    "POST",
+                    f"/operations/{key}",
+                    params={"operation_store": control["store"]},
+                    json={
+                        "instance": name,
+                        "task_id": "web",
+                        "action": "apply_plan",
+                        "arguments": {
+                            "expected_directory": directory,
+                            "steps": [{"action": action}],
+                            "web_operator": sender,
+                        },
+                    },
+                )
+            except RemoteError as exc:
+                if str(exc).startswith("HTTP 400:"):
+                    with store.db:
+                        store.db.execute(
+                            "DELETE FROM records WHERE kind='web_control' AND id=?",
+                            (directory,),
+                        )
+                raise
+
+    async def manage_tasks(self):
+        sender = self.web_sender()
+        tasks, store = self.plugin.tasks, self.plugin.store
+        if request.method == "GET":
+            state = request.query.get("state", "active")
+            search = request.query.get("search", "").casefold()
+            page = max(1, int(request.query.get("page", 1)))
+            rows = sorted(
+                store.all("task"), key=lambda job: job["created"], reverse=True
+            )
+            rows = [
+                job
+                for job in rows
+                if (
+                    state == "all"
+                    or (
+                        occupies_instance(job)
+                        if state == "active"
+                        else job["state"] == state
+                    )
+                )
+                and search
+                in f"{job['name']} {job['group']} {job.get('instance') or ''} {job['id']}".casefold()
+            ]
+            result = []
+            for job in rows[(page - 1) * 30 : page * 30]:
+                plan = job.get("plan")
+                approved = job.get("approved_plan")
+                result.append(
+                    {
+                        **{
+                            field: job.get(field)
+                            for field in (
+                                "id",
+                                "name",
+                                "group",
+                                "state",
+                                "instance",
+                                "directory",
+                                "created",
+                                "say_paused",
+                                "pause_reason",
+                                "cancel_pending",
+                                "model_retry",
+                                "archive_error",
+                                "archive_state",
+                                "pause_after_operation",
+                            )
+                        },
+                        "plan": {"text": plan_text(plan), "code": plan["approval_code"]}
+                        if plan
+                        else None,
+                        "continuation": approved["snapshot"]["plan"].get("continuation")
+                        if approved
+                        else None,
+                        "continuation_status": approved["status"] if approved else None,
+                        "usage": task_usage(store, job["id"]),
+                        "token_limit": tasks.task_token_limit
+                        * (1 + job.get("token_limit_renewals", 0)),
+                    }
+                )
+            return {"items": result, "count": len(rows)}
+        body = await request.json()
+        key, action = body["id"], body["action"]
+        async with tasks.create_lock:
+            job = tasks.jobs.get(key)
+            if action == "archive":
+                job = job or next(store.task_records(selected=[key]), None)
+                if (
+                    not job
+                    or job["state"] != "done"
+                    or not job.get("archive_error")
+                    or job.get("archive_state") not in ("pending", "ready")
+                    or job.get("cancel_pending")
+                    or key in tasks.archive_workers
+                ):
+                    raise ValueError("当前任务没有可重试的归档，或已在归档中")
+                tasks.log(job, "web_task_control", sender=sender, action=action)
+                tasks.jobs[key] = job
+                tasks.archive_later(job)
+                return {"queued": True}
+            if (
+                job is None
+                or job["state"] in ("done", "stopped")
+                or job["stop_requested"]
+            ):
+                raise ValueError("没有这个进行中的任务，或任务正在结束")
+            if action not in ("say", "approve", "pause", "resume", "stop", "done"):
+                raise ValueError("未知的任务管理动作")
+            tasks.log(job, "web_task_control", sender=sender, action=action)
+            if action == "say":
+                if type(body.get("enabled")) is not bool:
+                    raise ValueError("请选择是否接收群成员反馈")
+                tasks.set_say_mode(job, body["enabled"], sender)
+            elif action == "approve":
+                code = body.get("code")
+                if not isinstance(code, str):
+                    raise ValueError("请填写当前待批准方案短码")
+                if plan := job.get("plan"):
+                    reviewed = plan.get("reviewed", {})
+                    record = store.get("tool_call", reviewed.get("call_id")) or {}
+                    if (
+                        record.get("task") != key
+                        or record.get("id") != plan["id"]
+                        or record.get("decision", {}).get("decision") != "allow"
+                        or reviewed.get("arguments_hash") != plan_identity(plan)
+                    ):
+                        raise ValueError("当前方案缺少可核对的独立 AI 审核，不能批准")
+                tasks.approve(job, sender, code.strip())
+            elif action == "pause":
+                tasks.pause_requested(job)
+            elif action == "resume":
+                tasks.resume(job)
+            else:
+                tasks.stop(job, done=action == "done")
+            return {
+                "state": job["state"],
+                "pause_after_operation": job.get("pause_after_operation", False),
+            }
+
+    async def knowledge(self):
+        sender = self.web_sender()
+        knowledge, store = self.plugin.tasks.knowledge, self.plugin.store
+        async with knowledge.lock:
+            if request.method == "GET" and "name" not in request.query:
+                index = knowledge.document("index.md")
+                documents = [
+                    "index.md",
+                    *(
+                        f"servers/{item.name}"
+                        for item in sorted(
+                            (knowledge.directory / "servers").glob("*.md")
+                        )
+                        if item.is_file()
+                    ),
+                ]
+                try:
+                    entries = knowledge.entries(index.read_text(encoding="utf-8"))
+                except ValueError as exc:
+                    return {
+                        "documents": documents,
+                        "index_error": str(exc),
+                        "entries": [],
+                    }
+                return {"documents": documents, "entries": entries}
+            body = await request.json() if request.method == "POST" else request.query
+            name = body["name"]
+            path = knowledge.document(name)
+            encoded = path.read_bytes()
+            revision = hashlib.sha256(encoded).hexdigest()
+            if request.method == "GET":
+                return {
+                    "name": name,
+                    "text": encoded.decode("utf-8"),
+                    "revision": revision,
+                }
+            text = body["text"]
+            if not isinstance(text, str):
+                raise ValueError("正文必须是 Markdown 文本")
+            if body.get("revision") != revision:
+                raise ValueError("文档已变化，请重新打开后再保存")
+            if name == "index.md":
+                knowledge.entries(text, require_files=True)
+            temporary = knowledge.document(name).with_suffix(".tmp")
+            if temporary.is_symlink() or temporary.is_junction():
+                raise ValueError("文档临时路径不能是链接")
+            updated = text.encode("utf-8")
+            temporary.write_bytes(updated)
+            store.log(
+                "web_knowledge_saved", sender=sender, document=name, previous=revision
+            )
+            temporary.replace(path)
+            return {"saved": True, "revision": hashlib.sha256(updated).hexdigest()}
+
+    async def environment(self):
+        self.web_sender()
+        plugin = self.plugin
+        proxy = {}
+        for kind, value in getproxies().items():
+            if kind in ("http", "https"):
+                try:
+                    parsed = urlsplit(value if "://" in value else "http://" + value)
+                    proxy[kind.upper() + "_PROXY"] = (
+                        f"{parsed.scheme}://{parsed.netloc.rsplit('@', 1)[-1]}"
+                        if parsed.hostname
+                        else "已设置"
+                    )
+                except ValueError:
+                    proxy[kind.upper() + "_PROXY"] = "已设置"
+            elif kind == "no":
+                proxy["NO_PROXY"] = (
+                    f"已设置（{len([part for part in value.split(',') if part.strip()])} 项）"
+                )
+        shell = await asyncio.to_thread(
+            executable_status,
+            plugin.tasks.workspace.powershell_path,
+            powershell_version,
+        )
+        return {
+            "powershell": shell,
+            "memory_mib": plugin.workspace_memory.limit_mib,
+            "proxy": proxy,
+        }
+
+    async def modrinth(self):
+        sender = self.web_sender()
+        try:
+            async with asyncio.timeout(10):
+                await self.plugin.tasks.downloads.request(
+                    MODRINTH + "/search", {"query": "minecraft", "limit": 1}
+                )
+        except (aiohttp.ClientError, ValueError, TimeoutError) as exc:
+            self.plugin.store.log(
+                "web_modrinth_check", sender=sender, error=type(exc).__name__
+            )
+            raise ValueError(
+                f"A 无法访问 Modrinth API（{type(exc).__name__}），请检查代理及 NO_PROXY"
+            ) from exc
+        return {"ok": True}
+
+    async def connection_events(self):
+        self.web_sender()
+        page = max(1, int(request.query.get("page", 1)))
+        rows = self.plugin.store.all("connection_alert")[::-1]
+        return {"items": rows[(page - 1) * 30 : page * 30], "count": len(rows)}
+
+    async def attachment(self):
+        output = TemporaryFile()
+        try:
+            self.web_sender()
+            params = {
+                "id": web_identity(request.query["id"]),
+                "attachment": web_identity(
+                    request.query["attachment"], attachment=True
+                ),
+            }
+            async with asyncio.timeout(90):
+                await self.maintenance_request(
+                    "GET", "/management/attachment", params=params, sink=output
+                )
+        except (ValueError, OSError, KeyError, RemoteError, TimeoutError) as exc:
+            output.close()
+            return error_response(str(exc) or "读取留证附件超时")
+        except asyncio.CancelledError:
+            output.close()
+            raise
+
+        def chunks():
+            with output:
+                yield from iter(lambda: output.read(262144), b"")
+
+        return stream_response(
+            chunks(),
+            content_type="application/gzip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{params["attachment"]}.gz"'
+            },
+        )
+
     async def diagnostic_file(self):
         filename = request.query.get("filename", "")
         if (
@@ -658,6 +1102,18 @@ class Settings:
             },
             "host_token_configured": bool(plugin.config.get("host_token")),
             "curseforge_configured": bool(plugin.config.get("curseforge_api_key")),
+            "platforms": [
+                {
+                    "id": platform.config["id"],
+                    "name": meta.adapter_display_name or meta.name,
+                    "type": meta.name,
+                }
+                for platform in plugin.context.platform_manager.platform_insts
+                for meta in [platform.meta()]
+                if platform.config.get("id")
+                and meta.support_proactive_message
+                and meta.name != "webchat"
+            ],
             "providers": [
                 {
                     "id": provider.provider_config["id"],
@@ -737,6 +1193,12 @@ class Settings:
                 "result": self.result,
                 "stale": stale,
             }
+        body = await request.json() if request.method == "POST" else {}
+        only = body.get("only") if isinstance(body, dict) else None
+        if only is not None and (
+            not isinstance(only, str) or only not in CAPABILITY_ITEMS
+        ):
+            raise ValueError("未知的单项能力测试")
         if self.worker and not self.worker.done():
             raise ValueError("能力测试已在运行")
         if self.plugin.tasks.workers:
@@ -762,15 +1224,34 @@ class Settings:
             else None
         )
 
+        previous = self.result
+
         def progress(result):
+            if (
+                only
+                and previous
+                and (result.get("identity"), result.get("review_identity"))
+                == (previous.get("identity"), previous.get("review_identity"))
+                and "items" in result
+            ):
+                items = {only: result["items"][only]} if only in result["items"] else {}
+                result = {**result, "items": {**previous["items"], **items}}
             self.result = result
             self.plugin.store.save("capability_test", "latest", result)
 
         async def run():
             try:
                 result = await test_capabilities(
-                    main, review, settings, progress, store=self.plugin.store
+                    main,
+                    review,
+                    settings,
+                    progress,
+                    store=self.plugin.store,
+                    only=only,
                 )
+                if only:
+                    progress(result)
+                    return
                 changes = detected_settings(result)
                 await self.plugin.config.save_config_async(changes)
                 agent = self.plugin.tasks.agent

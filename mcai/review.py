@@ -17,12 +17,86 @@ from pathlib import Path
 from .paths import resolve_file
 
 REVIEW_VERSION = 5
+REVIEW_FRAME_BYTES = 5 * 1024**2
+FULLTEXT_THRESHOLD = 4096
+SCRIPT_SUFFIXES = (".ps1", ".bat", ".cmd", ".py")
+CONTENT_NOTE = "非脚本文件内容过大，已保留摘要、前后预览、精确 diff 与校验哈希；请优先核对 diff、effective_steps 与字节/哈希校验。"
 
 
 def digest(value):
     return hashlib.sha256(
         json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()
+
+
+def non_script_files(material):
+    scripts = {row["path"].casefold() for row in material.get("scripts", [])}
+    for index, row in enumerate(material.get("files", [])):
+        path = row["path"]
+        if (
+            Path(path).suffix.lower() not in SCRIPT_SUFFIXES
+            and path.casefold() not in scripts
+        ):
+            yield index, row
+
+
+def review_file_previews(material, preview=800):
+    for index, row in non_script_files(material):
+        projected = dict(row)
+        for field in ("old_content", "content"):
+            key = f"{field}_preview"
+            if (
+                isinstance(text := row.get(field), str)
+                and len(text) > FULLTEXT_THRESHOLD
+            ):
+                projected.pop(field)
+                projected[key] = {"head": text[:preview], "tail": text[-preview:]}
+                projected.update(omitted_fulltext=True, content_note=CONTENT_NOTE)
+            elif key in row:
+                projected[key] = {
+                    "head": row[key]["head"][:preview],
+                    "tail": row[key]["tail"][-preview:],
+                }
+        if projected != row:
+            yield index, projected
+
+
+def bound_review_material(material):
+    from .evidence import json_size
+
+    size = json_size(material)
+    if size <= REVIEW_FRAME_BYTES:
+        return material
+    files = list(material["files"])
+    replacements = sorted(
+        (
+            (json_size(files[i]) - json_size(row), i, row)
+            for i, row in review_file_previews(material)
+        ),
+        key=lambda edit: (-edit[0], edit[1]),
+    )
+    for saved, i, row in replacements:
+        files[i] = row
+        size -= saved
+        if size <= REVIEW_FRAME_BYTES:
+            return {**material, "files": files}
+
+    for i, row in non_script_files({**material, "files": files}):
+        if "diff" in row and json_size(diff := row["diff"]) >= 4 * 1024**2:
+            limited = {key: value for key, value in row.items() if key != "diff"}
+            limited.update(
+                diff_preview={"head": diff[:800], "tail": diff[-800:]},
+                diff_truncated=True,
+                diff_sha256=hashlib.sha256(diff.encode("utf-8")).hexdigest(),
+                diff_note="完整 diff 超过通信预算，此处仅保留头尾，不能作为精确差异。",
+            )
+            files[i] = limited
+            size -= json_size(row) - json_size(limited)
+            if size <= REVIEW_FRAME_BYTES:
+                return {**material, "files": files}
+    raise ValueError(
+        "审核材料超过 5 MiB 通信预算，完整步骤、脚本和精确差异已保留，请缩小本批操作范围。"
+    )
 
 
 @contextmanager
@@ -192,9 +266,9 @@ def review_material(
         args.get("encoding", "utf-8-sig"),
         args.get("launcher_encoding", "auto"),
     )
-    declared = dict.fromkeys(
-        resolve_file(directory, path) for path in args.get("script_files", [])
-    )
+    declared = {}
+    for raw in args.get("script_files", []):
+        declared.setdefault(resolve_file(directory, raw), raw)
     planned_paths = {path for path, _ in planned}
     files, unresolved, loaded, parsed, recorded, commands_cache = (
         [],
@@ -251,6 +325,28 @@ def review_material(
                 not any(view(path)[0] is not None for _, _, view, _ in contexts)
                 and final_view(path)[0] is None
             ):
+                if path in declared:
+                    raw = declared[path]
+                    if cwd != directory:
+                        try:
+                            candidate = resolve_file(cwd, raw)
+                        except ValueError:
+                            candidate = None
+                        if candidate is not None and (
+                            candidate.exists()
+                            or final_view(candidate)[0] is not None
+                            or any(
+                                view(candidate)[0] is not None
+                                for _, _, view, _ in contexts
+                            )
+                        ):
+                            relative = candidate.relative_to(directory).as_posix()
+                            raise FileNotFoundError(
+                                f"script_files 按实例根目录解析，不随 cwd 变化；{raw} 在实例根目录不存在，请改填 {relative}，勿用原参数重试。"
+                            )
+                    raise FileNotFoundError(
+                        f"script_files 按实例根目录解析（不随 cwd 变化），文件不存在：{raw}；请核对实例内路径并修改参数后再调用，不要原样重发。"
+                    )
                 raise FileNotFoundError(str(path))
             return
         data, source_path, planned_version, expected = context(path)
@@ -401,8 +497,9 @@ def review_material(
                     and path not in planned_paths
                     and not context(path)[2]
                 ):
+                    expected = path.relative_to(directory).as_posix()
                     raise ValueError(
-                        f"未提供外部脚本审核材料：{reference}；请填写 script_files"
+                        f"未提供外部脚本审核材料：{reference}；请填写 script_files（实例根目录相对路径：{expected}，不随 cwd 变化）"
                     )
                 try:
                     read_script(path, context=context, step=step)
@@ -474,11 +571,16 @@ def file_material(
                 item["content"] = decode_text(data, encoding)[0]
             except UnicodeDecodeError as exc:
                 item["encoding_error"] = str(exc)
+            else:
+                if (
+                    len(item["content"]) > FULLTEXT_THRESHOLD
+                    and path.suffix.lower() not in SCRIPT_SUFFIXES
+                ):
+                    item["content_sha256"] = fingerprint(data)
         return item
 
-    script_suffixes = (".ps1", ".bat", ".cmd", ".py")
     text_suffixes = (
-        *script_suffixes,
+        *SCRIPT_SUFFIXES,
         ".txt",
         ".json",
         ".toml",
@@ -515,7 +617,7 @@ def file_material(
                 )
             files.append(item)
             contents[path] = updated
-            if path.suffix.lower() in script_suffixes:
+            if path.suffix.lower() in SCRIPT_SUFFIXES:
                 planned[path, updated] = content
         elif kind == "restore":
             source, manifest = restorations[step["backup"]]
@@ -605,7 +707,7 @@ def file_material(
                     }
                     if info["directory"]:
                         files.append(text)
-                    if target.suffix.lower() in script_suffixes and "content" in text:
+                    if target.suffix.lower() in SCRIPT_SUFFIXES and "content" in text:
                         planned[target, data] = text["content"]
                 for cached in list(contents):
                     if cached == path or cached.is_relative_to(path):

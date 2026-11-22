@@ -1,5 +1,6 @@
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 import psutil
@@ -7,6 +8,13 @@ import psutil
 
 def canonical_directory(path):
     return os.path.normcase(str(Path(path).resolve()))
+
+
+def executable_status(path, detect):
+    try:
+        return {"path": path, "version": detect(path), "ready": True}
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        return {"path": path, "ready": False, "error": str(exc)}
 
 
 def java_environment(config):
