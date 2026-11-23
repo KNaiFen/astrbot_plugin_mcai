@@ -155,17 +155,58 @@ def approval_excerpt(text):
     return f"{preview}\n…（原文 {len(lines)} 行、{len(text)} 字符，SHA-256：{sha256}）"
 
 
+ACTION_LABELS = {
+    "write_text": "写入文件",
+    "patch_text": "修改文件",
+    "nbt_set": "修改 NBT",
+    "nbt_delete": "删除 NBT 字段",
+    "nbt_batch": "批量修改 NBT",
+    "region_set": "修改区块 NBT",
+    "region_delete": "删除区块 NBT",
+    "region_batch": "批量修改区块 NBT",
+    "block_set": "修改方块",
+    "region_restore": "恢复区块",
+    "region_remove": "删除区块",
+}
+
+
+def verify_check_text(check):
+    """Format one verification check into concise Chinese for group approval."""
+    kind = check["kind"]
+    if kind == "ready":
+        return "确认启动就绪"
+    if kind == "tcp":
+        return "检查本地端口连通"
+    if kind == "file":
+        return f"校验文件格式：{check['path']}（{check['format'].upper()}）"
+    if kind == "text":
+        return (
+            f"确认不含指定文本：{check['path']}"
+            if check.get("present") is False
+            else f"核对文本：{check['path']}"
+        )
+    if kind == "nbt":
+        return f"核对 NBT：{check['path']}"
+    if kind == "region":
+        return f"核对区块 NBT：{check['path']}（{check['x']}, {check['z']}）"
+    return f"{kind} {check['path']}" if "path" in check else kind
+
+
 def plan_text(plan):
-    lines = [
-        "测试副本实际步骤：" if plan.get("environment") == "test" else "实际步骤："
-    ]
+    lines = []
+    if summary := (plan.get("summary") or "").strip():
+        lines.append("方案说明：" + summary)
+    lines.append(
+        "测试副本执行步骤：" if plan.get("environment") == "test" else "执行步骤："
+    )
     labels = {"start": "启动服务端", "stop": "停止服务端", "restart": "重启服务端"}
     for index, step in enumerate(plan["steps"], 1):
         kind = step["action"]
         if kind in labels:
             detail = labels[kind]
         elif kind == "force_stop":
-            detail = f"强制停止服务端及其自动重启启动链，保留托管窗口；Java PID {step['pid']}，会话 {step['session_id']}"
+            target = "启动器" if step.get("target") == "launcher" else "Java"
+            detail = f"强制停止服务端（结束 {target} PID {step['pid']} 及自动重启，不补做保存）"
         elif kind == "snapshot":
             detail = "备份：" + "、".join(step["paths"])
         elif kind == "schedule":
@@ -185,38 +226,42 @@ def plan_text(plan):
             if step.get("replace"):
                 detail += f"；替换原计划 {step['replace']}"
         elif kind == "prepare_test":
-            detail = "创建隔离测试副本：" + "、".join(step["paths"])
+            paths = step.get("paths")
+            detail = (
+                "创建隔离测试副本：" + "、".join(paths)
+                if paths
+                else "创建隔离测试副本（按默认配置复制）"
+            )
         elif kind == "copy_test_world":
             detail = "停服备份后复制测试世界：" + "、".join(step["paths"])
         elif kind == "command":
-            detail = "控制台：" + step["command"]
+            detail = "执行控制台命令：" + step["command"]
         elif kind == "script":
             detail = "执行修复脚本；备份范围：" + "、".join(step["backup_paths"])
         elif kind == "verify":
             detail = "验证：" + "；".join(
-                check["kind"] + (" " + check["path"] if "path" in check else "")
-                for check in step["checks"]
+                verify_check_text(check) for check in step["checks"]
             )
         elif kind == "restore":
             detail = f"恢复备份 {step['backup']}；覆盖：" + "、".join(
                 step.get("targets", [])
             )
         elif kind == "install_download":
-            detail = f"安装下载 {step['download_id']} → {step['path']}"
+            detail = f"安装组件到 {step['path']}"
             if step.get("remove_paths"):
-                detail += "；移除：" + "、".join(step["remove_paths"])
+                detail += "；移除旧文件：" + "、".join(step["remove_paths"])
         else:
-            detail = f"{kind}：{step['path']}"
+            label = ACTION_LABELS.get(kind, kind)
+            detail = f"{label}：{step['path']}"
             if "x" in step and "z" in step:
-                detail += f"，区块 {step['x']},{step['z']}"
+                detail += f"，区块 ({step['x']}, {step['z']})"
             if "block_x" in step:
                 detail += (
-                    f"，方块 {step['block_x']},{step['block_y']},{step['block_z']}"
+                    f"，坐标 ({step['block_x']}, {step['block_y']}, {step['block_z']})"
                 )
         lines.append(f"{index}. {approval_excerpt(detail)}")
         if kind == "script":
             lines.append("脚本摘要：" + approval_excerpt(step["script"]))
-    lines.append("方案说明：" + plan["summary"])
     if directory := plan.get("expected_directory"):
         lines.append("目标实例目录：" + directory)
     if plan.get("continuation"):

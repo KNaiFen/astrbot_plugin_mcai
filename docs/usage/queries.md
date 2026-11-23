@@ -29,11 +29,17 @@ AI 通过 `mc_query` 查询当前绑定实例的文件、日志、存档和进�
 | 实例进程与 JVM 采样 | `diagnostics process`、`diagnostics jvm --samples 1` |
 | 新图生成或区块存盘时卡顿 | `diagnostics chunk-jfr` 默认静默录制 60 秒，沿后台结果读取 |
 | GC 停顿、分配热点与老对象 | `diagnostics memory-jfr --duration-seconds 25`，允许 10–60 秒，需 JDK 11+，与当前 Probe 慢拍对齐 |
+| 持续观察内存与 GC | `diagnostics memory-trend --duration-seconds 300 --interval-seconds 60`，静默采样 |
 | 实时类实例和字节排行 | `diagnostics class-histogram --top 30`，可能暂停 JVM，按需执行 |
-| 已有堆转储的持有链 | `diagnostics hprof-summary --path dumps/capture.hprof`，只离线读取现有文件 |
+| 采集在线堆转储 | `diagnostics heap-dump --pid 1234 --admin-feedback-id 实际反馈编号`，群内任务须管理员明确同意并通过独立审核 |
+| 已有堆转储的持有链 | `diagnostics hprof-summary --path dumps/capture.hprof.gz`，流式读取已有 `.hprof` 或 `.hprof.gz` |
 | 查已留证的故障 | `incidents list`；按返回的事件编号用 `incidents show`、`incidents console` 定向查看 |
 
 群里只需描述问题，例如「生存服刚才崩了」或「一跑新图就卡」。Agent 会自己挑选查询。只有需要玩家或管理员当场进服复现时，任务内的 `diagnostics chunk-jfr` 才传 `--notify-user`；A 观察到录制已开始且尚未结束时在任务群提醒一次，然后继续读取结果。直接在 B CLI 运行没有任务群可通知；内存 JFR 始终没有复现提醒，结果直接附带 GC 次数、Full GC、GC 后堆趋势、Top 分配热点和老对象样本数等紧凑摘要，完整分析仍可按引用分页读取。JFR 报告区分不支持、录制期间未观察到和录制不完整；`hprof-summary` 严格校验 HPROF 文件头、记录帧与分段结束标记完整性。区块生成有实测时长；区域读写只提供时间点、次数与字节数。
+
+内存趋势允许采样 120–1200 秒、间隔 30–120 秒，默认分别为 300、60 秒。优先用 Probe 读取堆、GC 和服内指标；Probe 不可用时保留进程采样，有可用 `jcmd` 则补采堆概要。结束后默认附加 30 秒内存 JFR（允许 10–60 秒），可用 `--no-include-jfr` 关闭。堆转储可用 `--compress` 直接生成 `.hprof.gz`；通过群内任务执行时，顶层 `evidence_ids` 引用已结算的 `process` 或 `jvm` 结果供审核。
+
+`/mcaiask` 的 JVM 诊断只开放 `process` 和 `jvm`；内存趋势、JFR、堆转储和离线分析通过排障任务使用。
 
 例如 AI 的读取参数为：
 
@@ -71,3 +77,5 @@ CLI 与 AI 入口使用相同参数解析和底层查询。无需全局安装或
 ```
 
 子命令帮助无需连接 B。普通查询返回 JSON；耗时工作可能返回后台任务句柄，AI 任务通过现有后台与产物工具续读。
+
+B 也会拒绝缺少非空 `--admin-feedback-id` 的堆转储请求；反馈身份核对和独立审核在 A 的群任务流程中进行。

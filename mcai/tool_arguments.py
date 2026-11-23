@@ -76,6 +76,10 @@ def field_names(tool, context=()):
 def arguments_for(tool, arguments, *, internal=False, context=()):
     """Translate declared argument keys only; never alter user text or NBT keys."""
     names = dict(field_names(tool, context))
+    if tool == "mc_diagnostics" and arguments.get("mode") == "memory_trend":
+        # Trend uses explicit second-based keys; process/JVM and JFR retain their aliases.
+        names.pop("interval")
+        names.pop("seconds")
     if (tool == "mc_search" and arguments.get("mode") != "find") or (
         context and context[-1] == "checks" and arguments.get("kind") != "ready"
     ):

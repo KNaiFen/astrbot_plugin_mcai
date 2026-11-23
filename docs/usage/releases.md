@@ -1,4 +1,15 @@
-# 0.20.4 发布说明
+# 0.20.5 发布说明
+
+0.20.5 继续使用 `mcai-9`。请按[升级步骤](operations.md#升级步骤)配套更新 A、B 与托管窗口。随 B 包提供的 Probe 0.5.0 构建与 0.20.1 相同。下载及校验见 [GitHub Release v0.20.5](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.20.5)。
+
+| 模块 | 主要更新与修复（`6cf28ab`） |
+|---|---|
+| 方案展示与审批沟通 | 调整 `plan_text()` 输出顺序与中文步骤文案：先给简短说明再列中文执行步骤，隐藏内部会话/下载 ID 与本机端口并将 `verify` 与文件/NBT/区块动作译为自然中文；从工具参数描述、使用示例与独立审核规则双向解绑，避免主模型在 `mc_propose.summary` 中堆砌防御性核验长文。 |
+| 群聊提示与只读问答 | 精简主提示词、内置示例与[运行规则模板](configuration.md#运行时规则)，消除重复条文与纯预告废话，调整群内答复与 `/mcaiask` 只读问答为稳重简短的口语化表达；为 `mc_say`、试玩邀请、步数上限与 `final` 等待状态通知补齐管理员 `@` 提醒和更清晰的暂停续接提示。 |
+| 内存诊断与导出 | 新增 `diagnostics memory-trend` 持续采样及附带内存 JFR，支持带管理员反馈同意和独立审核的 `diagnostics heap-dump`，完善 `hprof-summary` 对 `.hprof.gz` 流式读取及大文件预算判断；设置页「诊断导出」默认输出精简 ZIP（可按需勾选包含原始 API 请求报文与流式分片）。 |
+| 上下文缓存与白名单 | 改进历史软裁剪为按完整工具组外部化以保留提示缓存，并允许已确认的隔离试服直接执行白名单只读控制台命令免审下发。 |
+
+## 0.20.4 发布说明
 
 0.20.4 继续使用 `mcai-9`。请按[升级步骤](operations.md#升级步骤)配套更新 A、B 与托管窗口。随 B 包提供的 Probe 0.5.0 构建与 0.20.1 相同。下载及校验见 [GitHub Release v0.20.4](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.20.4)。
 

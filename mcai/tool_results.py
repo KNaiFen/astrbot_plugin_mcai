@@ -116,7 +116,10 @@ def model_result(name, arguments, result, operation_id=None):
                             "job_id": data["job_id"],
                             "reference": "probe-result.json",
                         }
-            if body.get("kind") == "memory_jfr" and "reference" in body:
+            if (
+                body.get("kind") in ("memory_jfr", "memory_trend")
+                and "reference" in body
+            ):
                 body["message"] = (
                     "上方是内存摘要；详细分析可用 mc_artifact_read 按字段读取。"
                 )
@@ -132,13 +135,18 @@ def model_result(name, arguments, result, operation_id=None):
             )
             next_args = {"job_id": data["job_id"], "after": data["cursor"]}
         else:
-            artifact = next(
+            artifact = max(
                 (
                     row["body"]
                     for row in data["items"]
-                    if {"reference", "characters"} <= row["body"].keys()
+                    if "reference" in row["body"]
+                    and (
+                        "characters" in row["body"]
+                        or row["body"].get("kind") == "memory_trend"
+                    )
                 ),
-                None,
+                key=lambda body: body.get("kind") == "memory_trend",
+                default=None,
             )
             if artifact is None:
                 return output

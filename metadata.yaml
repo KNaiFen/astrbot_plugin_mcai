@@ -1,7 +1,7 @@
 name: astrbot_plugin_mcai
 display_name: MC 排障助手
 desc: 群内创建排障任务，远程控制 Windows MC 服务端，批准后备份并修复。
-version: v0.20.4
+version: v0.20.5
 author: KNaiFen
 repo: https://github.com/KNaiFen/astrbot_plugin_mcai
 astrbot_version: ">=4.29.4"

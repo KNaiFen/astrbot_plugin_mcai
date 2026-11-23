@@ -514,13 +514,32 @@ class Settings:
                 ],
                 "questions": questions,
             }
-        body = await request.json()
+        content_type = (request.content_type or "").split(";", 1)[0]
+        if content_type in ("application/x-www-form-urlencoded", "multipart/form-data"):
+            form = await request.form()
+            body = dict(form)
+            if "task_ids" in form:
+                body["task_ids"] = form.getlist("task_ids")
+        else:
+            body = await request.json() if await request.body() else {}
+            if not isinstance(body, dict):
+                raise ValueError("诊断导出请求须为 JSON 对象")
+        include_raw_api = body.get(
+            "include_raw_api", request.query.get("include_raw_api", False)
+        )
+        if isinstance(include_raw_api, str):
+            value = include_raw_api.lower()
+            if value in ("true", "false", "1", "0"):
+                include_raw_api = value in ("true", "1")
+        if not isinstance(include_raw_api, bool):
+            raise ValueError("include_raw_api 须为布尔值")
         result = await asyncio.to_thread(
             export_diagnostics,
             self.plugin.store,
             start=float(body.get("start", 0)),
             end=float(body["end"]) if body.get("end") is not None else None,
             task_ids=body.get("task_ids"),
+            include_raw_api=include_raw_api,
         )
         return result
 

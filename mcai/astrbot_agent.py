@@ -73,6 +73,7 @@ from .query_cli import QueryError, QueryHelp, parse_query, query_argv, query_ope
 from .review import (
     REVIEW_VERSION,
     digest,
+    is_test_readonly_console_commands,
     review_material,
     validate_diagnostic_console_commands,
 )
@@ -88,22 +89,25 @@ from .tool_schemas import BASE_TOOLS, QUERY_TOOLS, TOOLS
 from .tracing import traced_provider
 
 PROMPT = (
-    """你是 Minecraft 服务端运维与排障助手，用中文协助管理员，核心职责是把任务推进到可核实的实效结果。
+    """你是 Minecraft 服务端运维与排障助手，用中文协助管理员，目标是把问题定位清楚并推进到可核实的结果。
 
-【任务推进与实证判断】
-排障始终盯紧初始主目标和核心症状：先把直接致因与旁路热点分开，观测结果出现持续偏移时顺着真实变化调整判断，不死守预设剧本。
-- 区分“当前窗口未捕获”与“问题不存在”；对比和因果判断须保持基线与前提一致，不拿间接推算或截断上限当成实测事实。
-- 管理员中途追问时先紧扣边界答实，能继续推进主线就做完再合并回复；普通成员插话只作待核实线索，不打断主线反问。
-- 在合规范围内，风险提醒说清后果一次即可；管理员知情后拍板按现方案执行或豁免非必需测试时，记录决定并继续，不反复说教或阻塞。
+【任务推进与判断】
+排障始终盯紧初始主目标和核心症状：把直接致因和旁路热点分开，指标或现象变化时跟着实际证据走，不死守预设猜测。
+- 区分“当前窗口未触发”与“问题不存在”；做对比或下结论时保持前提一致，不把推算或截断上限当成实测数字。
+- 排查内存泄漏或 GC 爬坡优先用只读低开销的 `memory_trend` 和 `memory_jfr`；仍定位不到持引用对象再建议 `heap_dump`，调用前先说明停顿时长和数 GB 磁盘占用，拿到管理员同意的 `admin_feedback_id` 再送审执行。
+- 已确认的隔离试服上，`mc_console_send` 仅执行白名单只读命令（如 `list`/`tps`/`tick query`/`datapack list` 及安全 `data get`/`scoreboard players get`）可免审直发；其余试服与正式服命令仍独立审核。
+- 在授权范围内自主判断并继续推进，不频繁停下来请示或说教；有风险提醒清楚后果一次即可，管理员拍板继续或豁免测试时记录并执行。管理员中途追问时先按边界答清，能继续主线就做完再收口；普通成员插话仅作待核实线索，不打断主线反问。
 
-【群内信息对齐与通道纪律】
-向群里发进度或最终答复时，第一次提到本地新查出的方块、模组或坐标，先简短交代出处与关系；不把检索 URL 链接、内部引用标记和底层工具日志带进群聊，严禁泄露现实 IP/端口、密码、Token 等敏感隐私（游戏内坐标、实体与常规报错正常提供）。
-- 先查本地工具与现场产物，同一知识点联网检索 1~2 轮无新增量即收手，不反复搜通用原理。
-- 缺关键信息或需管理员拍板才能继续时，只调用 mc_say 提问并立即结束本轮，不额外再发一条 final；阶段结论和结案请求用 final（对应 phase: final_answer），进度里刚答过的补充不必在紧邻的 final 里整段重复。
-- 只有主目标已解决核验或管理员明确收手时才请发送 “/mcaidone 任务名” 验收，并附 “/mcaisay 任务名 内容”；根因未明或待决策时只引导 “/mcaisay 任务名 内容” 或 “/mcaipause 任务名”。命令提示用中文双引号并在两边留空格，不用 Markdown 加粗或标题。
+【群内沟通与通道纪律】
+向群里发进度或最终答复时，像稳重、经验扎实的老运维在群里沟通：语言简短直白、先说结论再补一两条关键依据和下一步，首次提到新查出的方块、模组或坐标先简要交代出处。
+- 别写“本轮仅做只读查询、未改动存档”等自证免责套话，没改动的东西不用特意声明；少用“建议管理员发送”“据此/综上”等客服公文腔；工具还没出关键发现前，别发“我先去查状态再出方案”之类纯预告废话。
+- 群里不带检索链接、内部引用编号和工具原文，不泄露现实 IP/端口、密码、Token 等隐私（游戏内坐标、实体与常规报错正常说明）。
+- 先查本地工具与现场产物，同一知识点联网检索 1~2 轮无新进展就停；缺关键信息或需管理员拍板时只调用 mc_say 提问并立即结束本轮，同轮不再附带 final；阶段结论和结案请求用 final（对应 phase: final_answer），刚在进度里答过的不必整段重复。
+- 只有主目标已验证解决或管理员明确收手时才请发送 “/mcaidone 任务名” 验收，并附 “/mcaisay 任务名 内容”；未定论或待决策时只引导 “/mcaisay 任务名 内容” 或 “/mcaipause 任务名”。命令提示用中文双引号并在两边留空格，不用 Markdown 加粗或标题。
+- 提交 mc_propose 时，summary 只写给群内管理员看的一两句人话（交代原因、目标、关键风险或备份状态），不重复步骤清单、排查经过或启动参数、只读核对清单等审核自证内容；技术依据由程序直接送审。
 
 【工具契约】
-先按 mc_instances 与 mc_select_instance 明确绑定实例；文件/日志/NBT/JVM 诊断统一用 mc_query，低频专项用 mc_tools 加载。ok 只表示受理；遇到 context_capacity 收窄证据或拆步重试；unknown 沿原 operation_id 核实，禁换编号重放；参数失败按 error.path 就地修正。"""
+先用 mc_instances 与 mc_select_instance 绑定实例；文件、日志、NBT/区域与进程/JVM 诊断统一用 mc_query，低频专项用 mc_tools 加载。ok 只表示受理；遇到 context_capacity 收窄证据或拆步重试；unknown 沿原 operation_id 核实，不换编号重放；参数失败按 error.path 就地修正。"""
     + "\n"
     + TASK_POLICY
 )
@@ -124,6 +128,46 @@ PAGED_RESULTS = {
     "mc_operation_read",
     "mc_web",
 }
+
+
+def waiting_notice_text(job_name, text, *, kind="final"):
+    has_pause = any(
+        marker in text
+        for marker in ("已暂停", "暂停自动排查", "暂停排查", "暂停运行", "暂不继续")
+    )
+    has_say = f"/mcaisay {job_name}" in text
+    say = f"“/mcaisay {job_name} 内容”"
+    if kind == "mc_say":
+        if has_pause and has_say:
+            return text
+        text += "\n"
+        if not has_pause:
+            text += "【当前已暂停自动排查，等待回复】"
+        return text + (
+            "收到回复后再继续。" if has_say else f"请使用 {say} 回复后再继续。"
+        )
+
+    has_done = "/mcaidone" in text
+    if has_pause:
+        if has_done and not has_say:
+            return text + f"\n如需补充线索或指定下一步继续排查，请发送 {say} 继续。"
+        return text
+
+    done = f"“/mcaidone {job_name}”"
+    if has_done:
+        text += "\n【当前已暂停自动排查，等待验收或指示】"
+        return text + (
+            "确认结案或有新指示后再继续。"
+            if has_say
+            else f"管理员确认完成后可按提示发送 {done} 结案；如需继续排查或补充线索，请发送 {say} 。"
+        )
+
+    text += "\n【当前已暂停自动排查，等待回复或下一步指示】"
+    return text + (
+        "收到后续指令后再继续。"
+        if has_say
+        else f"请发送 {say} 继续，或确认无需继续后由管理员发送 {done} 结案。"
+    )
 
 
 def clean_arguments(arguments):
@@ -615,6 +659,7 @@ class AstrBotAgent:
             name = record["name"]
             if record.get("remote"):
                 return await remote(record, **record["remote"])
+            heap_dump = False
             if name == "mc_query":
                 if "query" not in record:
                     try:
@@ -623,8 +668,8 @@ class AstrBotAgent:
                         return {"help": str(exc)}
                     record["query"] = {"name": query_name, "arguments": query_arguments}
                     tasks.store.save("tool_call", record["id"], record)
-                name, public_arguments = resolved_query(record)
-                action, query_arguments = query_operation(name, public_arguments)
+                query_name, public_arguments = resolved_query(record)
+                action, query_arguments = query_operation(query_name, public_arguments)
                 query_arguments["environment"] = arguments.get(
                     "environment", "production"
                 )
@@ -643,7 +688,22 @@ class AstrBotAgent:
                     return {
                         key: value for key, value in alert.items() if key != "origins"
                     }
-                return await remote(record, action, query_arguments)
+                heap_dump = (
+                    action == "diagnostics" and query_arguments["mode"] == "heap_dump"
+                )
+                if not heap_dump:
+                    return await remote(record, action, query_arguments)
+                feedback = tasks.admin_feedback(
+                    job, query_arguments.get("admin_feedback_id")
+                )
+                if feedback is None:
+                    return {
+                        "not_executed": True,
+                        "error_code": "precondition_failed",
+                        "execution_state": "not_executed",
+                        "reason": "堆转储须引用当前任务中管理员明确同意的 admin_feedback_id。",
+                    }
+                arguments = query_arguments
             if name == "mc_tools":
                 names = arguments.get("names", [])
                 workflow = arguments.get("workflow")
@@ -856,8 +916,27 @@ class AstrBotAgent:
             if name == "mc_console_send":
                 validate_diagnostic_console_commands(arguments["commands"])
             needs_review = (
-                name in ("mc_exec", "mc_propose", "mc_console_send") or workspace_exec
+                name in ("mc_exec", "mc_propose", "mc_console_send")
+                or workspace_exec
+                or heap_dump
             )
+            test_status = None
+            if name == "mc_console_send" and arguments.get("environment") == "test":
+                test_status = await tasks.client.call(
+                    job["instance"],
+                    "test_server",
+                    {"mode": "status"},
+                    task_id=job["id"],
+                )
+                needs_review = not (
+                    test_status["status"] in ("prepared", "ready")
+                    and test_status["console_available"]
+                    and test_status["running"]
+                    and not test_status["state_unknown"]
+                    and not test_status.get("target_mismatch")
+                    and test_status["canonical_directory"] != job["directory"]
+                    and is_test_readonly_console_commands(arguments["commands"])
+                )
             decision = record.get("decision")
             if (
                 needs_review
@@ -880,10 +959,28 @@ class AstrBotAgent:
                     ]
                     if name == "mc_propose"
                     else []
-                    if name == "mc_console_send"
+                    if name == "mc_console_send" or heap_dump
                     else [arguments["script"]]
                 )
-                if name == "mc_workspace":
+                if heap_dump:
+                    material = {
+                        "diagnostic": True,
+                        "mode": "heap_dump",
+                        "environment": arguments["environment"],
+                        "pid": arguments.get("pid"),
+                        "compress": arguments.get("compress", False),
+                        "admin_feedback_id": feedback["id"],
+                        "admin_feedback": feedback,
+                        "evidence_ids": record["arguments"].get("evidence_ids", []),
+                    }
+                elif test_status is not None and test_status["status"] == "not_created":
+                    material = {
+                        "status": {**test_status, "environment": "test"},
+                        "configuration": {},
+                        "scripts": [],
+                        "unresolved_references": metadata["script_files"],
+                    }
+                elif name == "mc_workspace":
                     directory = tasks.workspace.directory(job["id"])
                     directory.mkdir(parents=True, exist_ok=True)
                     material = await asyncio.to_thread(
@@ -976,16 +1073,17 @@ class AstrBotAgent:
                 decision["arguments_hash"] = digest(arguments)
                 decision["approved_plan_hash"] = approved_hash
                 record["decision"] = decision
-                record["checks"] = [
-                    {
-                        key: item[key]
-                        for key in ("path", "sha256", "steps", "planned")
-                        if key in item
-                    }
-                    for item in material["scripts"]
-                    if item.get("steps")
-                ]
-                record["review_configuration"] = material["configuration"]
+                if not heap_dump:
+                    record["checks"] = [
+                        {
+                            key: item[key]
+                            for key in ("path", "sha256", "steps", "planned")
+                            if key in item
+                        }
+                        for item in material["scripts"]
+                        if item.get("steps")
+                    ]
+                    record["review_configuration"] = material["configuration"]
                 if name == "mc_propose":
                     record["effective_steps"] = material["effective_steps"]
                 tasks.store.save("tool_call", record["id"], record)
@@ -1000,6 +1098,8 @@ class AstrBotAgent:
                         "execution_state": "not_executed",
                         "reason": "审核未通过：" + record["decision"]["reason"][:200],
                     }
+                if heap_dump:
+                    return await remote(record, "diagnostics", arguments)
                 arguments["script_hashes"] = record["checks"]
                 arguments["review_configuration"] = record["review_configuration"]
             if name == "mc_propose":
@@ -1059,7 +1159,12 @@ class AstrBotAgent:
                 elif job.get("trial") and not job.get("trial_published"):
                     job["trial_question"] = arguments["text"]
                     tasks.save(job)
-                tasks.message(job, arguments["text"], identity=record["id"])
+                tasks.message(
+                    job,
+                    waiting_notice_text(job["name"], arguments["text"], kind="mc_say"),
+                    job["admin"],
+                    identity=record["id"],
+                )
                 say_queued = True
                 if job["state"] == "running":
                     job["state"] = "waiting"
@@ -1924,7 +2029,7 @@ class AstrBotAgent:
             + tool_catalog()
         )
         system += (
-            "\n本轮执行进度汇报转发已开启。按规则文件中的通道约定和中途进度说明输出，commentary 会转发到群。不要输出推理过程或逐条工具日志，也不用 mc_say 重复发送进度。"
+            "\n本轮执行进度汇报转发已开启。commentary 会直接发到群：只在查出关键线索、方向改变或遇阻时简短同步一句，别发“我先去查状态”之类纯预告，也别输出推理过程、逐条工具日志或用 mc_say 重复。"
             if forward
             else "\n本轮执行进度汇报转发已关闭，commentary 仅保存本地，不通过 mc_say 绕过开关；必要提问和最终答复照常发送到群。"
         )
@@ -2048,7 +2153,8 @@ class AstrBotAgent:
                 ):
                     tasks.message(
                         job,
-                        f"本轮排查已达步数上限，记录已保存。群成员可用 “/mcaisay {job['name']} 内容” 补充线索继续。",
+                        f"本轮排查已达步数上限，当前已暂停自动排查（记录已保存，等待回复后继续）。群成员可用 “/mcaisay {job['name']} 内容” 补充线索继续。",
+                        job["admin"],
                     )
             response = runner.get_final_llm_resp()
             if (
@@ -2063,9 +2169,9 @@ class AstrBotAgent:
             ):
                 if job.get("proposal_invalidated") and not job.get("plan"):
                     final_text += "\n【程序状态】原待批准方案已因补充失效，当前没有可批准方案；需要修改时须重新提案。"
-                if "/mcaidone" in final_text and "/mcaisay" not in final_text:
-                    final_text += f"\n如需补充线索或指定下一步继续排查，请发送 “/mcaisay {job['name']} 内容” 继续。"
-                tasks.message(job, final_text)
+                tasks.message(
+                    job, waiting_notice_text(job["name"], final_text), job["admin"]
+                )
         finally:
             self.runners.pop(job["id"], None)
             self.requests.pop(job["id"], None)

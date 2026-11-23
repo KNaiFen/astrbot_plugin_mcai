@@ -328,33 +328,37 @@ def checkpoint_ledgers(messages, report, entry):
 
 
 def prune_history(tasks, job, messages, groups, protected, cut, min_gain):
-    replacements, originals, tools = {}, [], []
+    # Freeze the previously edited prefix so subsequent prunes only move forward.
+    frontier = next(
+        (
+            index
+            for index in reversed(range(len(messages)))
+            if messages[index]["role"] == "tool"
+            and object_content(messages[index].get("content")).get("evicted") is True
+        ),
+        -1,
+    )
+    replacements, tools = {}, []
     for group in groups:
-        if group.stop > cut or protected.intersection(group):
+        if (
+            group.stop <= frontier + 1
+            or group.stop > cut
+            or protected.intersection(group)
+        ):
             continue
         calls = {
             call["id"]: call["function"]
             for call in messages[group.start].get("tool_calls") or []
         }
-        for index in group:
+        for index in range(max(group.start, frontier + 1), group.stop):
             message = messages[index]
             content = message.get("content")
-            if developer_event(message, "supplement_context"):
-                replacements[index] = None
-                originals.append(message)
-            elif message["role"] == "assistant" and isinstance(content, list):
-                parts = [part for part in content if part["type"] != "think"]
-                if parts != content:
-                    replacements[index] = {**message, "content": parts}
-                    originals.append(message)
-            elif (
+            if (
                 message["role"] == "tool"
                 and isinstance(content, str)
-                and len(content) > 1000
+                and len(content) > 2500
             ):
                 result = object_content(content)
-                if result.get("evicted") is True:
-                    continue
                 function = calls[message["tool_call_id"]]
                 stub = tool_stub(message, function["name"], evicted=True)
                 stub.setdefault("context_entry", 0)
@@ -367,7 +371,7 @@ def prune_history(tasks, job, messages, groups, protected, cut, min_gain):
     if (
         not replacements
         or sum(
-            tokens([messages[index]]) - (tokens([replacement]) if replacement else 0)
+            tokens([messages[index]]) - tokens([replacement])
             for index, replacement in replacements.items()
         )
         < min_gain
@@ -397,21 +401,7 @@ def prune_history(tasks, job, messages, groups, protected, cut, min_gain):
                 stub.get("evidence_id"),
             )
         replacements[index]["content"] = json.dumps(stub, ensure_ascii=False)
-    if originals:
-        body = {"messages": originals}
-        entry = tasks.store.event("context:" + job["id"], body)
-        tasks.store.event(
-            "context_index:" + job["id"],
-            {
-                "entry": entry,
-                "characters": len(json.dumps(body, ensure_ascii=False)),
-            },
-        )
-    return [
-        replacement
-        for i, item in enumerate(messages)
-        if (replacement := replacements.get(i, item)) is not None
-    ]
+    return [replacements.get(i, item) for i, item in enumerate(messages)]
 
 
 def context_identity(provider, system, tools):
@@ -526,7 +516,7 @@ async def fit_history(
         return find_cut_point(
             messages,
             min(
-                24000,
+                40000,
                 max(4000, int(input_limit * 0.15)),
                 half,
             )

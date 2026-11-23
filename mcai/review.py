@@ -111,6 +111,17 @@ CONSOLE_READONLY_SUBCOMMANDS = {
     "datapack": frozenset({"list"}),
     "worldborder": frozenset({"get"}),
 }
+TEST_READONLY_CONSOLE_COMMAND = re.compile(
+    r"/?(?:list|tps|(?:forge|neoforge) tps|tick query|datapack list|"
+    r"scoreboard objectives list|time query (?:daytime|gametime|day)|"
+    r"forceload query(?: -?\d+ -?\d+)?|"
+    r"scoreboard players (?:list(?: [A-Za-z0-9_.#+-]{1,64})?|"
+    r"get [A-Za-z0-9_.#+-]{1,64} [A-Za-z0-9_.#+-]{1,64})|"
+    r"data get (?:block -?\d+ -?\d+ -?\d+|"
+    r"entity (?:[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}|[A-Za-z0-9_]{1,16}))"
+    r"(?: [A-Za-z0-9_.]{1,128})?)",
+    re.IGNORECASE | re.ASCII,
+)
 
 
 def validate_script_command(words, source, *, diagnostic=False):
@@ -206,6 +217,19 @@ def validate_diagnostic_console_commands(commands):
         if not isinstance(command, str) or not command.strip():
             continue
         _check_console_command_tokens(command.strip().split(), command)
+
+
+def is_test_readonly_console_commands(commands) -> bool:
+    return (
+        isinstance(commands, (list, tuple))
+        and bool(commands)
+        and all(
+            isinstance(command, str)
+            and TEST_READONLY_CONSOLE_COMMAND.fullmatch(command)
+            and not {"execute", "function"}.intersection(command.lower().split(" "))
+            for command in commands
+        )
+    )
 
 
 def digest(value):

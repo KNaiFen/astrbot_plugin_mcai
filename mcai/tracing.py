@@ -343,11 +343,29 @@ def merge_event_runs(paths):
 
 
 def event_runs(
-    directory, staging, start, end, requested, tasks, selected, *, paths=None
+    directory,
+    staging,
+    start,
+    end,
+    requested,
+    tasks,
+    selected,
+    *,
+    paths=None,
+    include_raw_api: bool = False,
 ):
     if paths is not None:
         return filter_event_runs(
-            directory, staging, start, end, requested, tasks, selected, paths, {}
+            directory,
+            staging,
+            start,
+            end,
+            requested,
+            tasks,
+            selected,
+            paths,
+            {},
+            include_raw_api=include_raw_api,
         )
     with diagnostic_sources(directory, start, end) as monthly:
         paths = [
@@ -359,14 +377,34 @@ def event_runs(
             ),
         ]
         return filter_event_runs(
-            directory, staging, start, end, requested, tasks, selected, paths, monthly
+            directory,
+            staging,
+            start,
+            end,
+            requested,
+            tasks,
+            selected,
+            paths,
+            monthly,
+            include_raw_api=include_raw_api,
         )
 
 
 def filter_event_runs(
-    directory, staging, start, end, requested, tasks, selected, paths, monthly
+    directory,
+    staging,
+    start,
+    end,
+    requested,
+    tasks,
+    selected,
+    paths,
+    monthly,
+    *,
+    include_raw_api: bool = False,
 ):
     runs, reordered, entries = [], [], 0
+    started, chunks = {}, {}
     for index, path in enumerate(paths):
         if path not in monthly and not path.exists():
             continue
@@ -396,13 +434,59 @@ def filter_event_runs(
                 stamp, task = row["time"], row.get("task")
                 ordered &= stamp >= previous
                 previous = stamp
-                if start <= stamp <= end and (
-                    not requested or task in requested or task is None
-                ):
+                if requested and task is not None and task not in requested:
+                    continue
+                in_range = start <= stamp <= end
+                if in_range and not requested and task in tasks:
+                    selected.add(task)
+                if not include_raw_api:
+                    kind, request_id = row.get("kind"), row.get("request_id")
+                    # Collect timing before applying the export's time window.
+                    if kind == "api_chunk":
+                        if request_id is not None:
+                            first, delta, count_chunks = chunks.get(
+                                request_id, (stamp, row.get("elapsed_seconds"), 0)
+                            )
+                            chunks[request_id] = first, delta, count_chunks + 1
+                        continue
+                    if kind == "api_request":
+                        if request_id is not None:
+                            started[request_id] = stamp
+                        if in_range:
+                            parameters = row["parameters"]
+                            omitted = []
+                            for field in (
+                                "contexts",
+                                "input",
+                                "messages",
+                                "tools",
+                                "func_tool",
+                                "instructions",
+                                "system_prompt",
+                            ):
+                                if field in parameters:
+                                    value = parameters.pop(field)
+                                    omitted.append(field)
+                                    if isinstance(value, list):
+                                        row[f"{field}_count"] = len(value)
+                                    elif field == "input" and isinstance(value, str):
+                                        row["input_count"] = 1
+                            row["omitted_fields"] = omitted
+                    if kind == "api_end":
+                        first, delta, row["chunk_count"] = chunks.pop(
+                            request_id, (None, None, 0)
+                        )
+                        beginning = started.pop(request_id, None)
+                        if first is not None:
+                            if beginning is not None:
+                                delta = first - beginning
+                            elif delta is None and "elapsed_seconds" in row:
+                                delta = row["elapsed_seconds"] - (stamp - first)
+                            if delta is not None:
+                                row["ttft_seconds"] = max(0.0, delta)
+                if in_range:
                     filtered.write(json.dumps(row, ensure_ascii=False) + "\n")
                     count += 1
-                    if not requested and task in tasks:
-                        selected.add(task)
         if not ordered:
             reordered.append(path.relative_to(directory).as_posix())
             if count > 1:
@@ -461,7 +545,10 @@ def write_diagnostic_records(archive, groups):
         stream.write(b"\n}")
 
 
-def write_archive(archive, staging, manifest, runs, groups):
+def write_archive(
+    archive, staging, manifest, runs, groups, *, include_raw_api: bool = False
+):
+    manifest["detail"] = "full" if include_raw_api else "compact"
     archive.writestr(
         "manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2)
     )
@@ -517,6 +604,7 @@ def export_cleanup(directory, output, task_id, items):
             selected,
             set(),
             paths=trace_paths,
+            include_raw_api=True,
         )
         manifest = {
             "version": PRODUCT_VERSION,
@@ -552,12 +640,15 @@ def export_cleanup(directory, output, task_id, items):
                 manifest,
                 runs,
                 ((kind, selected_rows(kind)) for kind in records),
+                include_raw_api=True,
             )
         zip_path.rename(path)
     return str(path)
 
 
-def export_diagnostics(store, *, start=0, end=None, task_ids=None):
+def export_diagnostics(
+    store, *, start=0, end=None, task_ids=None, include_raw_api: bool = False
+):
     end = time.time() if end is None else end
     if not math.isfinite(start) or not math.isfinite(end) or start > end:
         raise ValueError("开始时间不能晚于结束时间")
@@ -590,7 +681,14 @@ def export_diagnostics(store, *, start=0, end=None, task_ids=None):
         selected = set(requested)
         staging = Path(temporary)
         runs, entries, reordered = event_runs(
-            store.directory, staging, start, end, requested, tasks | questions, selected
+            store.directory,
+            staging,
+            start,
+            end,
+            requested,
+            tasks | questions,
+            selected,
+            include_raw_api=include_raw_api,
         )
         manifest = {
             "version": PRODUCT_VERSION,
@@ -618,6 +716,7 @@ def export_diagnostics(store, *, start=0, end=None, task_ids=None):
                     (kind, diagnostic_records(reader, kind, selected))
                     for kind in ("task", "tool_call", "review", "outbox", "context")
                 ),
+                include_raw_api=include_raw_api,
             )
             for name in manifest["rules"]:
                 rules = store.directory / name

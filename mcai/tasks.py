@@ -304,9 +304,7 @@ class Tasks:
             return
         from .search import render_citations
 
-        display = progress_text(
-            render_citations(self.store, job["id"], text, progress=True)
-        )
+        display = progress_text(render_citations(self.store, job["id"], text))
         item_id = f"progress-{key}-0"
         if display and not self.store.get("outbox", item_id):
             self.store.save(
@@ -653,7 +651,11 @@ class Tasks:
             )
             self.wake(job)
         else:
-            self.message(job, f"任务已创建，等待文字补充：“/mcaisay {name} 内容”")
+            self.message(
+                job,
+                f"任务已创建，当前暂未开始自动排查，等待文字补充：“/mcaisay {name} 内容”",
+                job["admin"],
+            )
         return job
 
     async def instances(self):
@@ -1828,7 +1830,8 @@ class Tasks:
                         if called_tool is False and retried_without_tools:
                             self.message(
                                 job,
-                                f"多轮方案尚未结束，自动续接未能推进。可用 “/mcaisay {job['name']} 内容” 补充或指定下一步。",
+                                f"多轮方案尚未结束，自动续接未能推进，当前已暂停自动排查（等待指示后继续）。可用 “/mcaisay {job['name']} 内容” 补充或指定下一步。",
+                                job["admin"],
                             )
                             break
                         retried_without_tools = called_tool is False

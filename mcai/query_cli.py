@@ -122,8 +122,24 @@ EXAMPLES = {
     "diagnostics": [
         ["diagnostics", "jvm", "--samples", "1"],
         ["diagnostics", "memory-jfr", "--duration-seconds", "25"],
+        [
+            "diagnostics",
+            "memory-trend",
+            "--duration-seconds",
+            "300",
+            "--no-include-jfr",
+        ],
         ["diagnostics", "class-histogram", "--top", "20"],
-        ["diagnostics", "hprof-summary", "--path", "dumps/capture.hprof"],
+        [
+            "diagnostics",
+            "heap-dump",
+            "--pid",
+            "1234",
+            "--admin-feedback-id",
+            "实际管理员反馈编号",
+            "--compress",
+        ],
+        ["diagnostics", "hprof-summary", "--path", "dumps/capture.hprof.gz"],
     ],
 }
 GUIDANCE = {
@@ -134,7 +150,8 @@ GUIDANCE = {
     "region-scan": "bounds为全局方块[minX,minY,minZ,maxX,maxY,maxZ]；先限定必要范围。计数不代表实测耗时。",
     "logs": "默认view=events返回完整多行异常归组、次数、代表栈及罕见组。先据此选择，再用view=value读必要原文；时间按实例本地ISO格式。",
     "diagnostics": "process采集CPU/I/O增量、内存和线程；jvm还采集实际JDK的参数、堆概要和线程快照。"
-    "memory-jfr默认25秒（10至60），不查老对象GC Root；class-histogram可能暂停JVM；hprof-summary仅分析已有实例或任务范围内的文件。"
+    "memory-jfr默认25秒（10至60）；memory-trend默认300秒，每60秒采样，末尾可附JFR。"
+    "class-histogram可能暂停JVM；heap-dump可能停顿并占用数GB，须提供--admin-feedback-id；hprof-summary分析实例或任务范围内已有的.hprof或.hprof.gz。"
     "在线模式省略pid需唯一Java，采集绑定实例会话和进程创建时间。",
 }
 GUIDANCE["nbt"] += (

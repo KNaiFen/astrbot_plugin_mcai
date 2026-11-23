@@ -101,30 +101,48 @@ async def task_search(tasks, job, provider, arguments, call_id):
     return result
 
 
-def render_citations(store, task, text, *, progress=False):
-    if progress:
-        return re.sub(r"[^]*", "", text)
-    if "cite" not in text:
+def render_citations(store, task, text):
+    if text and ("https://" in text or "http://" in text):
+        sources = (store.get("search_session", task) or {}).get("sources", {})
+        urls = {source["url"] for source in sources.values()}
+        for event in store.events("web:" + task, limit=-1):
+            body = event["body"]
+            urls.update(source["url"] for source in body["citations"])
+            for call in body["calls"]:
+                urls.update(
+                    source["url"]
+                    for source in call.get("action", {}).get("sources", [])
+                )
+        if urls:
+            text = re.sub(
+                r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)",
+                lambda match: match[1] if match[2] in urls else match[0],
+                text,
+            )
+
+            def remove_url(match):
+                url = match[0].rstrip(".,;:!?")
+                if match[0] in urls:
+                    return ""
+                return "" + match[0][len(url) :] if url in urls else match[0]
+
+            text = re.sub(
+                r"https?://[^\s<>\[\]()（）【】；：，。！？、]+", remove_url, text
+            )
+    if not text or "" not in text:
         return text
-    sources = (store.get("search_session", task) or {}).get("sources", {})
-    used = {}
+    marker = r"[^]*"
+    text = re.sub(rf"(?m)^[ \t]*(?:{marker}[ \t]*)+\r?\n?", "", text)
 
     def replace(match):
-        labels = []
-        for reference in match.group(1).split(""):
-            source = sources.get(reference)
-            if source is None:
-                labels.append(f"[来源未解析：{reference}]")
-                continue
-            url = source["url"]
-            if url not in used:
-                used[url] = (len(used) + 1, source["title"])
-            labels.append(f"[来源{used[url][0]}]")
-        return "".join(dict.fromkeys(labels))
+        start, end = match.span()
+        if (
+            not start
+            or end == len(text)
+            or text[start - 1] in "\r\n（([{「『【"
+            or text[end] in "\r\n，。！？；：、）】」』,.!?;:)]}"
+        ):
+            return ""
+        return " " if match[0][0] in " \t" or match[0][-1] in " \t" else ""
 
-    text = re.sub(r"cite(.*?)", replace, text)
-    if used:
-        text += "\n来源：\n" + "\n".join(
-            f"[{number}] {title} {url}" for url, (number, title) in used.items()
-        )
-    return text
+    return re.sub(rf"[ \t]*(?:{marker}[ \t]*)+", replace, text)

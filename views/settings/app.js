@@ -700,7 +700,12 @@ document.querySelector('#refresh-diagnostics').onclick = function () { action(th
 document.querySelector('#export-diagnostics').onclick = function () {
   action(this, async () => {
     const start = document.querySelector('#diagnostics-start').value, end = document.querySelector('#diagnostics-end').value;
-    const result = await api('POST', 'diagnostics', { start: start ? new Date(start).getTime() / 1000 : 0, end: end ? new Date(end).getTime() / 1000 : null, task_ids: Array.from(document.querySelector('#diagnostics-tasks').selectedOptions, option => option.value) });
+    const result = await api('POST', 'diagnostics', {
+      start: start ? new Date(start).getTime() / 1000 : 0,
+      end: end ? new Date(end).getTime() / 1000 : null,
+      task_ids: Array.from(document.querySelector('#diagnostics-tasks').selectedOptions, option => option.value),
+      include_raw_api: document.querySelector('#diagnostics-raw-api').checked,
+    });
     const reordered = result.reordered_files?.length ? `。以下日志时间倒序，已在临时副本中排序：${result.reordered_files.join('、')}` : '';
     document.querySelector('#diagnostics-result').textContent = `已保存 ${result.entries} 条事件：${result.path}${reordered}`;
     await bridge.download('diagnostics/file', { filename: result.filename }, result.filename);

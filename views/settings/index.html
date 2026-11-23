@@ -403,7 +403,7 @@
       <section id="diagnostics" class="settings-section" aria-labelledby="diagnostics-title">
         <header class="section-heading">
           <h2 id="diagnostics-title">诊断导出</h2>
-          <p>查看未送达的群消息，或按时间和任务导出完整记录。B 离线时仍可导出 A 已保存的记录。</p>
+          <p>查看未送达的群消息，或按时间和任务导出诊断记录。B 离线时仍可导出 A 已保存的记录。</p>
         </header>
         <div class="panel">
           <h3>待发送队列（发件箱）</h3>
@@ -416,6 +416,7 @@
             <label>开始时间<input id="diagnostics-start" type="datetime-local"></label>
             <label>结束时间<input id="diagnostics-end" type="datetime-local"></label>
             <label>任务和只读问答（可多选，留空导出全部）<select id="diagnostics-tasks" multiple size="4"></select></label>
+            <label class="toggle"><input id="diagnostics-raw-api" type="checkbox">包含原始 API 请求报文与流式分片（体积较大）</label>
           </div>
           <div class="actions">
             <button id="refresh-diagnostics" type="button" class="secondary">刷新任务与发件箱</button>
