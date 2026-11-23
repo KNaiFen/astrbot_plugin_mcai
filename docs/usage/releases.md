@@ -1,4 +1,12 @@
-# 0.20.5 发布说明
+# 0.20.6 发布说明
+
+0.20.6 继续使用 `mcai-9`。请按[升级步骤](operations.md#升级步骤)配套更新 A、B 与托管窗口。随 B 包提供的 Probe 0.5.0 构建与 0.20.1 相同。下载及校验见 [GitHub Release v0.20.6](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.20.6)。
+
+| 模块 | 主要更新与修复（`22b1de0`） |
+|---|---|
+| 设置页视图与样式 | 移除设置页 `index.html` 中「经验知识库」末尾残留的重复闭合片段，恢复「运行时规则」「数据占用」「诊断导出」处于 `.settings-content` 布局容器内并消除各页签底部的孤立空白输入框；补充单列 Grid 列宽约束、窄屏表格防溢出、`details.panel` 折叠间距及复选组与隐藏行底边框规则。 |
+
+## 0.20.5 发布说明
 
 0.20.5 继续使用 `mcai-9`。请按[升级步骤](operations.md#升级步骤)配套更新 A、B 与托管窗口。随 B 包提供的 Probe 0.5.0 构建与 0.20.1 相同。下载及校验见 [GitHub Release v0.20.5](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.20.5)。
 
