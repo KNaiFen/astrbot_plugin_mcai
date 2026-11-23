@@ -20,6 +20,8 @@
   "group_ids": {"description": "允许使用的群号（留空允许所有群）", "type": "list", "default": []},
   "allow_member_ask": {"description": "允许群成员使用 /mcaiask（默认仅管理员）", "type": "bool", "default": false},
   "member_ask_cooldown_seconds": {"description": "群成员 /mcaiask 冷却秒数（0 不冷却）", "type": "int", "default": 300},
+  "ask_max_steps": {"description": "只读问答 /mcaiask 最多模型步骤", "type": "int", "default": 10},
+  "ask_timeout_seconds": {"description": "只读问答 /mcaiask 超时秒数", "type": "int", "default": 180},
   "incident_routes": {"description": "故障通知：实例=平台ID:GroupMessage:群号（默认不发）", "type": "list", "default": []},
   "host_offline_alert_minutes": {"description": "连不上 B 持续多久后告警（分钟，至少 1）", "type": "int", "default": 3},
   "auto_cleanup_days": {"description": "自动清理已结算任务数据的天数（0 关闭；不清理备份）", "type": "int", "default": 0},

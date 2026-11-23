@@ -9,7 +9,7 @@
 - **MCAI Probe** 源码采用MPL-2.0，完整许可见 `mods/mcai-probe/LICENSE`，来源说明见同目录NOTICE；每次发行附对应源码。
 - 计时位置参考 [Observable](https://github.com/tasgon/observable) 固定提交 `f07aba86fbb075077ac7b8d820b4ff8fc6e69aae` 的 ServerLevelMixin、LevelMixin。实现改用 [MixinExtras WrapOperation](https://github.com/LlamaLad7/MixinExtras/wiki/WrapOperation)，不引入Observable的客户端、上传服务或调用栈采样运行时。
 - **MixinExtras** 为MIT；Forge、Fabric目标嵌入0.4.1的loader JAR并保留自身许可。NeoForge目标只编译依赖0.5.3 API，运行时使用NeoForge21.1.247自带组件。Forge／NeoForge／Fabric和Minecraft为外部构建与运行依赖，不随包分发游戏程序。用于共存测试的第三方MOD仅保存在忽略目录。
-- **spark报告格式**：按[lucko/spark固定提交2335038](https://github.com/lucko/spark/tree/2335038acccc621275e78b8f16a47f5d47babbdd/spark-common/src/main/proto/spark)的`spark.proto`／`spark_sampler.proto`字段号独立声明所需最小布局，原项目GPL-3.0许可保留在`mcai/vendor/licenses/spark-format-GPL-3.0.txt`。采样由外部已安装spark的命令接口执行，B不包含spark运行时或Java生成类。Python **protobuf >=5,<8**通过依赖安装，保留其BSD-3-Clause许可；本轮固定验证版本见依赖记录。
+- **spark报告格式**：按[lucko/spark固定提交2335038](https://github.com/lucko/spark/tree/2335038acccc621275e78b8f16a47f5d47babbdd/spark-common/src/main/proto/spark)的`spark.proto`／`spark_sampler.proto`字段号独立声明所需最小布局，原项目GPL-3.0许可保留在`mcai/vendor/licenses/spark-format-GPL-3.0.txt`。采样由外部已安装spark的命令接口执行，B不包含spark运行时或Java生成类。Python **protobuf >=5,<8**通过依赖安装，保留其BSD-3-Clause许可；固定环境所用版本见[依赖锁](dependencies.md)。
 
 ## 网页、搜索及 MOD 接口
 

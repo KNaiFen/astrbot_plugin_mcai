@@ -25,8 +25,8 @@ from .tool_results import model_result
 from .tool_schemas import TOOLS
 from .tracing import trace_event, traced_provider
 
-ASK_STEPS = 8
-ASK_TIMEOUT = 90
+ASK_STEPS = 10
+ASK_TIMEOUT = 180
 ACTIVE = ("pending", "running")
 BACKEND_ERRORS = (aiohttp.ClientError, TimeoutError, RemoteError, OSError)
 PROBE_TOOLS = {
@@ -227,11 +227,24 @@ async def server_status(client, store, identity, instance, admin):
     return "\n".join(lines)
 
 
-async def answer_question(tasks, client, event, identity, text):
+async def answer_question(
+    tasks,
+    client,
+    event,
+    identity,
+    text,
+    *,
+    max_steps=None,
+    timeout_seconds=None,
+):
+    steps = ASK_STEPS if max_steps is None else max_steps
+    timeout = ASK_TIMEOUT if timeout_seconds is None else timeout_seconds
     reads = Reads(client, identity, tasks.store)
     try:
-        async with asyncio.timeout(ASK_TIMEOUT):
-            answer = await run_question(tasks, reads, event, identity, text)
+        async with asyncio.timeout(timeout):
+            answer = await run_question(
+                tasks, reads, event, identity, text, max_steps=steps
+            )
     except TimeoutError:
         answer = "只读问答超时，请缩小问题范围后重试。"
         trace_event(tasks.store, "ask_failed", task=identity, error="timeout")
@@ -245,15 +258,13 @@ async def answer_question(tasks, client, event, identity, text):
     return answer
 
 
-async def run_question(tasks, reads, event, identity, text):
+async def run_question(tasks, reads, event, identity, text, *, max_steps=ASK_STEPS):
     rows = await reads.client.request("GET", "/instances", once=True, timeout=5)
     instances = {row["instance"]: row for row in rows if row["selectable"]}
-    first, *rest = text.split(maxsplit=1)
-    explicit = first in instances
-    selected = instances[first] if explicit else None
-    if explicit and not rest:
-        return f"请在实例 ID 后填写问题，例如 “/mcaiask {first} 现在运行正常吗？”"
-    question = rest[0] if explicit else text
+    if not instances:
+        return "B 当前没有可查询的正式服务端，所以这个问题不回答。"
+    selected = None
+    question = text.strip()
     context = tasks.agent.context
     provider_id = tasks.agent.provider_id or await context.get_current_chat_provider_id(
         event.unified_msg_origin
@@ -280,7 +291,7 @@ async def run_question(tasks, reads, event, identity, text):
         ("mc_instances", "列出可查询的正式实例及说明。"),
         (
             "mc_select_instance",
-            "为本次问答选择一个已配置实例，不绑定任务。存在歧义时请用户指定实例 ID。",
+            "为本次问答选择一个已配置实例，不绑定任务。问题中没有足够信息唯一确定要绑定哪个服务端时不要猜测，直接结束并告知不知道是哪个服务端。",
         ),
     ):
         contracts[name] = (description, contracts[name][1])
@@ -308,10 +319,12 @@ async def run_question(tasks, reads, event, identity, text):
                 for row in instances.values()
             ]
         if name == "mc_select_instance":
-            if explicit or selected is not None:
+            if selected is not None:
                 raise ValueError("本次问答的目标已确定，不能切换实例。")
             if public["instance"] not in instances:
-                raise ValueError("实例不存在，请用户在 “/mcaiask” 后附上实例 ID。")
+                raise ValueError(
+                    "实例不存在；请核对可用实例，若无法确认是哪个服务端请停止查询并回复不知道是哪个服务端。"
+                )
             selected = instances[public["instance"]]
             return {"instance": selected["instance"], "status": state_text(selected)}
         if name == "mc_tools":
@@ -319,7 +332,9 @@ async def run_question(tasks, reads, event, identity, text):
         if public.get("environment", "production") != "production":
             raise ValueError("只读问答不查询测试服。")
         if selected is None:
-            raise ValueError("请先确认实例；无法确定时请用户附上实例 ID。")
+            raise ValueError(
+                "请先通过 mc_select_instance 绑定目标服务端；若问题中没有足够信息判断是哪个服务端，请停止调用工具并回复不知道是哪个服务端。"
+            )
         arguments = arguments_for(name, public, internal=True)
         if name in ("mc_history", "mc_knowledge"):
             directory = selected["canonical_directory"]
@@ -393,10 +408,10 @@ async def run_question(tasks, reads, event, identity, text):
     prompt = (
         tasks.agent.rules() + "\n\n【本轮使用只读问答模式，以下限制优先】\n"
         "你正在处理 Minecraft 单次只读问答。用中文按证据简洁作答，避免披露敏感配置、凭据或无关私有信息。"
-        "没有指定实例时根据问题与实例说明选一个；无法确定时回复请用户带实例 ID 重新提问。"
+        "本指令不预设实例，必须先结合问题中的线索和 mc_instances 的实例说明，调用 mc_select_instance 绑定唯一对应的服务端后再查询；"
+        "如果问题中没有足够信息判断要绑定哪个服务端，或找不到匹配的实例、存在多个候选无法唯一确定，不要猜测或强行绑定，直接回复告知不知道是哪个服务端，所以这个问题不回答。"
         "如果需要修改、发命令或启停，解释依据并建议用 “/mcainew 任务名 问题描述” 建任务，可引用本回答（面向群的命令提示用中文双引号括起，引号两边留空格）。"
-        "第 8 步须根据已有证据作答，不再调用工具。\n"
-        f"预选实例：{selected['instance'] if selected else '无'}\n"
+        f"第 {max_steps} 步须根据已有证据作答，不再调用工具。\n"
     )
     runner = ToolLoopAgentRunner()
     runner.EMPTY_OUTPUT_RETRY_ATTEMPTS = 1
@@ -410,7 +425,7 @@ async def run_question(tasks, reads, event, identity, text):
     async def bounded_chat(**kwargs):
         nonlocal attempts, last_text
         attempts += 1
-        if attempts > ASK_STEPS:
+        if attempts > max_steps:
             raise ValueError("已达到问答步数上限")
         response = await chat(**kwargs)
         check_response(response)
@@ -418,7 +433,7 @@ async def run_question(tasks, reads, event, identity, text):
             raise ValueError(response.completion_text)
         if response.completion_text:
             last_text = response.completion_text
-        if attempts == ASK_STEPS:
+        if attempts == max_steps:
             response.tools_call_name = response.tools_call_args = (
                 response.tools_call_ids
             ) = []
@@ -436,17 +451,18 @@ async def run_question(tasks, reads, event, identity, text):
         streaming=False,
         request_max_retries=1,
     )
-    for index in range(ASK_STEPS):
+    for index in range(max_steps):
         if runner.done():
             break
-        if index == ASK_STEPS - 1:
+        if index == max_steps - 1:
             runner.req.func_tool = None
-            wrapper.messages.append(
-                Message(
-                    role="user",
-                    content="请根据已有工具结果直接作答，明确仍无法核实的部分。",
+            if index > 0:
+                wrapper.messages.append(
+                    Message(
+                        role="user",
+                        content="请根据已有工具结果直接作答，明确仍无法核实的部分。",
+                    )
                 )
-            )
         async with aclosing(runner.step()) as step:
             async for _ in step:
                 pass
@@ -454,8 +470,8 @@ async def run_question(tasks, reads, event, identity, text):
     if final and final.role == "err" and not last_text:
         raise ValueError(final.completion_text)
     if selected is None:
-        return "未能确定要查询的实例，请在 “/mcaiask” 后带上实例 ID 再问。"
+        return "不知道要查询哪个服务端，所以这个问题不回答。请在问题中说明对应服务端后再问。"
     return (
         last_text.strip()
-        or "在 8 步内未得到可确认的结论，请缩小问题范围或带上实例 ID 再问。"
+        or f"在 {max_steps} 步内未得到可确认的结论，请缩小问题范围后重试。"
     )

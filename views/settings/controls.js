@@ -20,7 +20,7 @@ export function options(select, rows, fallback = '') {
 
 export function styleSettings(root) {
   for (const label of root.querySelectorAll('label')) {
-    if (label.classList.contains('setting-row')) continue;
+    if (label.classList.contains('setting-row') || label.closest('.toolbar')) continue;
     const control = label.querySelector(':scope > input, :scope > select, :scope > textarea');
     if (!control) continue;
     const title = label.querySelector(':scope > span') || node('span');
@@ -178,7 +178,9 @@ function rowEditor(field, type, data, fetchServers, priceCatalog) {
       controls[0].oninput = () => { row.binding = undefined; render(); update(); };
       controls.slice(2).forEach(control => { control.oninput = () => { row.binding = undefined; render(); update(); }; });
       multiplier.oninput = recalculate;
-      sources.append(label, multiplier, pick, refresh);
+      const sourceActions = node('div', null, 'actions');
+      sourceActions.append(pick, refresh);
+      sources.append(label, multiplier, sourceActions);
       wrapper.append(sources);
       render();
     }

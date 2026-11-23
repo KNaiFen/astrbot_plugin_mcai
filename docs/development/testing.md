@@ -2,26 +2,32 @@
 
 [开发索引](README.md)
 
-测试同时检查工具返回值、磁盘文件、备份内容、进程状态和持久化记录。测试服务器通过真实 BAT/ConPTY 启动可交互进程；存档测试使用固定来源的真实片段和生成样本；Agent 集成运行 AstrBot v4.29.4 的真实 runner，模型回复由测试控制。A/B 接口测试统一经 HTTPS。
+测试同时检查工具返回值、磁盘文件、备份内容、进程状态和持久化记录。普通 B 测试使用内存控制台和进程内执行；真实主机用例通过 BAT／ConPTY 启动可交互进程。存档测试使用固定来源的真实片段和生成样本；Agent 集成运行 AstrBot v4.29.4 的真实 runner，模型回复由测试控制。A/B 接口测试统一经 HTTPS。
 
 当前版本的发行检查与真实场景记录在完整源码的 `docs/development/records/`。故障留证和卡顿复验使用真实模型、本地 OneBot、Fabric 与 ATM10 隔离服；区块录制的进世界证据同时核对协议客户端位置和服务端加入日志。安装复验和受控回归分别记账，不代表真实 QQ 或所有整合包均已联调。
 
 ## 运行
 
-测试环境为 Windows、Python 3.12、PowerShell 7.3+、PATH 中可用的 JDK 21。首次准备环境或依赖变化时，在源码目录执行：
+测试环境为 Windows、Python 3.12、PowerShell 7.3+、PATH 中可用的 JDK 21，静态检查还需 Node.js。集成基线固定为 AstrBot v4.29.4；不拿上游当前分支替代，其他版本的兼容验证单独记录。首次准备环境或依赖变化时，在源码目录执行：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e '.[test]'
 .\.venv\Scripts\python.exe scripts/setup_world_tools.py
 ```
 
-先通过 `scripts/verify.py` 执行静态与快速冒烟检查，或按需运行完整核心回归（自动识别仓库内的 `runtime/astrbot-4.29.4` 与 `runtime/astrbot-test`）：
+统一入口是 `scripts/verify.py`。它可自动识别仓库内的 `runtime/astrbot-4.29.4` 和 `runtime/astrbot-test`；也可传 `--astrbot-source` 和 `--astrbot-root` 指定目录：
 
 ```powershell
 .\.venv\Scripts\python.exe scripts/verify.py --mode static
 .\.venv\Scripts\python.exe scripts/verify.py --mode quick
 .\.venv\Scripts\python.exe scripts/verify.py --mode full
+.\.venv\Scripts\python.exe scripts/verify.py --mode compat
+.\.venv\Scripts\python.exe scripts/verify.py --mode release
 ```
+
+`static` 检查 Ruff、Git 空白、Node 语法、配置和版本、Markdown 相对链接与 Probe CoreChecks；`quick` 在静态检查后运行冒烟套件，排除 `real_host`；`full` 在静态检查后收集全部核心用例。`compat` 只核对配置与版本并运行两个兼容套件。`release` 串行执行静态、核心、兼容，并用已有 Java／Probe 产物打包和检查 ZIP。
+
+Windows CI（`.github/workflows/ci.yml`）将静态检查和核心／兼容矩阵分开。静态作业用 Node 20、JDK 21 和固定 Gson 运行 CoreChecks；测试作业安装锁定依赖、校验固定 AstrBot 源码并准备 WorldTools，运行 `full`／`compat` 时传 `--skip-java --skip-node`，由独立静态作业覆盖这两项。锁定依赖作业的 pip 缓存路径为 `~\AppData\Local\pip\Cache`。
 
 若手动调用 `pytest` 跑全量核心回归：
 
@@ -31,7 +37,7 @@ $env:PYTHONPATH = "$PWD/runtime/astrbot-4.29.4"
 .\.venv\Scripts\python.exe -m pytest -q --require-astrbot --durations=15 --junitxml=runtime/pytest.xml
 ```
 
-上述默认收集核心行为回归，保留真实runner、HTTPS、托管窗口、审核批准、备份修改、失败恢复及原编号去重。默认 `host` 夹具采用内存控制台替身与进程内本地执行以避免数百次重复拉起 ConPTY 与子进程；真实终端、ConPTY、`Execution` 共享额度与多窗口进程隔离由 `@pytest.mark.real_host` 显式标记并在每轮核心回归中覆盖。日常修改按受影响行为选择文件或节点；同一轮涉及多个范围时，合并成一条去重后的pytest命令。核心回归只跑一次，已包含的节点不再作为重复关卡。文档整理检查相关链接、示例与打包。
+上述默认收集核心行为回归，覆盖真实 runner、HTTPS、托管窗口、审核批准、备份修改、失败恢复及原编号去重。日常修改按受影响行为选择文件或节点；同一轮涉及多个范围时合并成一条去重后的 pytest 命令，核心回归已覆盖的节点不再作为额外关卡。文档整理检查相关链接、示例、忽略规则和受影响的发行包。
 
 详细兼容矩阵按变更范围显式追加，不再让每次任务重复启动全部环境：
 
@@ -46,7 +52,7 @@ $env:PYTHONPATH = "$PWD/runtime/astrbot-4.29.4"
 .\.venv\Scripts\python.exe -m pytest tests/world_compatibility.py tests/api_compatibility.py -q --require-astrbot
 ```
 
-两个专项文件刻意不使用`test_`前缀，默认不收集；它们保留有用的格式和适配器差异，不按普通功能改动反复执行。新测试先确认现有流程是否已覆盖；能在已有完整场景中增加必要断言，就不再复制一套启动／关闭流程。
+两个专项文件刻意不使用 `test_` 前缀，默认不收集；它们保留有用的格式和适配器差异，按受影响范围运行。
 
 `--require-astrbot`强制核对v4.29.4，并在出现任何跳过时返回失败。未提供AstrBot时可以执行不依赖runner的专项；含跳过的结果不能作为完整回归或发行通过的证据。需要分析覆盖率时，再给上述命令追加`--cov=mcai --cov-branch --cov-report=html:runtime/coverage-html`；覆盖率采集不作为每轮默认步骤。
 
@@ -67,6 +73,18 @@ tests/test_plan_continuation.py::test_one_approval_runs_three_observed_batches_w
 ```
 
 若已按[探针验证](probe.md)准备隔离Fabric 1.21.1安装目录，可省略参数，使用其中的原版bundler。
+
+## 编写与维护测试
+
+- **先找已有场景。** 优先补现有测试的必要断言，按故障留证、主机维护、存档、查询 CLI、修复或终端隔离等职责合并小用例。不要复制启动和清理流程，也不为一两个用例另建零散文件。移动测试或共用夹具时，同步检查兼容矩阵的导入，尤其是 `tests/world_compatibility.py`，并更新下方场景清单。
+- **复用夹具。** `tests/conftest.py` 的 `host` 默认使用 `SimConsole`／`SimTerminal` 和进程内 `local_execution`。只有确实依赖 ConPTY、窗口标题、共享 Job Object 内存额度、进程树隔离或 BAT 自动重启的测试才标为 `@pytest.mark.real_host`。保留 `cache_powershell_version` 对默认 `pwsh.exe` 的版本探测缓存（其他路径仍执行真实校验），以及 `fast_test_polling` 的模块级轮询替换；`plugin_session` 复用 `_load_plugin_module()` 的模块缓存和通过 `host` 使用的会话级 `test_tls_bundle`。
+- **控制参数化规模。** 使用 `host` 或 `plugin_session` 时，各参数组合都会重建对应的函数级夹具。纯数据校验在同一测试内循环；多维协议、流式错误或分隔符取代表组合覆盖边界，避免笛卡尔积。需要穷举的存档编解码、模型接口兼容矩阵放入 `world_compatibility.py` 或 `api_compatibility.py`。
+- **分清工具结算和重试。** 假 `Provider` 的回调先显式判断 `provider.last.get("next_call")`，工具同步返回或后台工作已结算时可能没有该字段。直接索引的 `KeyError` 可能被模型失败路径捕获并消耗下一条模拟动作；`mcai/agent_runtime.py` 的有限重试间隔为 `RETRY_DELAYS = (2, 5)`，持续 API 失败用 `API_RETRY_DELAYS`。失败重试测试使用 `fast_model_retries`；专测退避中取消时可局部设置 `API_RETRY_DELAYS`，用事件提前中止。
+- **保留后台首等窗口。** `mcai/jobs.py` 的 `Jobs.start` 等待至多 2 秒后返回当前状态，不终止后台工作。不要统一压短，避免将正常的 PowerShell 启动或短结果误测成仍在执行。专门验证 `running` 后再 `mc_job_wait` 的脚本需超过 2 秒，例如 2.4 秒；测取消时及时提交取消，不等自然超时。
+- **及时确认取消并控制载荷。** Probe 取消测试的假终端监听 `cancel/<key>.json`，以匹配原编号和会话的结果回写 `status="cancelled"`；除专测未确认外，不空等协议的 1 秒或部分扫描的 3 秒，监听任务在 `finally` 取消并回收。文件分块、gzip 和上下文超限取刚超过各自阈值的输入；例如覆盖 256 KiB 文件分块时用约 270 KB 的有效载荷。
+- **同步入口。** 不新增一次性的 `scripts/test_*.py` 或基准脚本，通用验证维护在 `scripts/verify.py` 与 CI。增删或改名测试文件且需验证发行包时，先按[构建与发行](README.md#构建与发行)更新 Git 索引，再跑静态检查和受影响套件，或用 `--mode release` 完成全检；完整回归须零跳过。
+
+开始前检查已有临时案例、目录和产物，优先复用有用资料。每个案例结束后立即评估并清理本次生成的无用环境、输入副本、日志、缓存和构建产物，结束任务前再核对磁盘占用。清理前把条件、命令、结果和关键数值写进既有验证记录，默认只保留记录和最小必要证据。确需暂留的大体积资料注明位置、用途和清理时机，用完即清理。保留项目内的回归测试及用户的数据、配置和存档。
 
 ## 场景清单
 
@@ -95,7 +113,14 @@ tests/test_plan_continuation.py::test_one_approval_runs_three_observed_batches_w
 | 独立审核和续接 | 三个入口分别放行/拒绝、配置与协议错误、审核重试、材料缺失/超限、脚本变更、主上下文隔离、规则重载、检查点中断恢复、修复部分失败后再次审批 | `test_review_resume.py`、`test_model_recovery_summary.py` |
 | 原生模型适配与 API 摘要 | 核心保留实际适配器工具调用、多轮执行、重试和上下文压缩；专项保留思考程度、流式／非流式、进度、摘要与失败矩阵 | `test_tool_contracts.py`、`test_plan_continuation.py`、`test_model_recovery_summary.py`、`api_compatibility.py` |
 | 完整交互与诊断导出 | 拒绝命令原文、任务私有API请求／响应／摘要、独立审核、批量工具结果、消息发送成功／失败、关闭群摘要和ZIP回放 | `test_tracing.py`、`test_settings_search.py` |
-| Web 管理控制台 | AstrBot 请求上下文和真实 A→B HTTPS：定时计划校验和替换、配置保存和环境回显、正常启停与占用冲突、Probe 局部读取、任务短码和归档、故障与 gzip 附件、经验索引、备份清单及后台取消 | `test_web_management.py`、`test_settings_search.py` |
+| Web 管理控制台 | AstrBot 请求上下文和真实 A→B HTTPS：计划、配置与环境、启停以及试服关窗、Probe 局部查询、任务批准及归档、故障筛选和附件、经验增删改查与目录索引、上游价格与用量、备份及后台取消 | `test_web_management.py`、`test_settings_search.py` |
+| 配置生命周期与主机退出 | 实例热重载、待生效字段、拒绝活动改名、配置版本、留证容量、BAT 重启和停服监听、B 退出时已接受操作结算、断线保留窗口配置 | `test_configuration_lifecycle.py`、`test_architecture_repairs.py` |
+| 留证、主动告警与附件 | 故障控制台、旧事件导入、附件身份与 gzip 分块、容量淘汰、B 失联、通知游标、窗口／磁盘／性能告警、另卷备份和过期活跃状态清理 | `test_incidents.py`、`test_incident_files.py`、`test_alerts.py` |
+| 定时维护与数据管理 | 计划审核、时段恢复、在线备份恢复保存、保留份数、任务清理保护、数据库压缩和按月日志清理 | `test_schedules.py`、`test_data_maintenance.py` |
+| 只读群命令与群附件 | 实例和 Probe 状态、问答权限及独立后台任务、附件来源和大小限制、引用身份、图片识别后仅传文字 | `test_readonly_commands.py`、`test_group_attachments.py` |
+| 模型恢复、用量及结果完整性 | 启动恢复、长输入预算与归档重试、持续重试及中止、主请求和审核拒绝未完成输出、任务与每日用量、费用估算和上限续期 | `test_context_272k_regressions.py`、`test_continuous_api_retry.py`、`test_model_request_integrity.py`、`test_model_usage.py` |
+| 审核材料与历史证据 | 原始记录续读、容量收缩、反馈使旧提案失效、脚本依赖与恢复材料、范围去重及归档原文回填 | `test_review_contract.py`、`test_review_material_contract.py`、`test_evidence_context.py` |
+| Probe 就绪、spark 与 JVM 内存 | 当前 JVM 的新鲜响应和会话超时、spark 报告身份及采样权重、真实 JFR 和 HPROF、内存预算降级、产物路径约束 | `test_probe_readiness.py`、`test_spark_report.py`、`test_memory_diagnostics.py` |
 | Windows 运维入口 | CLI列表／状态／启停／恢复与相对目录、attach半行／长行／新会话、输入拒绝、每实例Java及托管窗口交互 | `test_https.py`、`test_audit_host.py`、`test_terminal_isolation.py` |
 | 独立终端与共享额度 | tm/terminal、当前目录与-C、命名互斥、目录登记、真实补全/历史/中文/Ctrl+C、两个窗口与B强杀重连、会话和控制编号去重、9999行与字节上限、Job配置失败、共享额度耗尽和恢复、修复备份保留 | `test_terminal_isolation.py` |
 
@@ -117,7 +142,9 @@ tests/test_plan_continuation.py::test_one_approval_runs_three_observed_batches_w
 
 ## 验证范围
 
-2026-11-21 Web 控制台验证：以 AstrBot v4.29.4 的实际桥接脚本置于受限 iframe，父页模拟管理 API。Playwright 核对计划创建、编辑、暂停、恢复、删除、局部 Probe 刷新、任务短码弹窗、群输入及亮暗切换；1280px 桌面和 390px 下九个面板没有横向溢出。独立临时源码目录执行 `python scripts/build_release.py --package-only`，插件、B 和源码包的 ZIP CRC 通过，包含对应页面资源与 B 管理模块；使用了已有 Java／Probe 产物。A 机通过 `Downloads.request` 对真实 Modrinth 搜索 API 发出只读请求，收到 1 条结果。未使用真实 QQ、生产服务器或 CurseForge 私有凭据。
+2026-11-23 的 **0.20.2／mcai-9 发行验证**（完整源码 `docs/development/records/release-0.20.2.md`）使用 Windows、Python 3.12.14、PowerShell 7.6.5、Node 24.11.0、JDK 21.0.7 和 AstrBot v4.29.4。`verify.py --mode release` 完成静态、493 项核心、66 项兼容和发行 ZIP 检查，零失败、零跳过，用时 621.58 秒。另在独立目录验证 A 解包导入、B wheel 离线安装、版本／协议及 CLI 帮助；沿用已验收的八个 Probe 0.5.0 产物。这是发行记录的结果。
+
+2026-11-21 的 **0.19.1 开发阶段 Web 控制台验证**：以 AstrBot v4.29.4 的实际桥接脚本置于受限 iframe，父页模拟管理 API。Playwright 核对计划创建、编辑、暂停、恢复、删除、局部 Probe 刷新、任务短码弹窗、群输入及亮暗切换；1280px 桌面和 390px 下九个面板没有横向溢出。独立临时源码目录执行 `python scripts/build_release.py --package-only`，插件、B 和源码包的 ZIP CRC 通过，包含对应页面资源与 B 管理模块；使用了已有 Java／Probe 产物。A 机通过 `Downloads.request` 对真实 Modrinth 搜索 API 发出只读请求，收到 1 条结果。未使用真实 QQ、生产服务器或 CurseForge 私有凭据。
 
 同轮使用 Windows、Python 3.12、`PYTHONPATH=runtime/astrbot-4.29.4` 和隔离 `ASTRBOT_ROOT=runtime/astrbot-test`。`python -m pytest -q --require-astrbot --durations=15 --junitxml=runtime/mcai-web-pytest-final.xml` 结算为 514 通过、零跳过、98 条依赖弃用提示（22 分 38 秒）；最后补充的原编号防迟到断言和索引目录校验随 Web 相关节点复测，8 通过。`ruff check main.py mcai tests scripts`、`ruff format --check main.py mcai tests scripts`、`git diff --check` 和三个 JavaScript 模块的 `node --check` 均通过。
 

@@ -1025,6 +1025,20 @@ class Settings:
                 and fields["group_forward_threshold"] < 1
             ):
                 raise ValueError("QQ 长回复合集门槛须为正整数")
+            if (
+                not 1
+                <= fields.get("ask_max_steps", plugin.config.get("ask_max_steps", 10))
+                <= 200
+            ):
+                raise ValueError("只读问答模型步数为 1–200")
+            if (
+                fields.get(
+                    "ask_timeout_seconds",
+                    plugin.config.get("ask_timeout_seconds", 180),
+                )
+                < 1
+            ):
+                raise ValueError("只读问答超时秒数须为正整数")
             for key in ("provider_id", "review_provider_id"):
                 if fields.get(key):
                     provider = await self.provider(fields[key])

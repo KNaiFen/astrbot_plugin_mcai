@@ -60,7 +60,7 @@ HELP_TEXT = (
     "• 查服务端状态（群成员，不调用模型）：\n"
     "  “/mcaiserver [实例ID]” （例： “/mcaiserver” 或 “/mcaiserver cti” ）\n"
     "• 只读 AI 问答（默认仅管理员，不改文件不发命令）：\n"
-    "  “/mcaiask [实例ID] 问题” （例： “/mcaiask cti 现在 TPS 为什么下降了？” ）\n"
+    "  “/mcaiask 问题” （例： “/mcaiask cti服现在 TPS 为什么下降了？” ）\n"
     "\n"
     "【创建任务与补充线索】\n"
     "• 创建任务（管理员）：\n"
@@ -279,7 +279,13 @@ class MCAI(Star):
         client = HostClient(current.url, current.token, current.fingerprint)
         try:
             answer = await answer_question(
-                self.tasks, client, event, identity, question
+                self.tasks,
+                client,
+                event,
+                identity,
+                question,
+                max_steps=self.config.get("ask_max_steps"),
+                timeout_seconds=self.config.get("ask_timeout_seconds"),
             )
             text = space_commands("「只读问答」：" + answer)
             trace_event(self.store, "ask_answer", task=identity, reply=text)
@@ -706,7 +712,7 @@ class MCAI(Star):
                     raise ValueError("该指令仅管理员可用。")
                 if not tail.strip():
                     raise ValueError(
-                        "用法：“/mcaiask [实例ID] 问题”，例： “/mcaiask cti 现在 TPS 为什么下降了？” （不确定实例 ID 可省略，或先用 “/mcaiserver” 查看）。"
+                        "用法：“/mcaiask 问题”，例： “/mcaiask cti服现在 TPS 为什么下降了？” 。"
                     )
                 if sender in self.ask_workers:
                     raise ValueError("你已有一条只读问答正在处理，请等结果返回。")

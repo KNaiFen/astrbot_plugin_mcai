@@ -14,13 +14,13 @@
 
 `host.json` 保存基础配置和密钥，`instances.json` 独立维护实例。加载边界校验目录、重复身份、Java、超时和编码；轮询比较内容哈希，校验成功才替换 desired 状态。活动实例保留窗口的目录、Java 和编码；说明、复制清单及留证告警设置直接生效。空闲且在线时 B 通过 WebSocket `update_config` 同步停服命令、超时及重启提示。重连握手以窗口报告为实际配置，与 B 的期望值比较后继续同步；待生效字段单独返回。operation 与 background_job 均纳入忙状态。目录变化由既有 expected_directory 检查拒绝旧任务的新操作。
 
-`GET/PUT /configuration` 复用现有 HTTPS、令牌与指纹；只返回密钥是否配置，不回传原值。实例保存携带 revision 防止覆盖其他编辑。`POST /configuration/reload` 立即重载；CurseForge 只读测试使用独立接口。PowerShell 路径与辅助操作内存额度重启 B 后生效；下载上限、备份目录、存档 Java、留证设置及全局试服地址和端口在线生效。工作区只在无试服时切换。无额外端口和传输层。
+`GET/PUT /configuration` 复用现有 HTTPS、令牌与指纹；只返回密钥是否配置，不回传原值。实例保存携带 revision 防止覆盖其他编辑。`POST /configuration/reload` 立即重读实例文件；CurseForge 只读测试使用独立接口。PowerShell 路径与辅助操作内存额度重启 B 后生效；下载上限、备份目录、存档 Java、留证设置及全局试服地址和端口可在线保存生效。修改试服端口须先释放全局名额；存在已准备的试服或仍在准备时不可切换 B 工作区。无额外端口和传输层。
 
 A设置的保存、生效与任务启动共用任务调度锁。保存期间新建、续接及归档等待生效后再使用运行对象；已有worker运行时拒绝保存。并发保存顺序提交，只安装已提交快照对应的client和agent，框架报告快照未提交时明确报错。
 
 ## AstrBot 视图与模型测试
 
-Web 管理视图的 GET 查询参数走桥接第二个参数；所有浏览器修改走 POST，由 A 转发到 B 的对应方法。运行数据和 Probe 实时采样按实例按需加载。A 代理环境只提供脱敏概况；实例热重载保留当前操作快照。删除、换目录或关闭告警会清理活动状态，事件历史保留并可按现有实例筛选。单项模型重测只更新该项，`alpha_open` 和 `alpha_find` 先建立搜索会话。
+Web 管理视图的 GET 查询参数走桥接第二个参数；所有浏览器修改走 POST，涉及 B 时由 A 转发。运行数据和 Probe 实时采样按实例按需加载。A 代理环境只提供脱敏概况；实例热重载保留当前操作快照。告警状态及历史筛选见[故障留证](storage-and-recovery.md#故障留证)。单项模型重测只更新该项，`alpha_open` 和 `alpha_find` 先建立搜索会话。
 
 `views/settings` 通过 AstrBot v4.29.4 原生 bridge 的 apiGet/apiPost 调用插件注册接口，复用 Dashboard 管理员登录。A 的配置继续以 AstrBotConfig 保存，B 的配置经现有 HostClient 写入。主审模型分别覆盖请求配置，不改共享提供商。
 

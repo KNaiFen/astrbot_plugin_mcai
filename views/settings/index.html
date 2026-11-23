@@ -15,6 +15,7 @@
   <div class="settings-layout">
     <nav class="settings-nav" aria-label="设置分类">
       <a href="#servers" aria-current="location"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="7" rx="2"/><rect x="4" y="13" width="16" height="7" rx="2"/><path d="M8 7.5h.01M8 16.5h.01"/></svg>运行概览</a>
+      <a href="#server-configs"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/><circle cx="9" cy="7" r="2" fill="var(--page)"/><circle cx="15" cy="12" r="2" fill="var(--page)"/><circle cx="10" cy="17" r="2" fill="var(--page)"/></svg>服务端配置</a>
       <a href="#maintenance"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg>定时维护</a>
       <a href="#tasks"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5zM8 9h8M8 13h5"/></svg>任务看板</a>
       <a href="#incidents"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s7-3 7-9V5l-7-3-7 3v8c0 6 7 9 7 9zm0-15v5m0 3h.01"/></svg>故障与告警</a>
@@ -32,21 +33,27 @@
       <form id="a-settings">
         <section id="connection" class="settings-section" aria-labelledby="connection-title">
           <header class="section-heading">
-            <h2 id="connection-title">主机连接</h2>
-            <p>连接运行 Minecraft 托管程序的 B 主机。</p>
+            <h2 id="connection-title">A 主机与连接</h2>
+            <p>配置 A 端插件直连 B 主机的地址、凭据，并查看本机运行环境。</p>
           </header>
           <div class="panel">
-            <label>B 地址<input name="host_url" type="url" required placeholder="https://公网IP:端口"></label>
-            <div class="columns">
+            <h3 class="group-title">连接参数</h3>
+            <div class="setting-group">
+              <label>B 地址<input name="host_url" type="url" required placeholder="https://公网IP:端口"></label>
               <label>共享令牌<input name="host_token" type="password" autocomplete="new-password" placeholder="留空保留已保存令牌"></label>
               <label>证书 SHA-256 指纹<input name="host_fingerprint" spellcheck="false"></label>
             </div>
             <div class="actions">
-              <button type="button" id="connection-test" class="secondary">测试连接</button>
               <button type="submit">保存 A 设置</button>
-              <button type="button" id="check-a-environment" class="secondary">刷新 A 环境</button>
+              <button type="button" id="connection-test" class="secondary">测试连接</button>
             </div>
-            <div id="a-environment" class="info-grid" aria-live="polite"></div>
+            <div class="sub-block">
+              <h3 class="group-title">A 端运行环境</h3>
+              <div class="actions">
+                <button type="button" id="check-a-environment" class="secondary">刷新 A 环境</button>
+              </div>
+              <div id="a-environment" class="info-grid" aria-live="polite"></div>
+            </div>
           </div>
         </section>
         <section id="models" class="settings-section" aria-labelledby="models-title">
@@ -55,26 +62,32 @@
             <p>在 AstrBot 模型页添加 OpenAI 兼容 Chat／Responses 提供商，再在这里选择排障和独立审核模型。</p>
           </header>
           <div class="panel">
-            <div class="columns">
+            <h3 class="group-title">基础模型</h3>
+            <div class="setting-group">
               <label>排障模型<select name="provider_id"></select></label>
               <label>审核模型<select name="review_provider_id"></select></label>
               <label>排障思考强度<input name="reasoning_effort" list="efforts" placeholder="留空继承"></label>
               <label>审核思考强度<input name="review_reasoning_effort" list="efforts" placeholder="留空继承"></label>
             </div>
             <datalist id="efforts"><option value="none"><option value="minimal"><option value="low"><option value="medium"><option value="high"><option value="xhigh"></datalist>
-            <div class="checks">
+            <h3 class="group-title">搜索与进度汇报</h3>
+            <div class="setting-group">
               <label class="toggle"><input type="checkbox" name="enable_web_search">API 托管搜索</label>
               <label class="toggle"><input type="checkbox" name="enable_alpha_search">alpha/search 独立搜索</label>
               <label class="toggle"><input type="checkbox" name="forward_progress">转发执行进度汇报</label>
+              <label>托管搜索格式<select name="web_search_tool_type"><option>web_search</option><option>web_search_preview</option></select></label>
             </div>
-            <label>托管搜索格式<select name="web_search_tool_type"><option>web_search</option><option>web_search_preview</option></select></label>
-            <details>
+            <details class="instance-advanced">
               <summary>A 端高级设置</summary>
-              <div class="details-body">
-                <div class="columns">
+              <div class="advanced-body">
+                <h4 class="group-title">运行与工作区</h4>
+                <div class="setting-group">
                   <label>每轮模型步数<input type="number" name="max_steps" min="1" max="200"></label>
                   <label>A 端 Agent 工作区<input name="workspace_dir" placeholder="留空使用插件数据目录/workspaces"></label>
                   <label>A 端 PowerShell 7.3+ 路径<input name="workspace_powershell_path" placeholder="留空自动查找 pwsh.exe"></label>
+                </div>
+                <h4 class="group-title">外部凭据与网络检测</h4>
+                <div class="setting-group">
                   <label>CurseForge API 密钥<input name="curseforge_api_key" type="password" autocomplete="new-password" placeholder="留空保留已保存密钥"></label>
                 </div>
                 <p id="curseforge-state" class="hint"></p>
@@ -85,70 +98,92 @@
                 </div>
               </div>
             </details>
-            <div class="actions">
-              <button type="button" id="test-model">保存并测试、自动配置</button>
-              <button type="button" id="cancel-test" class="secondary">取消测试</button>
+            <div class="panel-footer">
+              <div class="actions">
+                <button type="submit">保存 A 设置</button>
+                <button type="button" id="test-model" class="secondary">保存并测试、自动配置</button>
+                <button type="button" id="cancel-test" class="secondary">取消测试</button>
+              </div>
+              <p class="hint">测试会发送少量模型与搜索请求，不执行 MC 操作或发群消息。执行进度汇报需 Responses commentary，默认关闭；未观察到汇报不等于不支持。</p>
             </div>
-            <p class="hint">测试会发送少量模型与搜索请求，不执行 MC 操作或发群消息。执行进度汇报需 Responses commentary，默认关闭；未观察到汇报不等于不支持。</p>
             <div id="capabilities" aria-live="polite"></div>
           </div>
           <div class="panel" aria-labelledby="model-usage-title">
             <h3 id="model-usage-title">模型用量与费用保护</h3>
-            <div class="columns">
+            <div class="setting-group">
               <label>单任务 token 上限（0 不限）<input type="number" name="task_token_limit" min="0" step="1" value="0"></label>
               <label>连续 API 失败后暂停（分钟，0 关闭）<input type="number" name="model_failure_pause_minutes" min="0" step="1" value="0"></label>
+              <label>每百万 token 单价<textarea name="model_prices" rows="2" placeholder="每行一项：提供商ID=CNY:2:8:0.2"></textarea></label>
+              <p class="hint">单价单位是每百万（1M）tokens，用量单位是 tokens。单价仅用于估算费用；单任务上限按输入 + 输出 tokens 计算。</p>
             </div>
-            <label>每百万 token 单价<textarea name="model_prices" rows="2" placeholder="每行一项：提供商ID=CNY:2:8:0.2"></textarea></label>
-            <p class="hint">单价单位是每百万（1M）tokens，用量单位是 tokens。单价仅用于估算费用；单任务上限按输入 + 输出 tokens 计算。</p>
             <div class="actions">
               <button type="submit">保存 A 设置</button>
               <button type="button" id="sync-model-prices" class="secondary">同步上游模型价格</button>
               <button type="button" id="refresh-model-usage" class="secondary">刷新用量</button>
             </div>
             <p id="model-price-status" class="hint" role="status"></p>
-            <div id="model-usage" aria-live="polite"></div>
+            <div class="sub-block">
+              <div id="model-usage" aria-live="polite"></div>
+            </div>
           </div>
         </section>
         <section id="groups" class="settings-section" aria-labelledby="groups-title">
           <header class="section-heading">
             <h2 id="groups-title">群与通知</h2>
-            <p>管理群内权限、回复形式和故障提醒。</p>
+            <p>管理群内权限、问答限制、回复形式和故障提醒。</p>
           </header>
           <div class="panel">
-            <div class="columns">
+            <h3 class="group-title">群与管理员权限</h3>
+            <div class="setting-group">
               <label>管理员 QQ<textarea name="admin_ids" rows="2" placeholder="每行一个 QQ 号"></textarea></label>
               <label>允许群号<textarea name="group_ids" rows="2" placeholder="每行一个群号，留空允许所有群"></textarea></label>
             </div>
-            <label>故障通知群<textarea name="incident_routes" rows="2" placeholder="示例：survival=onebot:GroupMessage:123456"></textarea></label>
-            <p class="hint">每行指定一个实例及通知群；留空只在 B 主机保存故障现场。</p>
-            <label>B 失联告警分钟数<input type="number" name="host_offline_alert_minutes" min="1" step="1" value="3" required></label>
-            <div class="columns">
+            <h3 class="group-title">只读问答与群回复</h3>
+            <div class="setting-group">
               <label class="toggle"><input type="checkbox" name="allow_member_ask">允许群成员使用 /mcaiask</label>
               <label>群成员问答冷却秒数<input type="number" name="member_ask_cooldown_seconds" min="0" step="1" value="300"></label>
+              <label>只读问答最多模型步数<input type="number" name="ask_max_steps" min="1" max="200" step="1" value="10" required></label>
+              <label>只读问答超时秒数<input type="number" name="ask_timeout_seconds" min="1" step="1" value="180" required></label>
+              <label>QQ 长回复合集门槛（字符数）<input type="number" name="group_forward_threshold" min="1" step="1" required></label>
+              <p class="hint">默认 400。单条回复超过此值时发成一张合集卡片。</p>
             </div>
-            <label>QQ 长回复合集门槛（字符数）<input type="number" name="group_forward_threshold" min="1" step="1" required></label>
-            <p class="hint">默认 400。单条回复超过此值时发成一张合集卡片。</p>
-            <div class="actions"><button type="submit">保存 A 设置</button></div>
+            <h3 class="group-title">故障通知与告警</h3>
+            <div class="setting-group">
+              <label>故障通知群<textarea name="incident_routes" rows="2" placeholder="示例：survival=onebot:GroupMessage:123456"></textarea></label>
+              <p class="hint">每行指定一个实例及通知群；留空只在 B 主机保存故障现场。</p>
+              <label>B 失联告警分钟数<input type="number" name="host_offline_alert_minutes" min="1" step="1" value="3" required></label>
+            </div>
+            <div class="panel-footer">
+              <div class="actions"><button type="submit">保存 A 设置</button></div>
+            </div>
           </div>
         </section>
       </form>
       <section id="servers" class="settings-section" aria-labelledby="servers-title">
         <header class="section-heading">
-          <h2 id="servers-title">服务端</h2>
-          <p>管理正式服、试服配置和每个实例的故障留证开关。</p>
+          <h2 id="servers-title">运行概览</h2>
+          <p>查看正式服、隔离试服与托管窗口状态，执行启停操作或刷新实时 Probe 指标。</p>
         </header>
         <div class="panel">
           <div class="toolbar"><button id="refresh-servers" type="button" class="secondary">刷新运行状态</button><button id="reload-host" type="button" class="secondary">立即重载 B 配置</button></div>
           <div id="server-runtime" class="data-list" aria-live="polite"></div>
-          <h3 class="subheading">服务端配置</h3>
+        </div>
+      </section>
+      <section id="server-configs" class="settings-section" aria-labelledby="server-configs-title">
+        <header class="section-heading">
+          <h2 id="server-configs-title">服务端配置</h2>
+          <p>管理正式服目录、说明、启停参数和健康告警。新实例需在 B 手工打开托管窗口；Java、编码或目录变更需停服并重开窗口。</p>
+        </header>
+        <div class="panel">
           <div class="actions">
             <button id="load-host" type="button" class="secondary">刷新 B 配置</button>
             <button id="add-instance" type="button" class="secondary">添加服务端</button>
           </div>
-          <p class="hint">新实例可以只填写配置名和服务端目录。托管窗口仍使用原来的 start.bat；Java、编码或目录变更需停服并重开托管窗口。</p>
           <p id="legacy-test-fields" class="hint" role="status" hidden></p>
           <div id="instances"></div>
-          <div class="actions"><button id="save-instances" type="button">保存服务端列表</button></div>
+          <div class="panel-footer">
+            <div class="actions"><button id="save-instances" type="button">保存服务端列表</button></div>
+          </div>
         </div>
       </section>
       <section id="host" class="settings-section" aria-labelledby="host-title">
@@ -157,7 +192,8 @@
           <p>适用于这台主机上的所有服务端。</p>
         </header>
         <div class="panel">
-          <div class="columns">
+          <h3 class="group-title">全局主机参数</h3>
+          <div class="setting-group">
             <label>PowerShell 7 路径<input id="powershell-path" placeholder="留空自动查找 pwsh.exe"></label>
             <label>存档工具 Java 21+ 路径<input id="world-java" placeholder="留空从 PATH 查找"></label>
             <label>辅助操作共享内存上限（MiB）<input id="operations-memory" type="number" min="64" step="1" value="8192"></label>
@@ -167,12 +203,15 @@
             <label>隔离试服工作区根目录<input id="host-workspace-dir" placeholder="留空使用 B data_dir/workspaces"></label>
             <label>单文件下载上限（字节）<input id="download-max-bytes" type="number" min="1" step="1" value="2147483648" aria-describedby="download-size-hint"></label>
           </div>
-          <div class="actions"><button id="save-host" type="button">保存主机设置</button></div>
           <p class="hint" id="download-size-hint"></p>
           <p class="hint">PowerShell 路径及辅助操作内存额度需重启 B。其他项目保存后生效。备份和试服目录必须与正式服目录分开；旧备份、已登记的备份计划及已有试服保留原路径。</p>
           <p class="hint" id="effective-storage-paths"></p>
-          <div class="actions"><button id="check-b-environment" type="button" class="secondary">刷新 B 环境</button></div>
-          <div id="host-environment" class="info-grid" aria-live="polite"></div>
+          <div class="actions"><button id="save-host" type="button">保存主机设置</button></div>
+          <div class="sub-block">
+            <h3 class="group-title">B 端运行环境</h3>
+            <div class="actions"><button id="check-b-environment" type="button" class="secondary">刷新 B 环境</button></div>
+            <div id="host-environment" class="info-grid" aria-live="polite"></div>
+          </div>
         </div>
       </section>
       <section id="maintenance" class="settings-section" aria-labelledby="maintenance-title">
@@ -193,13 +232,13 @@
       </section>
       <section id="incidents" class="settings-section" aria-labelledby="incidents-title">
         <header class="section-heading">
-          <h2 id="incidents-title">主动留证</h2>
-          <p>对已经开启留证的正式服生效；通知群在「群与通知」中配置。</p>
+          <h2 id="incidents-title">主动留证与告警</h2>
+          <p>管理留证窗口与容量，并查看各正式服事故、健康告警及 B 连接记录。</p>
         </header>
         <div class="panel">
-          <div class="toolbar"><button id="refresh-events" type="button" class="secondary">刷新事故与告警</button><select id="event-instance" aria-label="按事件实例筛选"><option value="">全部实例</option></select><label class="toggle"><input id="event-existing-only" type="checkbox">仅看现有实例</label><select id="event-kind" aria-label="按事件类型筛选"><option value="">全部类型</option><option value="exit">意外退出</option><option value="restart">连续启动失败</option><option value="unresponsive">卡死</option><option value="alert">健康告警</option><option value="schedule">定时维护</option></select></div><div id="events" class="data-list" aria-live="polite"></div><div id="connection-events" class="data-list" aria-live="polite"></div>
+          <h3>留证参数设置</h3>
           <form id="incident-settings" class="details-body">
-            <div class="columns">
+            <div class="setting-group">
               <label>启动失败统计窗口（秒）<input id="incident-restart-window" type="number" min="1" step="1" placeholder="120" aria-describedby="incident-window-hint"></label>
               <label>留证数据库上限（MiB）<input id="incident-capacity" type="number" min="64" max="4096" step="1" placeholder="256"></label>
             </div>
@@ -212,6 +251,12 @@
             </div>
           </form>
         </div>
+        <div class="panel">
+          <h3>事故与告警记录</h3>
+          <div class="toolbar"><button id="refresh-events" type="button" class="secondary">刷新事故与告警</button><select id="event-instance" aria-label="按事件实例筛选"><option value="">全部实例</option></select><label class="toggle"><input id="event-existing-only" type="checkbox">仅看现有实例</label><select id="event-kind" aria-label="按事件类型筛选"><option value="">全部类型</option><option value="exit">意外退出</option><option value="restart">连续启动失败</option><option value="unresponsive">卡死</option><option value="alert">健康告警</option><option value="schedule">定时维护</option></select></div>
+          <div id="events" class="data-list" aria-live="polite"></div>
+          <div id="connection-events" class="data-list" aria-live="polite"></div>
+        </div>
       </section>
       <section id="knowledge" class="settings-section" aria-labelledby="knowledge-title">
         <header class="section-heading"><h2 id="knowledge-title">经验知识库</h2><p>查看验收后归档的案例，补充人工经验并维护目录关联。</p></header>
@@ -219,18 +264,25 @@
           <div class="toolbar"><select id="knowledge-file" aria-label="经验文档"></select><button id="refresh-knowledge" type="button" class="secondary">刷新</button></div>
           <p id="knowledge-revision" class="hint"></p>
           <div id="knowledge-editor" hidden>
-            <div class="toolbar"><button id="toggle-knowledge-source" type="button" class="secondary">切换 Markdown 源码</button></div>
+            <div class="actions"><button id="toggle-knowledge-source" type="button" class="secondary">切换 Markdown 源码</button></div>
             <div id="knowledge-structured">
               <div class="toolbar"><input id="knowledge-filter" type="search" aria-label="筛选经验" placeholder="筛选标题、编号或正文"><button id="new-knowledge-case" type="button">新增人工经验</button></div>
               <div id="knowledge-cases" class="data-list"></div>
             </div>
-            <div id="knowledge-source" hidden><textarea id="knowledge-text" rows="18" spellcheck="false" aria-label="Markdown 正文"></textarea><button id="save-knowledge" type="button">保存 Markdown</button></div>
+            <div id="knowledge-source" hidden>
+              <textarea id="knowledge-text" rows="18" spellcheck="false" aria-label="Markdown 正文"></textarea>
+              <div class="actions"><button id="save-knowledge" type="button">保存 Markdown</button></div>
+            </div>
           </div>
         </div>
         <div class="panel" id="knowledge-links"></div>
         <details class="panel"><summary>高级：查看/编辑原始 index.md</summary>
           <div class="details-body">
             <div class="toolbar"><button id="load-knowledge-index" type="button" class="secondary">读取 index.md</button><button id="save-knowledge-index" type="button" disabled>保存 index.md</button></div>
+            <textarea id="knowledge-index-text" rows="12" spellcheck="false" aria-label="原始 index.md" disabled></textarea>
+          </div>
+        </details>
+      </section>
             <textarea id="knowledge-index-text" rows="12" spellcheck="false" aria-label="原始 index.md" disabled></textarea>
           </div>
         </details>
@@ -258,21 +310,22 @@
           <p>按需查看本地和 B 主机的文件大小与数量。扫描未完成时显示已统计的部分。</p>
         </header>
         <div class="panel">
-          <div class="actions"><button type="button" id="refresh-storage" class="secondary">统计占用</button></div>
-          <h3>A 端</h3>
-          <div id="storage-a" class="storage-report" aria-live="polite"></div>
-          <h3>B 端</h3>
-          <div id="storage-b" class="storage-report" aria-live="polite"></div>
-          <div class="actions"><button type="button" id="refresh-storage-detail" class="secondary">刷新备份、作业和暂存</button></div>
-          <div id="storage-detail" class="data-list" aria-live="polite"></div>
+          <h3>空间与后台详情</h3>
           <div class="actions">
+            <button type="button" id="refresh-storage" class="secondary">统计占用</button>
+            <button type="button" id="refresh-storage-detail" class="secondary">刷新备份、作业和暂存</button>
             <button type="button" data-vacuum="a" class="secondary">压缩 A 数据库</button>
             <button type="button" data-vacuum="b" class="secondary">压缩 B 数据库</button>
           </div>
+          <h4 class="group-title">A 端</h4>
+          <div id="storage-a" class="storage-report" aria-live="polite"></div>
+          <h4 class="group-title">B 端</h4>
+          <div id="storage-b" class="storage-report" aria-live="polite"></div>
+          <div id="storage-detail" class="data-list" aria-live="polite"></div>
         </div>
         <div class="panel">
           <h3>按月清理日志归档</h3>
-          <div class="columns">
+          <div class="setting-group">
             <label>位置<select id="logs-side"><option value="a">A 端</option><option value="b">B 端</option></select></label>
             <label>归档月份<select id="logs-month"></select></label>
           </div>
@@ -296,19 +349,21 @@
           <h3>清理已结束任务</h3>
           <p class="hint">按任务或结算天数选择，再预览类别及大小。A 端留痕、网页和发件记录会先归档；工作区、B 端文件和备份不会入包。</p>
           <div id="cleanup-selection">
-            <label>清理方式<select id="cleanup-mode"><option value="single">单个任务</option><option value="batch">按天数批量清理</option></select></label>
-            <label id="cleanup-task-label">已结算任务<select id="cleanup-task"><option value="">请先刷新任务</option></select></label>
-            <label id="cleanup-days-label" hidden>已结算超过多少天<input type="number" id="cleanup-days" min="1" step="1" value="30"></label>
-            <div class="columns">
-              <div>
-                <strong>A 端</strong>
+            <div class="setting-group">
+              <label>清理方式<select id="cleanup-mode"><option value="single">单个任务</option><option value="batch">按天数批量清理</option></select></label>
+              <label id="cleanup-task-label">已结算任务<select id="cleanup-task"><option value="">请先刷新任务</option></select></label>
+              <label id="cleanup-days-label" hidden>已结算超过多少天<input type="number" id="cleanup-days" min="1" step="1" value="30"></label>
+            </div>
+            <div class="check-columns">
+              <div class="check-group">
+                <h4 class="group-title">A 端数据</h4>
                 <label class="toggle"><input type="checkbox" value="traces">任务留痕</label>
                 <label class="toggle"><input type="checkbox" value="web_page">网页记录</label>
                 <label class="toggle"><input type="checkbox" value="workspace">工作区</label>
                 <label class="toggle"><input type="checkbox" value="outbox">已结算的发件记录</label>
               </div>
-              <div>
-                <strong>B 端</strong>
+              <div class="check-group">
+                <h4 class="group-title">B 端数据</h4>
                 <label class="toggle"><input type="checkbox" value="jobs">后台输出与产物</label>
                 <label class="toggle"><input type="checkbox" value="downloads">未被安装引用的暂存下载</label>
                 <label class="toggle"><input type="checkbox" value="backups">正式服备份（需单独确认）</label>
@@ -322,9 +377,14 @@
           </div>
           <p id="cleanup-result" class="hint" role="status"></p>
           <div id="cleanup-preview" class="storage-report"></div>
-          <label>自动清理已结算任务数据的天数（0 关闭）<input form="a-settings" type="number" name="auto_cleanup_days" min="0" step="1" value="0" required></label>
-          <p class="hint">开启后每天最多执行一次，保留备份，只写本地审计。</p>
-          <div class="actions"><button type="submit" form="a-settings">保存 A 设置</button></div>
+          <div class="sub-block">
+            <h4 class="group-title">自动清理策略</h4>
+            <div class="setting-group">
+              <label>自动清理已结算任务数据的天数（0 关闭）<input form="a-settings" type="number" name="auto_cleanup_days" min="0" step="1" value="0" required></label>
+              <p class="hint">开启后每天最多执行一次，保留备份，只写本地审计。</p>
+            </div>
+            <div class="actions"><button type="submit" form="a-settings">保存 A 设置</button></div>
+          </div>
         </div>
         <dialog id="cleanup-dialog" aria-labelledby="cleanup-title">
           <form method="dialog">
@@ -343,16 +403,20 @@
       <section id="diagnostics" class="settings-section" aria-labelledby="diagnostics-title">
         <header class="section-heading">
           <h2 id="diagnostics-title">诊断导出</h2>
-          <p id="outbox-status" aria-live="polite"></p>
-          <p>按时间和任务导出命令、模型、审核、工具及消息记录。B 离线时仍可导出 A 已保存的记录。</p>
+          <p>查看未送达的群消息，或按时间和任务导出完整记录。B 离线时仍可导出 A 已保存的记录。</p>
         </header>
         <div class="panel">
+          <h3>待发送队列（发件箱）</h3>
+          <p id="outbox-status" class="hint" aria-live="polite"></p>
           <div id="outbox-list"></div>
-          <div class="columns">
+        </div>
+        <div class="panel">
+          <h3>导出诊断 ZIP</h3>
+          <div class="setting-group">
             <label>开始时间<input id="diagnostics-start" type="datetime-local"></label>
             <label>结束时间<input id="diagnostics-end" type="datetime-local"></label>
+            <label>任务和只读问答（可多选，留空导出全部）<select id="diagnostics-tasks" multiple size="4"></select></label>
           </div>
-          <label>任务和只读问答（可多选，留空导出全部）<select id="diagnostics-tasks" multiple size="4"></select></label>
           <div class="actions">
             <button id="refresh-diagnostics" type="button" class="secondary">刷新任务与发件箱</button>
             <button id="export-diagnostics" type="button">导出 ZIP</button>

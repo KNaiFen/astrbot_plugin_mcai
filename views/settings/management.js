@@ -27,7 +27,21 @@ export function usageCells(row) {
     row.no_usage.toLocaleString(), row.cost.join('、') || '—',
   ];
 }
-export const usageColumns = ['请求', '输入 (tokens)', '输出 (tokens)', '缓存命中 (tokens)', '未返回用量', '估算费用'];
+export function usageTableCells(row) {
+  const cached = node('div', row.cached_tokens.toLocaleString());
+  if (row.cache_missing) cached.append(node('span', `${row.cache_missing.toLocaleString()} 次未提供`, 'cell-sub'));
+  const cost = row.cost.length ? node('div', null, 'cell-stack') : '—';
+  if (row.cost.length) for (const entry of row.cost) cost.append(node('div', entry));
+  return [
+    { value: row.requests.toLocaleString(), cls: 'num' },
+    { value: row.input_tokens.toLocaleString(), cls: 'num' },
+    { value: row.output_tokens.toLocaleString(), cls: 'num' },
+    { value: cached, cls: 'num' },
+    { value: row.no_usage.toLocaleString(), cls: 'num' },
+    { value: cost, cls: 'num nowrap' },
+  ];
+}
+export const usageColumns = ['请求', '输入', '输出', '缓存命中', '未返回', '估算费用'];
 
 function item(title, description, status) {
   const row = node('article', null, 'data-item');
@@ -62,6 +76,8 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
     return callback(area).catch(error => { area.textContent = `读取失败：${error.message}`; });
   };
   function modal(title, ...children) {
+    const opts = children[0] && !(children[0] instanceof Node) && typeof children[0] === 'object' ? children.shift() : {};
+    dialog.classList.toggle('wide', !!opts.wide);
     $('#management-dialog-title').textContent = title;
     dialogBody.replaceChildren(...children);
     $('#management-dialog-error').hidden = true;
@@ -73,9 +89,18 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
     dialogActions.prepend(run('确认', async () => { try { await callback(); dialog.close(); } catch (error) { dialogBody.querySelector('.modal-error')?.remove(); dialogBody.append(node('p', error.message, 'modal-error')); } }, 'primary'));
   }
   function usageDetails(name, usage) {
-    modal(`${name} · 模型用量`, storageTable('按阶段、提供商与模型统计',
-      ['阶段', '提供商', '模型', ...usageColumns],
-      usage.stages.map(row => [row.purpose, row.provider, row.model, ...usageCells(row)])));
+    const table = storageTable('', [
+      { text: '阶段', cls: 'nowrap' },
+      '提供商',
+      '模型',
+      ...usageColumns.map((text, idx) => ({ text, cls: idx === 5 ? 'num nowrap' : 'num' })),
+    ], usage.stages.map(row => [
+      { value: row.purpose, cls: 'nowrap strong-cell' },
+      { value: row.provider, cls: 'model-cell' },
+      { value: row.model, cls: 'model-cell' },
+      ...usageTableCells(row),
+    ]));
+    modal(`${name} · 模型用量`, { wide: true }, node('p', '按阶段、提供商与模型统计（用量单位：tokens）', 'hint'), table);
   }
 
   function renderProbe(area, result) {
@@ -119,11 +144,15 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
         }
         for (const trial of row.tests || []) {
           card.append(node('p', `隔离试服：${trial.task_name}（${trial.task_id}） · ${trial.address}:${trial.port} · 窗口${trial.window_online ? '在线' : '离线'}\n${trial.directory}`));
-          if (trial.can_close) card.append(run('关闭试服窗口', async () => {
-            await post('host', { action: 'close_test', task_id: trial.task_id, instance: row.instance, directory: row.canonical_directory });
-            await servers();
-            show('试服窗口已关闭，可打开其他任务的试服。');
-          }));
+          if (trial.can_close) {
+            const closeActions = node('div', null, 'data-actions');
+            closeActions.append(run('关闭试服窗口', async () => {
+              await post('host', { action: 'close_test', task_id: trial.task_id, instance: row.instance, directory: row.canonical_directory });
+              await servers();
+              show('试服窗口已关闭，可打开其他任务的试服。');
+            }));
+            card.append(closeActions);
+          }
         }
         const probe = node('p', '正在读取 Probe 状态…');
         const tracking = node('p', row.web_control ? `待核对：${row.web_control.id}` : '');
@@ -290,7 +319,7 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
   $('#task-filter').onchange = $('#task-search').onchange = () => tasks();
 
   function logReader(id, mode, attachment) {
-    const section = node('section');
+    const section = node('section', null, 'log-reader');
     const output = node('div', null, 'text-preview');
     let cursor = 0;
     const next = run(mode === 'file' ? '预览附件' : '读取控制台', async () => {
@@ -341,7 +370,9 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
           const filename = `${file.path.split('/').at(-1)}.gz`;
           const fields = node('div', null, 'info-grid');
           facts(fields, [['原文大小', diskSize(file.bytes)], ['SHA-256', file.sha256]]);
-          block.append(fields, run('下载 gzip', () => bridge.download('management/attachment', { id: entry.id, attachment: file.id }, filename)), logReader(entry.id, 'file', file.id));
+          const fileActions = node('div', null, 'data-actions');
+          fileActions.append(run('下载 gzip', () => bridge.download('management/attachment', { id: entry.id, attachment: file.id }, filename)));
+          block.append(fields, fileActions, logReader(entry.id, 'file', file.id));
         } else if (file.reason) block.append(node('p', file.reason));
         section.append(block);
       }
@@ -361,13 +392,17 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
       if (!data.active.length) area.append(node('p', '当前没有活跃健康告警。', 'hint'));
       for (const alert of data.active) {
         const row = item(`${alert.instance} · ${alertReasons[alert.reason] || alert.reason}`, `自 ${time(alert.since)} · ${alert.id}`, '活跃');
-        row.append(run('查看详情', () => eventDetail(alert))); area.append(row);
+        const detailActions = node('div', null, 'data-actions');
+        detailActions.append(run('查看详情', () => eventDetail(alert)));
+        row.append(detailActions); area.append(row);
       }
       area.append(node('h3', '事故与事件历史'));
       if (!data.items.length) area.append(node('p', '当前筛选没有事件。', 'hint'));
       for (const record of data.items) {
         const row = item(`${record.instance} · ${eventKinds[record.type || record.reason] || record.reason}`, `${time(record.time)} · ${record.summary}`, record.type === 'alert' ? record.recovered ? '已恢复' : '告警' : record.status);
-        row.append(run('查看详情', () => eventDetail(record))); area.append(row);
+        const detailActions = node('div', null, 'data-actions');
+        detailActions.append(run('查看详情', () => eventDetail(record)));
+        row.append(detailActions); area.append(row);
       }
       const pager = node('div', null, 'data-actions');
       if (cursors.length) pager.append(run('上一页', () => events(cursors.slice(0, -1))));
@@ -417,7 +452,9 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
     const buttonNew = button('新建服务端关联', () => associationEditor('create_server_doc', null, data.index_revision));
     buttonNew.disabled = !!data.index_error;
     const associations = $('#knowledge-links');
-    associations.replaceChildren(node('h3', '目录关联管理'), buttonNew);
+    const topActions = node('div', null, 'actions');
+    topActions.append(buttonNew);
+    associations.replaceChildren(node('h3', '目录关联管理'), topActions);
     if (data.index_error) associations.append(node('p', data.index_error, 'modal-error'));
     const rows = data.items.flatMap(row => {
       const directories = data.entries.filter(entry => entry.file === row.file).map(entry => entry.directory);
@@ -571,18 +608,22 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
       for (const row of data.backups) {
         const label = row.schedule_id ? `定时计划备份 · 计划 ${row.schedule_id}` : '修复备份';
         const card = item(`${row.instance || '—'} · ${label}`, `${time(row.time)} · ${row.operation_id}`);
-        card.append(run('查看覆盖范围', async () => {
+        const cardActions = node('div', null, 'data-actions');
+        cardActions.append(run('查看覆盖范围', async () => {
           const manifest = await hostApi('backup', { id: row.operation_id });
           modal('备份覆盖范围', node('p', row.path), detail(manifest.files));
         }));
+        card.append(cardActions);
         area.append(card);
       }
       area.append(node('h3', '当前及最近后台作业'));
       if (!data.jobs.length) area.append(node('p', '没有后台作业。'));
       for (const row of data.jobs) {
         const card = item(`${row.instance} · ${row.kind}`, `${row.id} · 任务 ${row.task_id}\n${time(row.created)}${row.error ? ` · ${row.error}` : ''}`, row.status);
-        card.append(button('详情', () => modal('作业状态', detail(row))));
-        if (['running', 'pending'].includes(row.status)) card.append(button('取消作业', () => confirm('取消后台作业', `${row.instance} · ${row.id}`, async () => { await post('host', { action: 'job_cancel', id: row.id }); await storage(); })));
+        const cardActions = node('div', null, 'data-actions');
+        cardActions.append(button('详情', () => modal('作业状态', detail(row))));
+        if (['running', 'pending'].includes(row.status)) cardActions.append(button('取消作业', () => confirm('取消后台作业', `${row.instance} · ${row.id}`, async () => { await post('host', { action: 'job_cancel', id: row.id }); await storage(); })));
+        card.append(cardActions);
         area.append(card);
       }
       area.append(node('h3', '暂存下载'));
@@ -601,7 +642,8 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
     if (opened.has(hash)) return;
     opened.add(hash);
     const run = {
-      '#servers': () => Promise.all([servers(), ensureHost()]),
+      '#servers': servers,
+      '#server-configs': ensureHost,
       '#connection': () => environment('a'),
       '#host': () => Promise.all([ensureHost(), environment('b')]),
       '#maintenance': schedules,

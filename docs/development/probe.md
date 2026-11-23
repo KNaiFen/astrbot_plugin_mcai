@@ -18,7 +18,7 @@
 
 spark API仅作编译依赖。构建脚本通过同一代理下载官方仓库的固定快照`0.1-20260912.112908-2`，SHA-256为`e4856b0d2ba56db652ca340821a5b40ad0bdd192cf77707ba0f4557eeb5cb63d`，缓存在`runtime/probe-build/`并在每次构建校验；不把API JAR嵌入MOD。直接调用Gradle前先运行构建脚本准备依赖。来源和许可记录在Probe的NOTICE。
 
-Forge1.21.1使用官方运行时映射，关闭reobf并移除SRG refmap；开发环境让metadata与classes共用目录，固定jopt-simple5.0.4。MixinExtras common仅用于编译／注解处理，loader组件嵌入JAR，避免Java21重复模块。安装版验证实际映射和Jar-in-Jar；Forge52.0.28实测停服后仍遗留上游非daemon线程，本轮固定52.1.2完成正常退出验收。
+Forge1.21.1使用官方运行时映射，关闭reobf并移除SRG refmap；开发环境让metadata与classes共用目录，固定jopt-simple5.0.4。MixinExtras common仅用于编译／注解处理，loader组件嵌入JAR，避免Java21重复模块。安装版验证实际映射和Jar-in-Jar；Forge 52.0.28 曾在停服后遗留上游非 daemon 线程，构建基线 52.1.2 已通过正常退出验收。
 
 ## 可重复验证
 
@@ -39,7 +39,7 @@ npm install --prefix runtime/probe-client --proxy=http://127.0.0.1:7890 --no-aud
 .\.venv\Scripts\python.exe scripts/test_probe_servers.py --installed --player
 ```
 
-模拟玩家不需要外部客户端或FML握手，可直接在隔离服验证（`forge1710` 已合并进 `test_probe_servers.py`）：
+模拟玩家不需要外部客户端或 FML 握手。无目标参数的 `test_probe_servers.py` 运行七个较新的目标；需显式指定 `forge1710` 才验证 1.7.10：
 
 ```powershell
 .\.venv\Scripts\python.exe scripts/test_probe_servers.py --installed --fake-player

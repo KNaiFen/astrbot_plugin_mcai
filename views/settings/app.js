@@ -1,4 +1,4 @@
-import { createManagement, pendingConfiguration, usageCells, usageColumns } from './management.js';
+import { createManagement, pendingConfiguration, usageColumns, usageTableCells } from './management.js';
 import { styleSettings, button, node, setupEditors } from './controls.js';
 
 const bridge = window.AstrBotPluginView;
@@ -110,9 +110,12 @@ form.addEventListener('submit', event => { event.preventDefault(); action(event.
   await loadModelUsage();
 }); });
 document.querySelector('#connection-test').onclick = function () { action(this, async () => { const result = await api('POST', 'connection/test', values()); show(`连接成功，B 配置了 ${result.instances} 个服务端。`); }); };
-function field(container, label, value, key) {
+function field(container, label, value, key, placeholder = '') {
   const wrapper = document.createElement('label'); wrapper.append(document.createTextNode(label));
-  const input = document.createElement('input'); input.type = key === 'stop_timeout' ? 'number' : 'text'; input.value = value ?? ''; input.dataset.key = key; wrapper.append(input); container.append(wrapper); return input;
+  const input = document.createElement('input'); input.type = key === 'stop_timeout' ? 'number' : 'text';
+  if (key === 'stop_timeout') input.min = '1';
+  if (placeholder) input.placeholder = placeholder;
+  input.value = value ?? ''; input.dataset.key = key; wrapper.append(input); container.append(wrapper); return input;
 }
 const instanceAlerts = {
   alert_window: ['托管窗口掉线告警', true],
@@ -120,47 +123,79 @@ const instanceAlerts = {
   alert_disk: ['磁盘空间告警', true],
   alert_disk_gib: ['磁盘剩余阈值（GiB）', 10],
   alert_performance: ['Probe 性能告警', false],
-  alert_mspt: ['平均 MSPT 阈值（毫秒）', 50],
+  alert_mspt: ['瓶颈 MSPT 阈值（毫秒）', 50],
   alert_performance_minutes: ['性能持续偏低分钟数', 3],
 };
+const newInstanceDefaults = {
+  stop_timeout: 180,
+  incident_watch: true,
+  alert_window: false,
+  alert_window_minutes: 3,
+  alert_disk: false,
+  alert_disk_gib: 10,
+  alert_performance: false,
+  alert_mspt: 66,
+  alert_performance_minutes: 3,
+};
 function instance(name = '', config = {}, state = {}) {
+  const isNew = !name;
+  const effective = isNew ? { ...newInstanceDefaults, ...config } : config;
   const card = document.createElement('article'); card.className = 'instance';
+  if (isNew) card.dataset.isNew = '1';
   const heading = document.createElement('header'), identity = document.createElement('div');
-  heading.className = 'instance-heading';
-  const title = document.createElement('strong'), status = document.createElement('span'), remove = document.createElement('button');
-  title.textContent = name || '新服务端';
+  heading.className = 'instance-heading'; identity.className = 'instance-identity';
+  const title = node('strong', name || '新服务端', 'instance-title'), status = document.createElement('span'), remove = document.createElement('button');
   status.className = 'instance-state';
-  status.textContent = !name ? '未保存' : state.state_unknown ? '状态待确认' : state.running ? '运行中' : '已停服';
-  if (name && !state.window_online) status.textContent += ' · 无托管连接';
+  status.textContent = isNew ? '未保存' : state.state_unknown ? '状态待确认' : state.running ? '运行中' : '已停服';
+  if (!isNew && !state.window_online) status.textContent += ' · 无托管连接';
   if (state.configuration_pending) status.textContent += ` · ${pendingConfiguration(state)}`;
   if (state.selectable === false) status.textContent += ' · 待移除';
   status.classList.toggle('running', !!state.running && !state.state_unknown);
   remove.type = 'button'; remove.className = 'quiet'; remove.textContent = '移除配置'; remove.onclick = () => card.remove();
   identity.append(title, status); heading.append(identity, remove); card.append(heading);
-  const basics = document.createElement('div'); basics.className = 'columns'; card.append(basics);
-  field(basics, '配置名', name, 'name'); field(basics, '说明／群内叫法', config.description, 'description');
-  field(card, '服务端目录（其中使用 start.bat）', config.directory, 'directory');
-  const advanced = document.createElement('details'), summary = document.createElement('summary');
-  const body = document.createElement('div'), options = document.createElement('div');
-  summary.textContent = '高级选项'; body.className = 'details-body'; options.className = 'columns';
-  advanced.append(summary, body); body.append(options);
-  for (const [key, label] of Object.entries({ java_path: '实例 Java 路径（可选）', encoding: 'BAT 编码（默认 auto）', stop_timeout: '停服超时秒（默认 120）', stop_command: 'MC 停服命令（默认 stop）', restart_prompt: '自动重启提示（默认约定提示）' })) field(options, label, config[key], key);
+  const instanceBody = node('div', null, 'instance-body');
+  const basics = node('div', null, 'setting-group');
+  field(basics, '配置名', name, 'name', '英文或简短标识，如 cti');
+  field(basics, '说明／群内叫法', effective.description, 'description', '如 主城生存服');
+  field(basics, '服务端目录（其中使用 start.bat）', effective.directory, 'directory', 'B 主机上的绝对路径');
+  instanceBody.append(basics);
+  const advanced = node('details', null, 'instance-advanced'), summary = document.createElement('summary');
+  const body = node('div', null, 'advanced-body');
+  summary.textContent = '高级选项';
+  advanced.append(summary, body);
+  body.append(node('h4', '启动与停服', 'group-title'));
+  const startupGroup = node('div', null, 'setting-group');
+  for (const [key, label, placeholder] of [
+    ['java_path', '实例 Java 路径（可选）', '留空继承系统环境'],
+    ['encoding', 'BAT 编码（默认 auto）', 'auto'],
+    ['stop_timeout', '停服超时秒（留空默认 120）', '120'],
+    ['stop_command', 'MC 停服命令（默认 stop）', 'stop'],
+    ['restart_prompt', '自动重启提示（默认约定提示）', '留空使用默认提示'],
+  ]) field(startupGroup, label, effective[key], key, placeholder);
+  body.append(startupGroup);
+  body.append(node('h4', '试服与故障留证', 'group-title'));
+  const trialGroup = node('div', null, 'setting-group');
   const paths = document.createElement('label'); paths.append('试服复制清单（每行一个相对路径）');
-  const list = document.createElement('textarea'); list.dataset.key = 'test_copy_paths'; list.value = (config.test_copy_paths ?? []).join('\n'); paths.append(list); body.append(paths);
+  const list = document.createElement('textarea'); list.dataset.key = 'test_copy_paths'; list.value = (effective.test_copy_paths ?? []).join('\n'); paths.append(list);
   const watch = document.createElement('label'); watch.className = 'toggle';
-  const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.dataset.key = 'incident_watch'; toggle.checked = config.incident_watch ?? false; watch.append(toggle, '主动保留故障现场'); body.append(watch);
-  const alerts = document.createElement('div'); alerts.className = 'columns';
+  const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.dataset.key = 'incident_watch'; toggle.checked = effective.incident_watch ?? false; watch.append(toggle, '主动保留故障现场');
+  trialGroup.append(paths, watch);
+  body.append(trialGroup);
+  body.append(node('h4', '健康告警', 'group-title'));
+  const alerts = node('div', null, 'setting-group');
   for (const [key, [label, initial]] of Object.entries(instanceAlerts)) {
-    const input = field(alerts, label, config[key] ?? initial, key);
+    const current = effective[key] ?? initial;
+    const input = field(alerts, label, current, key);
     if (typeof initial === 'boolean') {
-      input.type = 'checkbox'; input.checked = config[key] ?? initial;
+      input.type = 'checkbox'; input.checked = current;
       input.parentElement.className = 'toggle'; input.parentElement.prepend(input);
     } else {
       input.type = 'number'; input.step = 'any';
     }
   }
   body.append(alerts);
-  card.append(advanced);
+  instanceBody.append(advanced);
+  card.append(instanceBody);
   styleSettings(card);
   setupEditors(card);
   document.querySelector('#instances').append(card);
@@ -168,7 +203,7 @@ function instance(name = '', config = {}, state = {}) {
 async function loadHost() {
   host = await api('GET', 'host'); document.querySelector('#instances').replaceChildren();
   for (const [name, config] of Object.entries(host.instances)) instance(name, config, host.state.find(item => item.instance === name));
-  for (const state of host.state.filter(item => item.selectable === false)) { const p = document.createElement('p'); p.textContent = `${state.instance}：待移除，当前进程与操作仍可管理。`; document.querySelector('#instances').append(p); }
+  for (const state of host.state.filter(item => item.selectable === false)) { const p = node('p', `${state.instance}：待移除，当前进程与操作仍可管理。`, 'hint'); document.querySelector('#instances').append(p); }
   document.querySelector('#powershell-path').value = host.powershell_path; document.querySelector('#world-java').value = host.world_tools.java_path ?? ''; document.querySelector('#operations-memory').value = host.operations_memory_limit_mib ?? 8192; document.querySelector('#scheduled-backup-dir').value = host.scheduled_backup_dir ?? ''; document.querySelector('#host-workspace-dir').value = host.workspace_dir ?? ''; document.querySelector('#download-max-bytes').value = host.download_max_bytes;
   document.querySelector('#host-test-address').value = host.test_address ?? '';
   document.querySelector('#host-test-port').value = host.test_port ?? '';
@@ -193,7 +228,7 @@ document.querySelector('#save-instances').onclick = function () {
         if (!key) continue;
         if (key === 'name') name = input.value.trim();
         else if (key === 'incident_watch') { if (input.checked) config[key] = true; }
-        else if (key in instanceAlerts) config[key] = input.type === 'checkbox' ? input.checked : Number(input.value || instanceAlerts[key][1]);
+        else if (key in instanceAlerts) config[key] = input.type === 'checkbox' ? input.checked : Number(input.value || (card.dataset.isNew && key in newInstanceDefaults ? newInstanceDefaults[key] : instanceAlerts[key][1]));
         else if (key === 'test_copy_paths') { if (input.value.trim()) config[key] = input.value.split(/\r?\n/).map(item => item.trim()).filter(Boolean); }
         else if (input.value.trim()) config[key] = input.type === 'number' ? Number(input.value) : input.value;
       }
@@ -367,7 +402,9 @@ async function loadDiagnostics() {
       }, { once: true });
       dialog.showModal();
     };
-    rows[index].cells[7].append(retry, discard);
+    const rowActions = node('div', null, 'data-actions');
+    rowActions.append(retry, discard);
+    rows[index].cells[7].append(rowActions);
   }
   outbox.replaceChildren(table);
   select.replaceChildren();
@@ -392,17 +429,24 @@ function diskSize(bytes) {
 function storageTable(title, columns, rows) {
   const block = document.createElement('div'); block.className = 'storage-table';
   const table = document.createElement('table'); block.append(table);
-  table.createCaption().textContent = title;
+  if (title) table.createCaption().textContent = title;
   const header = table.createTHead().insertRow();
   for (const column of columns) {
-    const cell = document.createElement('th'); cell.scope = 'col'; cell.textContent = column;
+    const cell = document.createElement('th'); cell.scope = 'col';
+    if (typeof column === 'object' && column !== null) {
+      cell.textContent = column.text;
+      if (column.cls) cell.className = column.cls;
+    } else cell.textContent = column;
     header.append(cell);
   }
   const body = table.createTBody();
   for (const values of rows.length ? rows : [['暂无记录']]) {
     const row = body.insertRow();
-    for (const value of values) {
+    for (const item of values) {
       const cell = row.insertCell();
+      const shaped = item && typeof item === 'object' && !(item instanceof Node);
+      const value = shaped ? item.value : item;
+      if (shaped && item.cls) cell.className = item.cls;
       if (value instanceof Node) cell.append(value);
       else cell.textContent = value;
     }
@@ -458,26 +502,51 @@ async function loadModelUsage() {
   scope.setAttribute('aria-label', '任务展示范围');
   search.value = container.querySelector('input')?.value || '';
   scope.value = container.querySelector('select')?.value || 'top';
-  const taskTable = node('div');
+  const taskSection = node('div', null, 'usage-tasks');
+  const usageHeadings = usageColumns.map((text, idx) => ({ text, cls: idx === 5 ? 'num nowrap' : 'num' }));
   const render = () => {
     const query = search.value.trim().toLowerCase();
     const match = tasks.filter(row => `${row.name} ${row.id} ${row.group} ${row.state}`.toLowerCase().includes(query));
-    taskTable.replaceChildren(storageTable(`任务用量 · 匹配 ${match.length.toLocaleString()} 项`,
-      ['任务', '群', '状态', '审核请求', ...usageColumns, '阶段'],
-      (scope.value === 'top' ? match.slice(0, 10) : match).map(row => [
-        row.name, row.group, row.state, row.review_requests.toLocaleString(), ...usageCells(row),
-        button('阶段明细', () => management.usageDetails(row.name, row)),
-      ])));
+    const table = storageTable('', [
+      '任务',
+      { text: '群', cls: 'nowrap num' },
+      { text: '状态', cls: 'nowrap' },
+      { text: '请求', cls: 'num' },
+      { text: '审核', cls: 'num' },
+      ...usageHeadings.slice(1),
+      { text: '操作', cls: 'nowrap' },
+    ], (scope.value === 'top' ? match.slice(0, 10) : match).map(row => [
+      { value: row.name, cls: 'task-cell strong-cell' },
+      { value: row.group, cls: 'nowrap num' },
+      { value: node('span', storageStates[row.state] ?? row.state, 'badge'), cls: 'nowrap' },
+      { value: row.requests.toLocaleString(), cls: 'num' },
+      { value: row.review_requests.toLocaleString(), cls: 'num' },
+      ...usageTableCells(row).slice(1),
+      { value: button('阶段明细', () => management.usageDetails(row.name, row)), cls: 'nowrap' },
+    ]));
+    taskSection.replaceChildren(node('h4', `任务用量 · 匹配 ${match.length.toLocaleString()} 项`, 'group-title'), toolbar, table);
   };
   search.oninput = scope.onchange = render;
   const toolbar = node('div', null, 'toolbar');
   toolbar.append(search, scope);
-  const byDay = node('details');
+  const byDay = node('details', null, 'instance-advanced');
   byDay.append(node('summary', '按天与模型查看'),
-    storageTable('最近 30 天用量', ['日期', '提供商', '模型', ...usageColumns], daily.map(row => [row.date, row.provider, row.model, ...usageCells(row)])));
-  container.replaceChildren(storageTable('最近 30 天用量汇总', ['范围', ...usageColumns], [
-    ['全部请求', ...usageCells(daily_summary)], ['非任务请求', ...usageCells(non_task_summary)],
-  ]), node('p', '用量单位为 tokens；1 K = 1,000，1 M = 1,000,000。', 'hint'), byDay, toolbar, taskTable);
+    storageTable('', [{ text: '日期', cls: 'nowrap' }, '提供商', '模型', ...usageHeadings], daily.map(row => [
+      { value: row.date, cls: 'nowrap' },
+      { value: row.provider, cls: 'model-cell' },
+      { value: row.model, cls: 'model-cell' },
+      ...usageTableCells(row),
+    ])));
+  container.replaceChildren(
+    node('h4', '最近 30 天用量汇总', 'group-title'),
+    storageTable('', ['范围', ...usageHeadings], [
+      [{ value: '全部请求', cls: 'strong-cell nowrap' }, ...usageTableCells(daily_summary)],
+      [{ value: '非任务请求', cls: 'strong-cell nowrap' }, ...usageTableCells(non_task_summary)],
+    ]),
+    node('p', '用量单位为 tokens；1 K = 1,000，1 M = 1,000,000。', 'hint'),
+    byDay,
+    taskSection,
+  );
   render();
 }
 document.querySelector('#refresh-model-usage').onclick = function () { action(this, loadModelUsage); };
