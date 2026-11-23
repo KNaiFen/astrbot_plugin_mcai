@@ -54,7 +54,7 @@ from .plans import plan_identity, plan_text
 from .review import digest
 from .runtime_rules import change_rule, rules_status
 from .storage_usage import STORAGE_TIMEOUT, a_storage
-from .tasks import occupies_instance
+from .tasks import SERVER_ACTIONS, occupies_instance
 from .tracing import export_cleanup, export_diagnostics
 
 
@@ -675,68 +675,22 @@ class Settings:
                 payload.update(instance=body["instance"], spec=body["spec"])
             async with asyncio.timeout(9):
                 return await self.maintenance_request("POST", path, json=payload)
-        if action not in ("start", "stop", "restart", "control_status"):
+        if action not in SERVER_ACTIONS and action != "control_status":
             raise ValueError("未知的正式服管理动作")
-        async with tasks.create_lock, asyncio.timeout(12):
-            directory, name = body["directory"], body["instance"]
+        directory, name = body["directory"], body["instance"]
+        try:
             if action == "control_status":
-                control = store.get("web_control", directory)
-                if control is None or control["instance"] != name:
-                    raise ValueError("没有待核对的网页启停操作")
-                return await tasks.web_control_status(control, seal=True)
-            rows = await self.maintenance_request("GET", "/instances")
-            if not any(
-                row["instance"] == name and row["canonical_directory"] == directory
-                for row in rows
-            ):
-                raise ValueError("实例目录已变化，请刷新后重试")
-            if any(
-                job.get("directory") == directory and occupies_instance(job)
-                for job in tasks.jobs.values()
-            ):
-                raise ValueError("实例已有活动群任务，请前往任务看板处理")
-            if previous := store.get("web_control", directory):
-                result = await tasks.web_control_status(previous)
-                if result is None or result["status"] in ("pending", "running"):
-                    raise ValueError("存在待核对的网页启停操作，请先刷新原编号")
-            origin = await self.maintenance_request(
-                "GET", "/instances?operation_store=1"
+                async with tasks.create_lock, asyncio.timeout(12):
+                    control = store.get("web_control", directory)
+                    if control is None or control["instance"] != name:
+                        raise ValueError("没有待核对的启停操作")
+                    return await tasks.web_control_status(control, seal=True)
+            result, _ = await tasks.control_instance(
+                name, action, sender, directory=directory
             )
-            key = uuid.uuid4().hex
-            control = {
-                "id": key,
-                "store": origin["operation_store"],
-                "directory": directory,
-                "instance": name,
-                "action": action,
-                "sender": sender,
-            }
-            store.log("web_instance_control", **control)
-            store.save("web_control", directory, control)
-            try:
-                return await self.maintenance_request(
-                    "POST",
-                    f"/operations/{key}",
-                    params={"operation_store": control["store"]},
-                    json={
-                        "instance": name,
-                        "task_id": "web",
-                        "action": "apply_plan",
-                        "arguments": {
-                            "expected_directory": directory,
-                            "steps": [{"action": action}],
-                            "web_operator": sender,
-                        },
-                    },
-                )
-            except RemoteError as exc:
-                if str(exc).startswith("HTTP 400:"):
-                    with store.db:
-                        store.db.execute(
-                            "DELETE FROM records WHERE kind='web_control' AND id=?",
-                            (directory,),
-                        )
-                raise
+            return result
+        except aiohttp.ClientError as exc:
+            raise ValueError("未收到 B 的维护响应，请检查连接及 B 审计日志") from exc
 
     async def manage_tasks(self):
         sender = self.web_sender()

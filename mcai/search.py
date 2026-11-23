@@ -101,7 +101,9 @@ async def task_search(tasks, job, provider, arguments, call_id):
     return result
 
 
-def render_citations(store, task, text):
+def render_citations(store, task, text, *, progress=False):
+    if progress:
+        return re.sub(r"[^]*", "", text)
     if "cite" not in text:
         return text
     sources = (store.get("search_session", task) or {}).get("sources", {})

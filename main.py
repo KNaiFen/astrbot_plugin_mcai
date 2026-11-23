@@ -18,7 +18,7 @@ from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 from .mcai.astrbot_agent import AstrBotAgent
 from .mcai.attachments import message_attachments, receive_attachments, recognize_image
 from .mcai.client import HostClient, RemoteError
-from .mcai.configuration import incident_routes, powershell_path
+from .mcai.configuration import allowed_group_ids, incident_routes, powershell_path
 from .mcai.downloads import Downloads
 from .mcai.jobs import Jobs
 from .mcai.memory_job import MemoryJob
@@ -29,7 +29,13 @@ from .mcai.plans import approval_command, plan_text, schedule_time
 from .mcai.readonly import answer_question, server_status
 from .mcai.runtime_rules import install_rules
 from .mcai.storage import Store
-from .mcai.tasks import Tasks, occupies_instance, space_commands
+from .mcai.tasks import (
+    FORCE_ACTIONS,
+    SERVER_ACTIONS,
+    Tasks,
+    occupies_instance,
+    space_commands,
+)
 from .mcai.tracing import trace_event
 from .mcai.workspace import Workspace
 
@@ -47,6 +53,7 @@ COMMANDS = {
     "mcaiplan",
     "mcaipause",
     "mcaiserver",
+    "mcaiswitch",
     "mcaiask",
     "mcaischedule",
 }
@@ -81,6 +88,7 @@ HELP_TEXT = (
     "• 管理定时计划（管理员）： “/mcaischedule pause|resume|delete 编号” （编号从 list 获取）\n"
     "\n"
     "【审批与任务控制（仅管理员）】\n"
+    "• 直接启停正式服：“/mcaiswitch 实例ID start|stop|restart|forcestop|forcerestart [confirm]” （强制动作先不带 confirm，按提示确认；实例 ID 用 “/mcaiserver” 查询）。\n"
     "• 批准待执行方案： “/mcaiapply 任务名 短码” （例： “/mcaiapply 主城卡顿 9F2A7C” ）\n"
     "• 暂停任务进度： “/mcaipause 任务名” （保留服务端占用与进度）\n"
     "• 续接暂停任务： “/mcairesume 任务名” （会一并读取暂停期间保存的补充）\n"
@@ -273,10 +281,76 @@ class MCAI(Star):
     async def on_astrbot_loaded(self):
         await self.tasks.start()
 
-    async def ask(self, event, identity, question):
+    async def acknowledge_ask(self, event, identity):
+        platform = event.get_platform_name()
+        try:
+            async with asyncio.timeout(3):
+                if platform == "aiocqhttp":
+                    message_obj = getattr(event, "message_obj", None)
+                    message_id = getattr(message_obj, "message_id", None)
+                    if not message_id:
+                        return
+                    bot = getattr(event, "bot", None)
+                    if bot is None:
+                        adapter = self.context.get_platform_inst(
+                            event.get_platform_id()
+                        )
+                        bot = adapter.get_client() if adapter else None
+                    if bot is None:
+                        return
+                    api_message_id = (
+                        int(message_id)
+                        if isinstance(message_id, str) and message_id.isdigit()
+                        else message_id
+                    )
+                    self_id = getattr(message_obj, "self_id", None)
+                    routing = {"self_id": self_id} if self_id else {}
+                    try:
+                        await bot.call_action(
+                            "set_msg_emoji_like",
+                            message_id=api_message_id,
+                            emoji_id="124",
+                            set=True,
+                            **routing,
+                        )
+                    except Exception:
+                        group_id = event.get_group_id()
+                        if not group_id:
+                            raise
+                        api_group_id = (
+                            int(group_id)
+                            if isinstance(group_id, str) and group_id.isdigit()
+                            else group_id
+                        )
+                        await bot.call_action(
+                            "set_group_reaction",
+                            group_id=api_group_id,
+                            message_id=api_message_id,
+                            code="124",
+                            is_add=True,
+                            **routing,
+                        )
+                elif platform in ("telegram", "discord"):
+                    await event.react("👌")
+                elif platform == "lark":
+                    await event.react("OK")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            trace_event(
+                self.store,
+                "ask_ack_failed",
+                task=identity,
+                platform=platform,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+    async def ask(self, event, identity, question, *, is_admin=False):
         sender = event.get_sender_id()
         current = self.tasks.client
         client = HostClient(current.url, current.token, current.fingerprint)
+        ack_task = asyncio.create_task(self.acknowledge_ask(event, identity))
+        cancelled = False
         try:
             answer = await answer_question(
                 self.tasks,
@@ -284,6 +358,7 @@ class MCAI(Star):
                 event,
                 identity,
                 question,
+                is_admin=is_admin,
                 max_steps=self.config.get("ask_max_steps"),
                 timeout_seconds=self.config.get("ask_timeout_seconds"),
             )
@@ -301,7 +376,15 @@ class MCAI(Star):
                     "sent": False,
                 },
             )
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
         finally:
+            if not ack_task.done() and not cancelled:
+                await asyncio.wait({ack_task}, timeout=2)
+            if not ack_task.done():
+                ack_task.cancel()
+            await asyncio.gather(ack_task, return_exceptions=True)
             await client.close()
             self.ask_workers.pop(sender, None)
 
@@ -569,6 +652,20 @@ class MCAI(Star):
 
         return await receive_attachments(workspace, task, attachments, recognize)
 
+    def _group_allowed(self, event: AstrMessageEvent, group: str, trace: dict) -> bool:
+        allowed = allowed_group_ids(self.config.get("group_ids"))
+        if allowed and group not in allowed:
+            trace_event(
+                self.store,
+                "command_result",
+                **trace,
+                status="rejected",
+                reason="群不在允许范围",
+            )
+            event.stop_event()
+            return False
+        return True
+
     @filter.command("mcaihelp", alias=COMMANDS - {"mcaihelp"}, priority=100)
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=100)
     async def commands(self, event: AstrMessageEvent):
@@ -604,17 +701,7 @@ class MCAI(Star):
         if command == "mcaiask":
             trace["task"] = "ask-" + trace["event_id"]
         trace_event(self.store, "plugin_command", **trace)
-        if self.config.get("group_ids") and group not in {
-            str(item) for item in self.config["group_ids"]
-        }:
-            trace_event(
-                self.store,
-                "command_result",
-                **trace,
-                status="rejected",
-                reason="群不在允许范围",
-            )
-            event.stop_event()
+        if not self._group_allowed(event, group, trace):
             return
         status = "handled"
         send = event.send
@@ -707,6 +794,51 @@ class MCAI(Star):
                 for part in (text,) if onebot else message_parts(text):
                     yield reply(part)
                 return
+            if command == "mcaiswitch":
+                parts = tail.split()
+                if (
+                    len(parts) not in (2, 3)
+                    or parts[1] not in SERVER_ACTIONS
+                    or (
+                        len(parts) == 3
+                        and (parts[1] not in FORCE_ACTIONS or parts[2] != "confirm")
+                    )
+                ):
+                    raise ValueError(
+                        "用法：“/mcaiswitch 实例ID start|stop|restart|forcestop|forcerestart [confirm]” 。"
+                        "请用 “/mcaiserver” 查询实例 ID。"
+                    )
+                name, action = parts[:2]
+                try:
+                    result, control = await self.tasks.control_instance(
+                        name,
+                        action,
+                        f"qq:{sender}",
+                        origin=event.unified_msg_origin,
+                        mention=sender,
+                        confirm=len(parts) == 3,
+                    )
+                except (aiohttp.ClientError, TimeoutError, RemoteError) as exc:
+                    raise ValueError(
+                        f"无法读取 B 的启停状态：{str(exc) or type(exc).__name__}"
+                    ) from exc
+                if control is None:
+                    target = (
+                        "Java" if result["target"] == "java" else "start.bat 启动链"
+                    )
+                    yield reply(
+                        f"{name} 将{SERVER_ACTIONS[action]}：{target} PID {result['pid']}。"
+                        "强制结束可能丢失未保存的数据。"
+                        f"确认后请在 120 秒内发送 “/mcaiswitch {name} {action} confirm” 。"
+                    )
+                    return
+                try:
+                    yield reply(
+                        f"{name} {SERVER_ACTIONS[action]}已提交（操作编号 {control['id']}），正在执行…"
+                    )
+                finally:
+                    self.tasks.observe_control_later(control)
+                return
             if command == "mcaiask":
                 if not is_admin and not self.config.get("allow_member_ask", False):
                     raise ValueError("该指令仅管理员可用。")
@@ -735,7 +867,7 @@ class MCAI(Star):
                     {"id": identity, "name": tail.splitlines()[0][:60], "group": group},
                 )
                 self.ask_workers[sender] = asyncio.create_task(
-                    self.ask(event, identity, tail.strip())
+                    self.ask(event, identity, tail.strip(), is_admin=is_admin)
                 )
                 return
             if command == "mcailist":
@@ -762,7 +894,27 @@ class MCAI(Star):
                 quoted = [
                     part for part in event.get_messages() if isinstance(part, Reply)
                 ]
-                report = (quoted[0].message_str or "") if quoted else ""
+                quoted_text = (quoted[0].message_str or "") if quoted else ""
+                quoted_origin = None
+                if quoted and quoted_text:
+                    quoted_sender = str(quoted[0].sender_id or "")
+                    astrbot_admins = ()
+                    if quoted_sender and quoted_sender not in admin_ids:
+                        try:
+                            astrbot_admins = self.context.get_config(
+                                event.unified_msg_origin
+                            ).get("admins_id", ())
+                        except AttributeError:
+                            astrbot_admins = ()
+                    quoted_origin = {
+                        "sender": quoted_sender,
+                        "is_admin": bool(quoted_sender)
+                        and (
+                            quoted_sender in admin_ids
+                            or quoted_sender in astrbot_admins
+                        ),
+                    }
+                report = quoted_text
                 if report and content.strip():
                     report += "\n\n创建者补充：\n" + content.strip()
                 elif not report:
@@ -787,6 +939,8 @@ class MCAI(Star):
                             "attachments": records,
                             "workspace_root": str(workspace.root) if saved else None,
                         }
+                    if quoted_origin is not None:
+                        options["quoted_origin"] = quoted_origin
                     job = await self.tasks.create(
                         group,
                         event.unified_msg_origin,
@@ -957,7 +1111,11 @@ class MCAI(Star):
                     state["waiting"] = (
                         f"正式服已完成启动检查。确认后使用 “/mcaidone {name}” 验收。"
                         if job.get("trial_published")
-                        else f"正式服尚未完成发布。{job.get('trial_question') or '等待本轮试玩反馈。'}"
+                        else (
+                            f"已按管理员要求完成试服验证，无需发布正式服。确认后使用 “/mcaidone {name}” 验收。"
+                            if job.get("trial_release_waived")
+                            else f"正式服尚未完成发布。{job.get('trial_question') or '等待本轮试玩反馈。'}"
+                        )
                     )
                 if (
                     job.get("release_checkpoint") or job.get("release_submitted")
@@ -1002,8 +1160,9 @@ class MCAI(Star):
             raise
         finally:
             trace_event(self.store, "command_result", **trace, status=status)
-            # yield 的回复先经过发送阶段，再终止后续处理。
-            event.stop_event()
+            if status != "failed":
+                # yield 的回复先经过发送阶段，再终止后续处理。
+                event.stop_event()
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=90)
     @filter.custom_filter(McaiCommandAttemptFilter)
@@ -1026,17 +1185,7 @@ class MCAI(Star):
             "quoted": [],
         }
         trace_event(self.store, "plugin_command", **trace)
-        if self.config.get("group_ids") and group not in {
-            str(item) for item in self.config["group_ids"]
-        }:
-            trace_event(
-                self.store,
-                "command_result",
-                **trace,
-                status="rejected",
-                reason="群不在允许范围",
-            )
-            event.stop_event()
+        if not self._group_allowed(event, group, trace):
             return
         try:
             formatted = space_commands(hint)

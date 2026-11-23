@@ -4,7 +4,7 @@ const $ = selector => document.querySelector(selector);
 const time = seconds => seconds == null ? '—' : new Date(seconds * 1000).toLocaleString();
 const lines = value => value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
 const numbers = value => value.split(/[\s,，]+/).filter(Boolean).map(Number);
-const labels = { start: '启动', stop: '停止', restart: '重启', active: '已启用', paused: '已暂停', pending: '排队中', running: '运行中', waiting: '等待中', applying: '执行方案中', done: '已验收', stopped: '已中止', completed: '已完成', not_accepted: 'B 未受理', failed: '失败', cancelled: '已取消' };
+const labels = { start: '启动', stop: '停止', restart: '重启', forcestop: '强制停止', forcerestart: '强制重启', active: '已启用', paused: '已暂停', pending: '排队中', running: '运行中', waiting: '等待中', applying: '执行方案中', done: '已验收', stopped: '已中止', completed: '已完成', not_accepted: 'B 未受理', failed: '失败', cancelled: '已取消' };
 const eventKinds = { exit: '意外退出', restart: '连续启动失败', unresponsive: '无响应', alert: '健康告警', schedule: '定时维护', connection: 'B 连接' };
 const alertReasons = { window_offline: '托管窗口掉线', disk_low: '磁盘空间不足', performance_low: 'Probe 性能偏低' };
 const format = value => typeof value === 'object' && value !== null ? JSON.stringify(value, null, 2) : String(value ?? '—');
@@ -164,17 +164,20 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
         }));
         const controlStatus = run('核对操作状态', () => queryControl(row, tracking));
         controlStatus.hidden = !row.web_control;
-        for (const command of ['start', 'stop', 'restart']) {
-          const control = button(labels[command], () => confirm(`${labels[command]} ${row.instance}`, '操作会在 B 的托管窗口执行，提交后可按原编号核对。', async () => {
+        for (const command of ['start', 'stop', 'restart', 'forcestop', 'forcerestart']) {
+          const force = command.startsWith('force');
+          const target = pids ? `当前 Java PID：${pids}` : `当前启动链 PID：${(row.launcher_processes || []).map(process => process.pid).join('、') || '—'}`;
+          const warning = force ? `${target}。强制结束可能丢失未保存的数据。` : '';
+          const control = button(labels[command], () => confirm(`${labels[command]} ${row.instance}`, `${warning}操作会在 B 的托管窗口执行，提交后可按原编号核对。`, async () => {
             try {
               const result = await post('host', { action: command, instance: row.instance, directory: row.canonical_directory });
               tracking.textContent = `已提交 ${result.id} · ${labels[result.status] || result.status}`;
               controlStatus.hidden = false;
               actions.querySelectorAll('[data-control]').forEach(control => { control.disabled = true; });
             } catch (error) { await servers(); throw error; }
-          }));
+          }), force ? 'quiet' : 'secondary');
           control.dataset.control = command;
-          control.disabled = !row.selectable || !row.window_online || row.state_unknown || !!row.occupant || !!row.web_control;
+          control.disabled = !row.selectable || !row.window_online || row.state_unknown || row.target_mismatch || !!row.occupant || !!row.web_control || (force && ((!row.running && !row.java_running) || (row.java_processes || []).length > 1));
           actions.append(control);
         }
         actions.append(controlStatus);

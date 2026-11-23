@@ -85,13 +85,13 @@ A通过Modrinth v2及CurseForge官方API查询项目、说明、版本、加载�
 
 ## A工作区与测试副本
 
-`mc_workspace`把任务文件放在A插件数据目录的`workspaces/<task_id>/`，可按名称翻页列目录、按指定编码读取文本、执行PowerShell 7.3+构建命令，并在B正式实例内拉取文件。列表把 `next_cursor` 传给 `after`，文本把 `next_cursor` 传给 `cursor`；文件有变化后需重新读取。构建子进程加入A端共享Job Object资源组，默认8GiB，取消结束进程树；重载后依据原后台任务与进程身份判定中断，不重新执行。工作区脚本以AstrBot Windows账号运行，不提供操作系统沙箱。
+`mc_workspace`把任务文件放在A插件数据目录的`workspaces/<task_id>/`，可按名称翻页列目录、按指定编码读取文本、对工作区或经`Downloads.verify`核验的`download_id`制品只读检查JAR条目（`jar_entries`）、对比两条目哈希差异（`jar_diff`）或调用同目录有`javap.exe`的JDK执行有界字节码只读检查（`javap`）、执行PowerShell 7.3+构建命令，并从B正式实例内拉取文件。列表把 `next_cursor` 传给 `after`，文本把 `next_cursor` 传给 `cursor`；文件有变化后需重新读取；三种JAR只读检查无需多轮方案或独立AI审核。构建子进程加入A端共享Job Object资源组，默认8GiB，取消结束进程树；重载后依据原后台任务与进程身份判定中断，不重新执行。工作区脚本以AstrBot Windows账号运行，不提供操作系统沙箱。
 
 主模型与独立审核共用的任务提示词规定：MOD源码修改、编译和重新打包必须在A工作区完成，B的隔离副本也适用。主模型在制定方案和调用工具时遵守这项分工，独立审核核对实际执行位置。`stage`在A登记制品，提交`install_download`时才经HTTPS发送给B。B负责现场诊断、备份、接收和安装制品、启停与验证。
 
 从B拉取文件中途遇到连接中断或响应未传完时，A沿同一调用从文件头重传一次，完整接收后才替换工作区目标文件；再次失败会返回错误并移除未完成文件。
 
-管理员在 B 的 `host.json` 全局配置 `test_address` 和专用 `test_port`。`prepare_test` 在 B 任务工作区复制 `start.bat` 与显式 `paths` 或实例 `test_copy_paths` 指定的路径，并改写测试端口。列全实际存在的启动和运行依赖；源路径不存在时在审核材料阶段明确返回缺失路径，执行时也会复核。`copy_test_world`通过正式服停服、快照、恢复运行后复制所选世界路径。`mc_test_server` 打开 B 独立托管窗口，也可关闭已停服的窗口并保留副本。接受打开及启停操作时，B 以原操作编号保留试服名额，启动前再次检查。可保留多份停止的磁盘副本，但一次只有一个试服窗口或运行中的试服；状态、查询、控制台和提案用`environment=test`访问测试副本。测试服是原任务的子环境，生产实例仍是唯一任务目标。地址和端口无效或被占用时明确失败，不自动更换目标或端口。操作步骤见[试服试玩与正式发布](../usage/operations.md#mod-试服试玩与正式发布)。
+管理员在 B 的 `host.json` 全局配置 `test_address` 和专用 `test_port`。`prepare_test` 在 B 任务工作区复制 `start.bat` 与显式 `paths` 或实例 `test_copy_paths` 指定的路径，并改写测试端口。列全实际存在的启动和运行依赖；源路径不存在时在审核材料阶段明确返回缺失路径，执行时也会复核。`copy_test_world`通过正式服停服、快照、恢复运行后复制所选世界路径。`mc_test_server` 支持查询测试副本状态（未创建时返回 `not_created`，已创建后区分对外配置地址与 `server.properties` 的 `listen_ip`/`listen_port`）、打开 B 独立托管窗口或关闭已停服窗口释放全局名额。接受打开及启停操作时，B 以原操作编号保留试服名额，启动前再次检查。可保留多份停止的磁盘副本，但一次只有一个试服窗口或运行中的试服；状态、查询、控制台和提案用`environment=test`访问测试副本。试服发布证据通过绑定安装记录、启动前目标JAR实际SHA-256及安装后最近一次`ready`记录验证有效性，普通配置或诊断命令不再误废未变动制品，目标JAR变化时要求重测；管理书面豁免客户端进服测试（`client_login_waived=true`）且试服已干净停止时仍需核验同SHA-256及`ready`证据。仅试服结案可通过`mc_plan_finish`记录管理员反馈豁免而不修改正式服。测试服是原任务的子环境，生产实例仍是唯一任务目标。地址和端口无效或被占用时明确失败，不自动更换目标或端口。操作步骤见[试服试玩与正式发布](../usage/operations.md#mod-试服试玩与正式发布)。
 
 ## 批准安装
 

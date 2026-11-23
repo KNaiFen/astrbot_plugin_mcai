@@ -126,9 +126,18 @@ def bat_codepage(path, encoding="auto", data=None):
         return page
 
 
+def allowed_group_ids(values):
+    """返回配置中去除空白并忽略空项后的允许群号集合。"""
+    return {
+        text
+        for item in (values or ())
+        if item is not None and (text := str(item).strip())
+    }
+
+
 def incident_routes(values, allowed):
     routes = {}
-    groups = {str(group) for group in allowed}
+    groups = allowed_group_ids(allowed)
     for value in values:
         match = re.fullmatch(
             r"([A-Za-z0-9_-]+)=([^:\s=]+:GroupMessage:(\d+))", str(value)

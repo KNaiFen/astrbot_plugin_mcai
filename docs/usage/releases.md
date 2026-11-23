@@ -1,6 +1,17 @@
-# 0.20.3 发布说明
+# 0.20.4 发布说明
 
-0.20.3 继续使用 `mcai-9`。请按[升级步骤](operations.md#升级到-0203)配套更新 A、B 与托管窗口。随 B 包提供的 Probe 0.5.0 构建与 0.20.1 相同。下载及校验见 [GitHub Release v0.20.3](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.20.3)。
+0.20.4 继续使用 `mcai-9`。请按[升级步骤](operations.md#升级步骤)配套更新 A、B 与托管窗口。随 B 包提供的 Probe 0.5.0 构建与 0.20.1 相同。下载及校验见 [GitHub Release v0.20.4](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.20.4)。
+
+| 模块 | 主要更新与修复（`640f69f`） |
+|---|---|
+| `/mcaiserver` 与群指令 | 修复 `server_status` 读取超过 `12000` 字符落盘为 `reference` 产物索引的 Probe `metrics` 样本时未解包导致的 `KeyError: 'tick_ms'`，改为分页读取 `/jobs/{id}/artifact` 还原完整样本，并兼容 `tick_ms` 为空或缺失；修复群指令未捕获异常被 `finally` 中的 `stop_event()` 静默吞没的问题；`group_ids` 与故障通知路由统一过滤空白及空字符串项。 |
+| `/mcaiask` 只读问答 | 加固只读问答隐私脱敏与敏感文件拦截，屏蔽或脱敏玩家 IP、密钥、Token 及宿主机用户路径（游戏内坐标与实体等排障信息照常回答）；OneBot 端受理 `/mcaiask` 时先发送表情回执。 |
+| 群控启停与设置页 | 新增 `/mcaiswitch 实例ID start\|stop\|restart\|forcestop\|forcerestart [confirm]` 群控正式服启停与一次性强停确认单机制，设置页同步支持强制启停控制与不确定提交核对。 |
+| 审核、试服与诊断工具 | 完善多轮提案 `continuation` 范围说明，补充仅试服验证结案及免试玩授权证据校验；增强审核脚本路径/语法解析证据、`memory_jfr` 紧凑摘要、`hprof-summary` 头帧完整性校验、后台等待即时唤醒与诊断边界；精简运行规则并统一发版校验脚本。 |
+
+## 0.20.3 发布说明
+
+0.20.3 继续使用 `mcai-9`。请按[升级步骤](operations.md#升级步骤)配套更新 A、B 与托管窗口。随 B 包提供的 Probe 0.5.0 构建与 0.20.1 相同。下载及校验见 [GitHub Release v0.20.3](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.20.3)。
 
 | 模块 | 主要更新与修复（`c4ca507`） |
 |---|---|
@@ -9,7 +20,7 @@
 
 ## 0.20.2 发布说明
 
-0.20.2 继续使用 `mcai-9`。请按[升级步骤](operations.md#升级到-0203)配套更新 A、B 与托管窗口。随 B 包提供的 Probe 0.5.0 构建与 0.20.1 相同。
+0.20.2 继续使用 `mcai-9`。请按[升级步骤](operations.md#升级步骤)配套更新 A、B 与托管窗口。随 B 包提供的 Probe 0.5.0 构建与 0.20.1 相同。
 
 | 模块 | 主要更新与修复（`0efcb01`） |
 |---|---|

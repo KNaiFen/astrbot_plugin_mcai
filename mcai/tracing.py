@@ -217,6 +217,7 @@ def trace_calls(provider, store, task, stage, *, count_for_task=True):
                     status=status,
                     summary_status=summary_status,
                     elapsed_seconds=time.monotonic() - started,
+                    **({"usage": usage} if usage is not None else {}),
                 )
                 try:
                     record_request(

@@ -613,6 +613,11 @@ async def fit_history(
             "name": job["name"],
             "creator": {"sender": job["admin"], "is_admin": True},
             "report": job.get("report"),
+            **(
+                {"quoted_origin": job["quoted_origin"]}
+                if job.get("quoted_origin")
+                else {}
+            ),
             "instance": job.get("instance"),
             "directory": job.get("directory"),
         }

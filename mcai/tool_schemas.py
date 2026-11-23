@@ -748,7 +748,7 @@ TOOLS = [
     ),
     (
         "mc_workspace",
-        "A 端 MOD 源码修复与构建工作区：pull 从绑定服取文件，use_download 取用任务下载文件。list 将 next_cursor 作为 after 续页，read 将 next_cursor 作为 cursor 续读（不要同时传 offset）。exec 在已批准的多轮方案内经独立审核后台执行 PowerShell 7.3+。stage 在 A 登记构建制品并返回 download_id；提交 install_download 时才传到 B 暂存。",
+        "A 端 MOD 源码修复与构建工作区：pull 从绑定服取文件，use_download 取用任务下载文件。list 将 next_cursor 作为 after 续页，read 将 next_cursor 作为 cursor 续读（不要同时传 offset）。jar_entries、jar_diff、javap 只读检查 JAR，每份 JAR 指定工作区路径或当前任务的 download_id，二选一。exec 在已批准的多轮方案内经独立审核后台执行 PowerShell 7.3+。stage 在 A 登记构建制品并返回 download_id；提交 install_download 时才传到 B 暂存。",
         variants(
             "mode",
             {
@@ -762,6 +762,46 @@ TOOLS = [
                         "encoding": STRING,
                     },
                     ("path",),
+                ),
+                "jar_entries": (
+                    {
+                        "path": STRING,
+                        "download_id": STRING,
+                        "prefix": STRING,
+                        "glob": STRING,
+                        "contains": STRING,
+                        "limit": PAGE["limit"],
+                        "preview": {"type": "boolean"},
+                        "preview_limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 4000,
+                        },
+                    },
+                    (),
+                ),
+                "jar_diff": (
+                    {
+                        "left_path": STRING,
+                        "left_download_id": STRING,
+                        "right_path": STRING,
+                        "right_download_id": STRING,
+                        "limit": PAGE["limit"],
+                    },
+                    (),
+                ),
+                "javap": (
+                    {
+                        "path": STRING,
+                        "download_id": STRING,
+                        "class_names": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 10,
+                            "items": STRING,
+                        },
+                    },
+                    ("class_names",),
                 ),
                 "exec": (
                     {
@@ -1150,8 +1190,16 @@ TOOLS = [
                     },
                     "continuation": contract(
                         {
-                            "scope": {"type": "string", "minLength": 1},
-                            "completion": {"type": "string", "minLength": 1},
+                            "scope": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "明确允许的目标对象与动作类别（含必要的迭代调整、验证与收尾边界）；不写无边界概括，也不写死需按反馈调整的次数或参数。",
+                            },
+                            "completion": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "明确可核验的结束条件或目标状态。",
+                            },
                         },
                         ("scope", "completion"),
                     ),
@@ -1159,7 +1207,16 @@ TOOLS = [
                     "trial_feedback_id": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "发布A工作区制品时引用当前试服邀请下管理员的原始通过反馈ID。",
+                        "description": "发布A工作区制品必填。引用任务管理员在当前试服邀请下的通过反馈，或明确授权对该制品免真人进服测试并发布的原始反馈ID。",
+                    },
+                    "test_operation_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "免真人进服测试时必填，引用已结算的同制品试服安装批次；仍须有有效启动就绪验证。",
+                    },
+                    "client_login_waived": {
+                        "type": "boolean",
+                        "description": "仅当任务管理员明确书面同意免真人进服测试并发布时设为 true；须同时提供 trial_feedback_id 与 test_operation_id。",
                     },
                     "environment": {
                         "enum": ["production", "test"],
@@ -1179,6 +1236,11 @@ TOOLS = [
             {
                 "plan_id": {"type": "string", "minLength": 1},
                 "summary": {"type": "string", "minLength": 1},
+                "release_waived_feedback_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "仅试服验证后结案、无需或暂不发布正式服时，引用明确作出该指示的任务管理员原始反馈ID。",
+                },
             },
             ("plan_id", "summary"),
         ),

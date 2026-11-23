@@ -22,10 +22,11 @@
 .\.venv\Scripts\python.exe scripts/verify.py --mode quick
 .\.venv\Scripts\python.exe scripts/verify.py --mode full
 .\.venv\Scripts\python.exe scripts/verify.py --mode compat
+.\.venv\Scripts\python.exe scripts/verify.py --mode package
 .\.venv\Scripts\python.exe scripts/verify.py --mode release
 ```
 
-`static` 检查 Ruff、Git 空白、Node 语法、配置和版本、Markdown 相对链接与 Probe CoreChecks；`quick` 在静态检查后运行冒烟套件，排除 `real_host`；`full` 在静态检查后收集全部核心用例。`compat` 只核对配置与版本并运行两个兼容套件。`release` 串行执行静态、核心、兼容，并用已有 Java／Probe 产物打包和检查 ZIP。
+`static` 检查 Ruff、Git 空白、Node 语法、配置和版本、Markdown 相对链接与 Probe CoreChecks；`quick` 在静态检查后运行冒烟套件，排除 `real_host`；`full` 在静态检查后收集全部核心用例。`compat` 只核对配置与版本并运行两个兼容套件。`package` 运行静态检查并用已有 Java／Probe 产物打包，校验 ZIP、解包文档链接及 A/B 隔离导入安装与 CLI 帮助；`release` 在此基础上串行执行核心与兼容全量回归。
 
 Windows CI（`.github/workflows/ci.yml`）将静态检查和核心／兼容矩阵分开。静态作业用 Node 20、JDK 21 和固定 Gson 运行 CoreChecks；测试作业安装锁定依赖、校验固定 AstrBot 源码并准备 WorldTools，运行 `full`／`compat` 时传 `--skip-java --skip-node`，由独立静态作业覆盖这两项。锁定依赖作业的 pip 缓存路径为 `~\AppData\Local\pip\Cache`。
 
@@ -56,7 +57,7 @@ $env:PYTHONPATH = "$PWD/runtime/astrbot-4.29.4"
 
 `--require-astrbot`强制核对v4.29.4，并在出现任何跳过时返回失败。未提供AstrBot时可以执行不依赖runner的专项；含跳过的结果不能作为完整回归或发行通过的证据。需要分析覆盖率时，再给上述命令追加`--cov=mcai --cov-branch --cov-report=html:runtime/coverage-html`；覆盖率采集不作为每轮默认步骤。
 
-构建后用解压A插件和独立安装的B执行代表性安装验证，重点核对导入路径、原生runner、HTTPS、CLI、备份修改、下载归档及多轮方案。可选择以下节点（多轮用例包含Chat／Responses两种适配器，共4项）：
+`verify.py --mode package` 与 `--mode release` 已自带解压链接校验、A 导入、B 离线构建安装 wheel 与 `mcai --help` 冒烟。仅当改动涉及打包结构、导入边界或安装运行时，再用解压 A 插件和独立安装的 B 执行以下代表性集成节点（多轮用例包含 Chat／Responses 两种适配器，共 4 项）：
 
 ```text
 tests/test_mcai_workflow.py::test_natural_target_web_mod_review_install_verify_and_archive_real_runner
@@ -64,7 +65,7 @@ tests/test_https.py::TestHttpsTransport::test_local_cli_uses_relative_data_dir_f
 tests/test_plan_continuation.py::test_one_approval_runs_three_observed_batches_with_actual_adapters
 ```
 
-这些节点须在准备好的解压验证目录运行，测试解释器使用现有依赖，PYTHONPATH指向独立B安装目录、AstrBot和复制的测试目录；核对A模块来自解压插件、B及worker来自独立安装目录。不能从源码根运行后当作安装验证。Probe／Java产物未变化时核对受测产物的内部文件内容；涉及相关实现或依赖变更时，再执行对应的真实MC组合。保存被测版本、实际命令、结果和限制，历史数字以各批记录为准。
+这些节点须在准备好的解压验证目录运行，测试解释器使用现有依赖，PYTHONPATH 指向独立 B 安装目录、AstrBot 和复制的测试目录；核对 A 模块来自解压插件、B 及 worker 来自独立安装目录。不能从源码根运行后当作安装验证。Probe／Java 产物未变化时由脚本自动核对关键入口；涉及相关实现或依赖变更时，再执行对应的真实 MC 组合。保存被测版本、实际命令、结果和限制，常规发版不再逐版补写校验和转录表。
 
 真实方块修复验证另行运行，使用本地原版MC **1.21.1 bundler JAR**和JDK21。脚本创建独立的`runtime/maintenance-real/<随机编号>/`，仅监听127.0.0.1，不使用生产世界；通过实际HTTPS／ConPTY执行停服、备份、修改、重启和MC命令确认，保留日志与`result.json`。它不随普通pytest自动启动：
 
@@ -141,6 +142,10 @@ tests/test_plan_continuation.py::test_one_approval_runs_three_observed_batches_w
 ```
 
 ## 验证范围
+
+日常仅调整版本号与发布说明的常规发版不另写 `records/release-<版本>.md` 或逐版追记本节；以下保留重要基准、Web 控制台与专项实测记录。
+
+2026-11-23 的 **0.20.3／mcai-9 发行验证**（完整源码 `docs/development/records/release-0.20.3.md`）使用 Windows、Python 3.12.14、PowerShell 7.6.5、Node v24.11.0、JDK 21.0.7 和 AstrBot v4.29.4。`verify.py --mode release` 完成静态、494 项核心、66 项兼容和发行 ZIP 检查，零失败、零跳过，用时 616.73 秒。另在独立目录验证 A 解包导入、B wheel 离线安装、版本／协议及 CLI 帮助；沿用已验收的八个 Probe 0.5.0 产物。这是发行记录的结果。
 
 2026-11-23 的 **0.20.2／mcai-9 发行验证**（完整源码 `docs/development/records/release-0.20.2.md`）使用 Windows、Python 3.12.14、PowerShell 7.6.5、Node 24.11.0、JDK 21.0.7 和 AstrBot v4.29.4。`verify.py --mode release` 完成静态、493 项核心、66 项兼容和发行 ZIP 检查，零失败、零跳过，用时 621.58 秒。另在独立目录验证 A 解包导入、B wheel 离线安装、版本／协议及 CLI 帮助；沿用已验收的八个 Probe 0.5.0 产物。这是发行记录的结果。
 

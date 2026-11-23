@@ -500,7 +500,54 @@ def archive_evidence_view(value, budget=1200):
 
 
 def review_evidence(sources, limit=4000, *, edges=0):
-    """Deduplicate exact evidence and text ranges with matching contents."""
+    """Deduplicate evidence and keep bounded excerpts of narrowed text."""
+
+    def project(value, budget):
+        original = json.dumps(value, ensure_ascii=False)
+        if len(original) <= budget:
+            return value
+        text, path, metadata = value, [], None
+        if isinstance(value, dict) and value.get("view") != "summary":
+            for key in ("text", "value", "content"):
+                if isinstance(value.get(key), str):
+                    rest = {name: item for name, item in value.items() if name != key}
+                    # Keep the structural view for results with substantial
+                    # information outside the text field.
+                    if len(json.dumps(rest, ensure_ascii=False)) <= min(
+                        512, budget // 4
+                    ):
+                        text, path, metadata = value[key], [key], rest
+                        break
+        if not isinstance(text, str) or len(text) < 3:
+            return evidence_view(value, budget, edges=edges)
+
+        excerpt = {
+            "view": "summary",
+            "complete": False,
+            "truncated": True,
+            "characters": len(original),
+            "sha256": hashlib.sha256(original.encode()).hexdigest(),
+            "result_path": path,
+            "content": metadata,
+        }
+        # Use the existing allowance, including JSON escapes and metadata. A
+        # larger explicit text selection cannot grow the review request budget.
+        low, high, best = 2, min(len(text) - 1, budget), None
+        while low <= high:
+            count = (low + high) // 2
+            candidate = {
+                **excerpt,
+                "omitted_chars": len(text) - count,
+                "head": text[: (count + 1) // 2],
+                "tail": text[-(count // 2) :],
+            }
+            if len(json.dumps(candidate, ensure_ascii=False)) <= budget:
+                best = candidate
+                low = count + 1
+            else:
+                high = count - 1
+        return best if best is not None else evidence_view(value, budget, edges=edges)
+
     seen, ranges, result = {}, {}, []
     for source in sources:
         raw = source["result"]
@@ -513,7 +560,7 @@ def review_evidence(sources, limit=4000, *, edges=0):
             source["tool"],
             identity,
         )
-        row = {**source, "result": evidence_view(raw, limit, edges=edges)}
+        row = {**source, "result": project(raw, limit)}
         if target in seen:
             row["result"] = {"same_as": seen[target]}
         elif (
@@ -544,21 +591,28 @@ def review_evidence(sources, limit=4000, *, edges=0):
                     if a < b
                 ]
             if covered:
-                row["result"] = {
+                projection = {
                     **{key: value for key, value in raw.items() if key != "text"},
                     "source_range": [start, end],
                     "covered_by": covered,
                     "segments": [
-                        {
-                            "offset": a,
-                            "end": b,
-                            "value": evidence_view(
-                                raw["text"][a - start : b - start], limit, edges=edges
-                            ),
-                        }
-                        for a, b in segments
+                        {"offset": a, "end": b, "value": None} for a, b in segments
                     ],
                 }
+                remaining = limit - len(json.dumps(projection, ensure_ascii=False))
+                for index, (a, b) in enumerate(segments):
+                    if remaining < 0:
+                        break
+                    value = project(
+                        raw["text"][a - start : b - start],
+                        remaining // (len(segments) - index) + len("null"),
+                    )
+                    projection["segments"][index]["value"] = value
+                    remaining -= len(json.dumps(value, ensure_ascii=False)) - len(
+                        "null"
+                    )
+                if remaining >= 0:
+                    row["result"] = projection
             previous.append((start, end, source["evidence_id"], raw["text"]))
         seen[target] = source["evidence_id"]
         result.append(row)

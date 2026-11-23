@@ -72,31 +72,44 @@ B生命周期使用HostRunner：在aiohttp的pre_shutdown停止WebSocket输入�
 ## 构建与发行
 
 ```powershell
+# 完整构建（含 Java 辅助程序与 Probe 八目标）
 .\.venv\Scripts\python.exe scripts/build_release.py
+# 复用已有 Java／Probe 产物仅打包并校验（含 A/B 解包导入与 wheel 安装检查）
+.\.venv\Scripts\python.exe scripts/verify.py --mode package
 ```
 
-构建校验固定MCA Selector官方JAR的SHA-256，用JDK21构建辅助程序，并构建八目标。首次构建按代理下载Java17和Gradle依赖；可用 `scripts/build_probe.py --java17 ... --java21 ...` 指定JDK。产物在被忽略的 `dist/`：
+构建校验固定 MCA Selector 官方 JAR 的 SHA-256，用 JDK21 构建辅助程序，并构建八目标。首次构建按代理下载 Java17 和 Gradle 依赖；可用 `scripts/build_probe.py --java17 ... --java21 ...` 指定 JDK。产物在被忽略的 `dist/`：
 
-从 Git 工作树构建时，源码清单取自 `git ls-files --cached`，内容取自工作树；新增、删除或改名的路径要先更新索引。完整源码 ZIP 内附 `SOURCE_MANIFEST.json`，解压到无 Git 的目录后可用同一命令构建。已有匹配版本的 Java 和八个 Probe 构建产物时，可加 `--package-only` 单独打包；清单错误会在构建前报告，三个 ZIP 都通过内部校验后才替换旧包。`verify.py --mode release` 使用 `--package-only`，不重新构建 Java 或 Probe。
+从 Git 工作树构建时，源码清单取自 `git ls-files --cached`，内容取自工作树；新增、删除或改名的路径要先更新索引。完整源码 ZIP 内附 `SOURCE_MANIFEST.json`，解压到无 Git 的目录后可用同一命令构建。已有匹配版本的 Java 和八个 Probe 构建产物时，可加 `--package-only` 单独打包；清单错误会在构建前报告，三个 ZIP 都通过内部校验后才替换旧包。`verify.py --mode package` 与 `--mode release` 使用 `--package-only`，并自动完成解压链接检查、A 包隔离导入、B 包离线 wheel 构建安装和 `mcai --help` 冒烟。
 
-- `astrbot_plugin_mcai.zip`：插件入口、配置schema、A所需模块、依赖清单、运行时规则模板、设置视图、README和分层文档。
-- `mcai_windows_host.zip`：Python项目、基础与实例配置示例、模块、规则模板、JAR与许可、README和分层文档。
-- `probe/`：八目标、各目标sources JAR、完整源码ZIP与许可；B包中同样附带。
+- `astrbot_plugin_mcai.zip`：插件入口、配置 schema、A 所需模块、依赖清单、运行时规则模板、设置视图、README 和分层文档。
+- `mcai_windows_host.zip`：Python 项目、基础与实例配置示例、模块、规则模板、JAR 与许可、README 和分层文档。
+- `probe/`：八目标、各目标 sources JAR、完整源码 ZIP 与许可；B 包中同样附带。
 - `mcai-<版本>-source.zip`：来自 Git 跟踪清单的源码、构建脚本、测试和许可；开发 `AGENTS.md`、未跟踪试验文件、运行数据和 Git 历史不打包。
 
-A、B 包保留 README 引用的文档及目录层级，具体为 `docs/README.md`、使用／设计／开发三个目录的一级 Markdown 和 `docs/development/dependencies/` 的文件。发行验证、历史记录和证据位于完整源码的 `docs/development/records/`。源码测试、开发脚本、上游副本及开发 `AGENTS.md` 不进入 A、B 安装包；指南中的测试和构建命令在完整源码中运行。JAR 与相应许可随 B 包部署，运行时不下载。
+A、B 包保留 README 引用的文档及目录层级，具体为 `docs/README.md`、使用／设计／开发三个目录的一级 Markdown 和 `docs/development/dependencies/` 的文件。重要实服、Probe 和历史归档记录位于完整源码的 `docs/development/records/`。源码测试、开发脚本、上游副本及开发 `AGENTS.md` 不进入 A、B 安装包；指南中的测试和构建命令在完整源码中运行。JAR 与相应许可随 B 包部署，运行时不下载。
 
-发行时同步 `metadata.yaml`、`pyproject.toml` 与 `mcai/protocol.py`，Probe 版本单独管理。检查 ZIP 完整性、模块、模板、许可与文档相对链接；影响安装或构建时，从解压 B 包构建 wheel 并独立安装，从解压 A 包验证导入与关键流程。对上传的附件生成 `SHA256SUMS.txt`。
+常规版本发布统一使用 `scripts/release.py`，不再手工拼临时脚本、不再逐版新增 `records/release-<版本>.md` 流水账，也不在发布后回写二次提交：
+
+```powershell
+# 1. 同步版本号（pyproject.toml、metadata.yaml、mcai/protocol.py、README.md）
+.\.venv\Scripts\python.exe scripts/release.py bump 0.20.4
+# 2. 在 docs/usage/releases.md 顶部补充本次发布说明并提交 dev
+# 3. 获授权发布时一键校验、归档 dist/<版本>/ + SHA256SUMS.txt、推 main 并创建 GitHub Release
+.\.venv\Scripts\python.exe scripts/release.py publish
+```
+
+若功能提交已通过完整测试且发版准备提交只改版本号与发布说明，可在 `publish` 时追加 `--verify package`（约十秒完成静态与隔离安装校验）；需要重编 Probe 时追加 `--build-probe`。上传 GitHub Release 附件时直接核对 API 返回的 `state`、`size` 与 `sha256` digest，无需把全部附件重新下载回本地。
 
 ## Git与文档维护
 
 - 上游（`.upstream/`）、运行数据（`runtime/`、`data/`）、私有配置、密钥、证书、下载、测试安装目录、构建输出（`dist/`）、虚拟环境、生成 JAR 与缓存由 `.gitignore` 排除，禁止提交。`git status --short` 检查本次改动，`git status --short --ignored` 检查本地工作产物。
 - `host.example.json`、`instances.example.json`、Java 源码、`mcai/vendor/` 下的许可证、`tests/fixtures/worlds` 的许可与固定片段需要跟踪。不要用过宽的忽略规则隐藏它们。
-- 根 README 只放项目介绍、部署与使用入口。使用文档说明当前操作；设计文档解释实际行为和约束；发行和验证结果进入 `records/`，标注被测版本、环境、命令、结果与限制。历史报告引用的本地证据清理后，在对应记录注明。移动文档时同步核对链接与打包清单。
-- 完成消融审查、适当验证后创建简短中文commit。默认不推送或替用户部署。
+- 根 README 只放项目介绍、部署与使用入口。使用文档说明当前操作（保持锚点稳定，不在小标题和正文中四处写死小版本号）；设计文档解释实际行为和约束；重要里程碑、实服联调与专项核验结果进入 `records/`，标注被测版本、环境、命令、结果与限制。历史报告引用的本地证据清理后，在对应记录注明。移动文档时同步核对链接与打包清单。
+- 完成消融审查、适当验证后创建简短中文 commit。默认不推送或替用户部署。
 
 ## 发布仓库
 
-本地 `dev` 保存完整源码与开发历史，只在本地维护。公开仓库 [astrbot_plugin_mcai](https://github.com/KNaiFen/astrbot_plugin_mcai) 的 `main` 与插件ZIP使用同一文件清单，供AstrBot通过链接安装和更新。B程序、Probe与完整源码以Release附件提供。
+本地 `dev` 保存完整源码与开发历史，只在本地维护。公开仓库 [astrbot_plugin_mcai](https://github.com/KNaiFen/astrbot_plugin_mcai) 的 `main` 与插件 ZIP 使用同一文件清单，供 AstrBot 通过链接安装和更新。B 程序、Probe 与完整源码以 Release 附件提供。
 
-首次发布的 `main` 使用独立初始提交，不带入开发历史。后续发布以原 `main` 为父提交更新插件文件，保持 AstrBot 正常拉取更新。获授权后只显式推送 `main`，不要使用 `--all` 或 `--mirror`，也不推送 `dev`、开发历史或本地备份引用。
+首次发布的 `main` 使用独立初始提交，不带入开发历史。后续发布由 `scripts/release.py publish` 在临时 worktree 以原 `main` 为父提交更新插件文件并仅显式推送 `main`；手动操作时同样禁止使用 `--all` 或 `--mirror`，也不推送 `dev`、开发历史或本地备份引用。

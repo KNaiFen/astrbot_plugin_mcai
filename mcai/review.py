@@ -22,6 +22,191 @@ FULLTEXT_THRESHOLD = 4096
 SCRIPT_SUFFIXES = (".ps1", ".bat", ".cmd", ".py")
 CONTENT_NOTE = "非脚本文件内容过大，已保留摘要、前后预览、精确 diff 与校验哈希；请优先核对 diff、effective_steps 与字节/哈希校验。"
 
+DESTRUCTIVE_COMMANDS = frozenset(
+    {
+        "stop-computer",
+        "restart-computer",
+        "format-volume",
+        "clear-disk",
+        "initialize-disk",
+        "remove-partition",
+        "set-partition",
+        "reset-physicaldisk",
+        "disable-bitlocker",
+        "shutdown",
+        "shutdown.exe",
+        "diskpart",
+        "diskpart.exe",
+        "format",
+        "format.com",
+        "bcdedit",
+        "bcdedit.exe",
+        "vssadmin",
+        "vssadmin.exe",
+    }
+)
+DYNAMIC_EXECUTION_COMMANDS = frozenset({"invoke-expression", "iex"})
+DIAGNOSTIC_DISALLOWED_COMMANDS = frozenset({"add-type", "invoke-command", "icm"})
+ENCODED_COMMAND_FLAGS = frozenset(
+    {
+        "-ec",
+        *(
+            "-encodedcommand"[:length]
+            for length in range(2, len("-encodedcommand") + 1)
+        ),
+    }
+)
+CONSOLE_DISALLOWED_COMMANDS = frozenset(
+    {
+        "stop",
+        "restart",
+        "end",
+        "reload",
+        "op",
+        "deop",
+        "ban",
+        "ban-ip",
+        "pardon",
+        "pardon-ip",
+        "kick",
+        "whitelist",
+        "save-all",
+        "save-off",
+        "save-on",
+        "setblock",
+        "fill",
+        "clone",
+        "kill",
+        "summon",
+        "give",
+        "clear",
+        "tp",
+        "teleport",
+        "spreadplayers",
+        "weather",
+        "setworldspawn",
+        "spawnpoint",
+        "defaultgamemode",
+        "gamemode",
+        "difficulty",
+        "advancement",
+        "recipe",
+        "effect",
+        "enchant",
+        "experience",
+        "xp",
+        "loot",
+        "place",
+        "schedule",
+        "function",
+        "bossbar",
+        "team",
+    }
+)
+CONSOLE_READONLY_SUBCOMMANDS = {
+    "forceload": frozenset({"query"}),
+    "data": frozenset({"get"}),
+    "time": frozenset({"query"}),
+    "tick": frozenset({"query"}),
+    "datapack": frozenset({"list"}),
+    "worldborder": frozenset({"get"}),
+}
+
+
+def validate_script_command(words, source, *, diagnostic=False):
+    if not words or not words[0]:
+        return
+    if words[0] == "__unsafe_ast__":
+        raise ValueError(f"脚本包含禁止使用的动态执行语法：{source}")
+    name = words[0].replace("\\", "/").split("/")[-1].lower()
+    if name in DESTRUCTIVE_COMMANDS:
+        raise ValueError(f"脚本包含禁止使用的宿主机或磁盘破坏命令：{name}")
+    if name in DYNAMIC_EXECUTION_COMMANDS:
+        raise ValueError(f"脚本包含禁止使用的动态执行命令：{name}")
+    if diagnostic and name in DIAGNOSTIC_DISALLOWED_COMMANDS:
+        raise ValueError(f"在线诊断脚本不允许调用高危命令：{name}")
+    if name in ("pwsh", "pwsh.exe", "powershell", "powershell.exe"):
+        for word in words[1:]:
+            if isinstance(word, str) and word.lower() in ENCODED_COMMAND_FLAGS:
+                raise ValueError("脚本禁止使用混淆编码参数 -EncodedCommand")
+
+
+def validate_diagnostic_script(source, powershell_path):
+    with powershell_parser(powershell_path) as parse:
+        pending = deque([(source, None)])
+        seen = set()
+        while pending:
+            text, root = pending.popleft()
+            if (text, str(root)) in seen:
+                continue
+            seen.add((text, str(root)))
+            for command in parse(text, root):
+                words = command["words"]
+                validate_script_command(words, command["source"], diagnostic=True)
+                if not words or not words[0]:
+                    continue
+                name = Path(words[0]).name.lower()
+                if name in (
+                    "pwsh",
+                    "pwsh.exe",
+                    "powershell",
+                    "powershell.exe",
+                    "cmd",
+                    "cmd.exe",
+                ):
+                    options = [
+                        word.lower() if isinstance(word, str) else None
+                        for word in words
+                    ]
+                    for option in ("/c", "/k", "-command", "-c"):
+                        if option not in options:
+                            continue
+                        index = options.index(option) + 1
+                        argument = words[index] if index < len(words) else None
+                        if argument is not None and not name.startswith("cmd"):
+                            pending.append((argument, None))
+                        elif argument is not None and all(
+                            word is not None for word in words[index:]
+                        ):
+                            pending.append(
+                                (subprocess.list2cmdline(words[index:]), None)
+                            )
+                        break
+
+
+def _check_console_command_tokens(tokens, raw):
+    if not tokens:
+        return
+    head = tokens[0].lstrip("/").split(":")[-1].lower()
+    if head in CONSOLE_DISALLOWED_COMMANDS:
+        raise ValueError(
+            f"mc_console_send 仅用于在线诊断，不允许执行管理或修改命令（{head}）；请改用 mc_propose 提交方案并等待管理员批准。"
+        )
+    if head in CONSOLE_READONLY_SUBCOMMANDS:
+        sub = tokens[1].lower() if len(tokens) > 1 else ""
+        if sub not in CONSOLE_READONLY_SUBCOMMANDS[head]:
+            raise ValueError(
+                f"mc_console_send 对 {head} 仅开放只读查询，不允许修改操作（{raw.strip()}）；请改用 mc_propose。"
+            )
+    if head == "gamerule" and len(tokens) > 2:
+        raise ValueError(
+            "mc_console_send 仅允许查询 gamerule，修改游戏规则请改用 mc_propose。"
+        )
+    if head == "banlist" and len(tokens) > 1 and tokens[1].lower() == "ips":
+        raise ValueError("在线诊断不允许通过 banlist ips 查询玩家 IP。")
+    if head == "execute":
+        for index, token in enumerate(tokens[1:], 1):
+            if token.lower() == "run" and index + 1 < len(tokens):
+                _check_console_command_tokens(tokens[index + 1 :], raw)
+                break
+
+
+def validate_diagnostic_console_commands(commands):
+    for command in commands:
+        if not isinstance(command, str) or not command.strip():
+            continue
+        _check_console_command_tokens(command.strip().split(), command)
+
 
 def digest(value):
     return hashlib.sha256(
@@ -399,7 +584,12 @@ def review_material(
                 )
             for command in commands_cache[cache_key]:
                 words = command["words"]
-                if not words or words[0] is None:
+                validate_script_command(
+                    words,
+                    command["source"],
+                    diagnostic=bool(args.get("diagnostic")),
+                )
+                if not words or not words[0]:
                     unresolved.append(command["source"])
                     continue
                 name = Path(words[0]).name.lower()

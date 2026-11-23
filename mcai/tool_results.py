@@ -116,7 +116,11 @@ def model_result(name, arguments, result, operation_id=None):
                             "job_id": data["job_id"],
                             "reference": "probe-result.json",
                         }
-            if {"reference", "characters", "preview"} <= body.keys():
+            if body.get("kind") == "memory_jfr" and "reference" in body:
+                body["message"] = (
+                    "上方是内存摘要；详细分析可用 mc_artifact_read 按字段读取。"
+                )
+            elif {"reference", "characters", "preview"} <= body.keys():
                 body["message"] = (
                     "先看overview；mc_artifact_read默认结构概览，result_path定向展开，view=value或offset读取原文。"
                 )
@@ -132,7 +136,7 @@ def model_result(name, arguments, result, operation_id=None):
                 (
                     row["body"]
                     for row in data["items"]
-                    if {"reference", "characters", "preview"} <= row["body"].keys()
+                    if {"reference", "characters"} <= row["body"].keys()
                 ),
                 None,
             )

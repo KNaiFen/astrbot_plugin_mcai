@@ -15,7 +15,7 @@ from .environment import java_environment
 from .evidence import evidence_view, result_at
 from .paths import resolve_file
 from .plans import execution_configuration, execution_configuration_changed
-from .review import verify_scripts
+from .review import validate_diagnostic_script, verify_scripts
 
 ACTIVE = {"pending", "running"}
 
@@ -42,6 +42,7 @@ class Jobs:
         self.workers = {}
         self.processes = {}
         self.stops = {}
+        self.waiters = {}
         self.batching = batching
         self.rows = []
         self.row_characters = 0
@@ -80,6 +81,8 @@ class Jobs:
         job = self.get(key)
         job.update(fields)
         self.store.save("background_job", key, job)
+        if job["status"] not in ACTIVE:
+            self.notify(key)
 
     def stopped(self, key):
         return self.stops[key].is_set()
@@ -120,12 +123,19 @@ class Jobs:
                 self.flush(key)
         else:
             self.store.event("job:" + key, row)
+            self.notify(key)
 
     def flush(self, key, **fields):
         if self.rows or fields:
             self.store.job_batch(key, self.rows, fields)
             self.rows = []
             self.row_characters = 0
+            self.notify(key)
+
+    def notify(self, key):
+        for waiter in self.waiters.get(key, ()):
+            if not waiter.done():
+                waiter.set_result(None)
 
     def page(self, key, after=0, limit=100):
         job = self.get(key)
@@ -149,11 +159,40 @@ class Jobs:
     async def wait(self, key, wait_seconds=10, after=0, limit=100):
         if not 0 <= wait_seconds <= 25:
             raise ValueError("后台等待秒数必须在 0 至 25 之间")
-        job = self.get(key)
+        page = self.page(key, after, limit)
         worker = self.workers.get(key)
-        if worker and job["status"] in ACTIVE:
-            await asyncio.wait({worker}, timeout=wait_seconds)
-        return self.page(key, after, limit)
+        if (
+            not wait_seconds
+            or page["items"]
+            or page["status"] not in ACTIVE
+            or not worker
+        ):
+            return page
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + wait_seconds
+        while True:
+            waiters = self.waiters.setdefault(key, set())
+            waiter = loop.create_future()
+            waiters.add(waiter)
+            try:
+                done, _ = await asyncio.wait(
+                    (worker, waiter),
+                    timeout=max(0, deadline - loop.time()),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                waiter.cancel()
+                waiters.remove(waiter)
+                if not waiters:
+                    del self.waiters[key]
+            page = self.page(key, after, limit)
+            if (
+                not done
+                or worker.done()
+                or page["items"]
+                or page["status"] not in ACTIVE
+            ):
+                return page
 
     def artifact(self, key, reference, offset=0, *, view="value", result_path=()):
         self.get(key)
@@ -337,6 +376,9 @@ class Jobs:
         )
         await asyncio.to_thread(
             verify_scripts, config["directory"], args.get("script_hashes", [])
+        )
+        await asyncio.to_thread(
+            validate_diagnostic_script, args["script"], config["powershell_path"]
         )
         if execution_configuration_changed(
             args.get("review_configuration", {}),

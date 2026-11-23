@@ -25,7 +25,7 @@ A的任务保存群、名称、发起管理员、问题、反馈、对话、方�
 | 状态 | 允许的当前工作和标志 | 保存点上的边界 |
 |---|---|---|
 | `running` | 目标识别和排查；可正在切换目标（`selection_cleanup`）、重试模型（`model_retry`）、生成待批 `plan` 或继续已批准多轮方案。批次结算后的首个快照可能仍有 `pause_after_operation`。 | 停止或验收请求可先置取消标志，尚未切到终态。 |
-| `waiting` | 可有 `plan` 等待批准，也可无方案等反馈；活动多轮方案可通过 `mc_say` 等必要补充或试玩反馈。 | 有方案时必须有短码；取消请求和先前尝试留下的检查点不会因进入等待而统一清空。 |
+| `waiting` | 可有 `plan` 等待批准，也可无方案等反馈；`mc_say` 提问入箱后转入此状态；活动多轮方案可通过 `mc_say` 等必要补充或试玩反馈，或在一次空转提醒后等待管理员 `/mcaisay`。 | 有方案时必须有短码；取消请求和先前尝试留下的检查点不会因进入等待而统一清空。 |
 | `applying` | 核对原编号或执行已批准批次；可有 `release_checkpoint`、`pause_after_operation`、`cancel_pending`。 | 必须有 `operation` 和 `applied_plan`，无待批 `plan`。多轮授权可以已失效或失败，此时仍须完成原批次的结算。 |
 | `paused` | 可保留待批方案、未确认批次及提交标志、活动多轮授权、模型重试或目标切换检查点。 | 必须有 `pause_reason`；停止请求可以先保留暂停状态再进行取消。 |
 | `done` | 验收结束；可能仍在取消后台工作，或正在清理试服、归档。归档模型可有 `model_retry`。 | 只有此状态可有 `archive_state`；取消结算后必须没有当前 `operation`。 |
@@ -37,10 +37,10 @@ A的任务保存群、名称、发起管理员、问题、反馈、对话、方�
 | `operation`、`applied_plan` | `queue_apply` 同时写入，与 `applying` 一起保存；`resume` 沿用原编号。批次正常结算、`AstrBotAgent.prepare_apply` 预检拒绝或任务取消结算时清空当前 `operation`；`applied_plan` 保留到下一批覆盖。 |
 | `approved_plan.status` | `approve` 将多轮方案置为 `active`。`end_plan` 改为 `invalidated`、`replaced`、`completed`、`stopped` 或 `failed`，不删记录。检查只约束上述值；`require_plan` 在使用时核对快照目标和摘要。 |
 | `repair_submitted` | 创建时为假；`Tasks.run` 在准备通过、调用 B 前置真。置真后保留并阻止改绑，不能单凭此字段认定 B 已接收，也不能反推记录一定有目录。 |
-| `trial`、`trial_required`、`trial_published` | `AstrBotAgent` 的 `mc_say(test_operation_id)` 写入或更新试玩邀请；试服安装工作区制品后 `Tasks.run` 置 `trial_required`，正式发布成功后保存 `trial_published` 的批次编号。它们不因清理而删除。检查：已发布必须有 `trial`。 |
+| `trial`、`trial_required`、`trial_published`、`trial_release_waived` | `AstrBotAgent` 的 `mc_say(test_operation_id)` 写入或更新试玩邀请；试服安装工作区制品后 `Tasks.run` 置 `trial_required`，正式发布成功后保存 `trial_published` 的批次编号；仅试服验证结案时 `finish_plan` 写入并持久化任务管理员的 `trial_release_waived`（`feedback_id`、`by`），正式发布入队时清除。它们不因清理而删除。检查：已发布必须有 `trial` 或 `trial_required`。 |
 | `release_checkpoint` | 核对试玩反馈和批准后，发送前记录 `prepared`、完整请求及 B 操作库标识；取得 B 的原操作记录后才标 `accepted`。续接先查原编号；只有同库明确无记录、请求未变、批准及试玩反馈仍有效且未请求停止，才以原编号补交。未知时暂停并保留；旧记录若缺同库证据只查不补。必须有 `applied_plan.trial_release`。 |
 | `cancel_pending`、`cancel_request` | `stop` 将 `stop_requested` 与 `cancel_pending` 同时置真。工作循环退出时，在调用 B 前保存 `cancel_request`；若重载则沿用原编号。B 的任务取消请求等本任务已提交的修复按原编号结算；A 成功保存终态时一起清空当前 `operation`，保留 `cancel_request` 和 B 上的原操作记录。两者出现时都要求 `stop_requested`。 |
-| `cleanup.pending` | 已正式发布的任务请求验收时，由 `stop` 写入。A、B 的试服和制品清理均完成后，`cleanup_trial` 将它置假；失败保留以便恢复。检查：待清理必须已有 `trial_published`。 |
+| `cleanup.pending` | 已正式发布的任务请求验收时，由 `stop` 写入；凭 `trial_release_waived` 仅试服验收时可不触发正式发布清理标志。A、B 的试服和制品清理均完成后，`cleanup_trial` 将它置假；失败保留以便恢复。检查：待清理必须已有 `trial_published`。 |
 | `pause_after_operation`、`pause_reason` | `pause_requested` 在批次执行期间设置前者；`run` 正常结算后取出并调用 `pause` 写入后者。预检拒绝或提前中止不走正常清理。`resume` 先写审计，成功后才取出原因；写入失败时任务保持暂停并报告错误。停止任务不会清除原因。 |
 | `model_retry` | `agent_runtime.model_request` 写入重试进度，在成功、部分失败结算或缩小上下文并重发时清除；审核失效、新反馈或显式续接也可能清除。暂停、停止或归档重载时可保留。 |
 | `archive_state` | 验收任务的取消结算后有目录且能总结时，`Tasks.run` 写 `pending`；`archive` 保存有效总结后改 `ready`，经验落盘后改 `completed`，失败保留原值。 |

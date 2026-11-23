@@ -1,6 +1,7 @@
 """One effective action list for review, approval display and execution."""
 
 import copy
+import hashlib
 from pathlib import PurePosixPath
 
 from .review import digest
@@ -145,6 +146,15 @@ def schedule_time(step):
     return f"{prefix} {step['at']}（B 本机时间）"
 
 
+def approval_excerpt(text):
+    lines = text.splitlines()
+    if len(text) <= 600 and len(lines) <= 8:
+        return text
+    preview = "\n".join(lines[:8])[:600]
+    sha256 = hashlib.sha256(text.encode()).hexdigest()
+    return f"{preview}\n…（原文 {len(lines)} 行、{len(text)} 字符，SHA-256：{sha256}）"
+
+
 def plan_text(plan):
     lines = [
         "测试副本实际步骤：" if plan.get("environment") == "test" else "实际步骤："
@@ -203,8 +213,12 @@ def plan_text(plan):
                 detail += (
                     f"，方块 {step['block_x']},{step['block_y']},{step['block_z']}"
                 )
-        lines.append(f"{index}. {detail}")
+        lines.append(f"{index}. {approval_excerpt(detail)}")
+        if kind == "script":
+            lines.append("脚本摘要：" + approval_excerpt(step["script"]))
     lines.append("方案说明：" + plan["summary"])
+    if directory := plan.get("expected_directory"):
+        lines.append("目标实例目录：" + directory)
     if plan.get("continuation"):
         lines.extend(
             (

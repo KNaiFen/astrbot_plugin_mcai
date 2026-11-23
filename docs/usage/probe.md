@@ -23,7 +23,7 @@ Probe 0.5.0 提供在线玩家、区块加载／tick 状态、对象计时、慢
 | 1.21.1 | Fabric | `mcai-probe-1.21.1-fabric-0.5.0.jar` | 21 |
 | 1.21.1 | NeoForge 21.1.247+（21.1.x） | `mcai-probe-1.21.1-neoforge-0.5.0.jar` | 21 |
 
-0.20.3 随 B 包提供 Probe 0.5.0 的八个目标，构建与 0.20.1 相同。更换旧构建时正常停服，移走旧 Probe 后放入对应的新 JAR，再启动；A、B 须配套更新，Probe 协议 1 按能力声明扩展。Forge 版不依赖 Fabric API；Fabric 版需要对应版本的 Fabric API 和 Loader 0.16.14+。Forge 包含 MixinExtras，NeoForge 使用加载器自带的 MixinExtras；不要安装 `sources` 源码包。Forge、NeoForge 和 Fabric 版本按表中加载器分别选择。NeoForge 按 21.1.247 基线构建并验证，其他 NeoForge 21.1.x 仅声明兼容范围。1.7.10 当前基线是标准 Forge + lwjgl3ify + UniMixins；GTNH 2.6.1 有隔离服验证记录，其他组合须按实际环境验证。
+B 包的 `probe/` 目录提供 Probe 0.5.0 的八个目标；若当次发行未调整 Probe，构建与已安装的 0.5.0 相同，无需重复替换。更换旧构建时正常停服，移走旧 Probe 后放入对应的新 JAR，再启动；A、B 须配套更新，Probe 协议 1 按能力声明扩展。Forge 版不依赖 Fabric API；Fabric 版需要对应版本的 Fabric API 和 Loader 0.16.14+。Forge 包含 MixinExtras，NeoForge 使用加载器自带的 MixinExtras；不要安装 `sources` 源码包。Forge、NeoForge 和 Fabric 版本按表中加载器分别选择。NeoForge 按 21.1.247 基线构建并验证，其他 NeoForge 21.1.x 仅声明兼容范围。1.7.10 当前基线是标准 Forge + lwjgl3ify + UniMixins；GTNH 2.6.1 有隔离服验证记录，其他组合须按实际环境验证。
 
 1.16.5 目标要求 Forge 36.2.39 或更高的 36.x，已验证标准 Forge 36.2.39 与 CatServer `1.16.5-1d8d6313`（Forge 36.2.39／Java 11.0.21）。混合端验证仅覆盖上述版本的隔离Probe／spark环境，其他插件及整合包组合需另测。
 
