@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .paths import resolve_file
 
-REVIEW_VERSION = 5
+REVIEW_VERSION = 6
 REVIEW_FRAME_BYTES = 5 * 1024**2
 FULLTEXT_THRESHOLD = 4096
 SCRIPT_SUFFIXES = (".ps1", ".bat", ".cmd", ".py")

@@ -22,7 +22,7 @@ from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.platform_metadata import PlatformMetadata
 from astrbot.core.provider.entities import ProviderRequest
-from jsonschema import ValidationError, validate
+from jsonschema import Draft202012Validator, ValidationError
 from pydantic.dataclasses import dataclass
 
 from .agent_runtime import (
@@ -527,7 +527,7 @@ class AstrBotAgent:
                 }
             else:
                 try:
-                    validate(arguments, schema)
+                    Draft202012Validator(schema).validate(arguments)
                     result = await invoke(
                         record,
                         arguments_for(name, clean_arguments(arguments), internal=True),

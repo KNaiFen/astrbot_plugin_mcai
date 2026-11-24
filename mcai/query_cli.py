@@ -142,12 +142,38 @@ EXAMPLES = {
         ["diagnostics", "hprof-summary", "--path", "dumps/capture.hprof.gz"],
     ],
 }
+EXAMPLES["nbt"].append(
+    [
+        "nbt",
+        "scan",
+        "--scope",
+        "playerdata",
+        "--nbt-path",
+        '["Inventory","*"]',
+        "--contains-item",
+        '{"id":"mod:gem"}',
+    ]
+)
+EXAMPLES["region-blocks"].append(
+    [
+        "region-blocks",
+        "read",
+        "--dimension",
+        "minecraft:overworld",
+        "--block-x",
+        "-1",
+        "--block-y",
+        "64",
+        "--block-z",
+        "-1",
+    ]
+)
 GUIDANCE = {
     "nbt": "nbt-path/relative-path是JSON键或下标数组。selector按uuid、position、slot或match定位对象。"
-    '先children看结构，再select定向取值。value/expected使用带类型SNBT，如1b、2L、"文字"；expected=null只表示已核实字段不存在。preview-batch不写入。',
+    '先children看结构，再select定向取值。value/expected使用带类型SNBT，如1b、2L、"文字"；expected=null只表示已核实字段不存在。preview-batch不写入；scan支持playerdata/saved_data/glob跨文件检索与冻结目标。',
     "region-nbt": "x/z是全局区块坐标。read/select读取磁盘存档；preview-batch只预览changes。实际region_batch须提案。",
-    "region-blocks": "read的block-x/y/z是全局方块坐标；search的x/z是全局区块坐标。磁盘数据不代表未保存的服内现场。",
-    "region-scan": "bounds为全局方块[minX,minY,minZ,maxX,maxY,maxZ]；先限定必要范围。计数不代表实测耗时。",
+    "region-blocks": "read的block-x/y/z是全局方块坐标；search的x/z是全局区块坐标；preview-batch预览批量方块修改。可按dimension与world-path自动定位。磁盘数据不代表未保存的服内现场。",
+    "region-scan": "bounds为全局方块[minX,minY,minZ,maxX,maxY,maxZ]；先限定必要范围。capture-targets冻结修改目标，target_fingerprint作为后续manifest_sha256。计数不代表实测耗时。",
     "logs": "默认view=events返回完整多行异常归组、次数、代表栈及罕见组。先据此选择，再用view=value读必要原文；时间按实例本地ISO格式。",
     "diagnostics": "process采集CPU/I/O增量、内存和线程；jvm还采集实际JDK的参数、堆概要和线程快照。"
     "memory-jfr默认25秒（10至60）；memory-trend默认300秒，每60秒采样，末尾可附JFR。"
@@ -159,7 +185,7 @@ GUIDANCE["nbt"] += (
     '{"by":"position","x":1,"y":64,"z":1}；{"by":"slot","slot":0}；'
     '{"by":"match","fields":[{"nbt_path":["id"],"value":"\\"minecraft:stone\\""}]}。'
     "\nchanges是数组，每项op为set/delete；nbt_path指向目标，可带selector/relative_path。"
-    "set需要expected和value，delete需要expected。"
+    "set需要expected或expected_sha256和value，delete需要expected或expected_sha256；expected=null仅用于确认新字段不存在。"
     '例如[{"op":"set","nbt_path":["Target","Count"],"expected":"1L","value":"2L"}]。'
 )
 GUIDANCE["region-nbt"] += (
@@ -167,7 +193,7 @@ GUIDANCE["region-nbt"] += (
 )
 GUIDANCE["region-scan"] += (
     '\nconditions为数组，例如[{"op":"eq","path":["id"],"value":"\\"minecraft:cow\\""}]。'
-    "op支持exists/eq/ne/gt/ge/lt/le；exists只需path，其余还需带类型SNBT字符串value。"
+    "op支持exists/eq/ne/gt/ge/lt/le/contains；path支持*展开列表或数组，exists只需path，其余还需带类型SNBT字符串value。"
 )
 EXAMPLES["files"].append(
     [
@@ -371,6 +397,12 @@ def query_operation(name, arguments):
     if action == "region_query":
         mode = arguments.pop("mode", name.removeprefix("mc_region_"))
         if name == "mc_region_blocks":
-            mode = {"read": "block", "search": "blocks"}[mode]
+            mode = {
+                "read": "block",
+                "search": "blocks",
+                "preview_batch": "preview_batch",
+            }[mode]
         arguments["mode"] = mode
+    if name == "mc_nbt" and arguments.get("mode") == "scan":
+        action = "nbt_scan"
     return action, arguments

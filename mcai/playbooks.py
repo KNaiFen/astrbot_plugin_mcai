@@ -12,7 +12,9 @@ PLAYBOOKS = {
 验证按影响选择：语法用 file、目标键值用 text/NBT、启动就绪用本轮 start 后的 cursor/session_id 查 ready（query 默认字面量匹配，逐行正则须加 (?m) 和 regex=true）。验证失败留现场与备份，不默认重跑或自动回滚。""",
     "world_nbt_repair": """存档 NBT 与坏区块处理：修改前必须停服备份。NBT 列表项按 UUID、方块实体坐标或 Slot 选择，先用 mc_query nbt/region-nbt 的 select 或 preview-batch 核对数量与旧值，再提交 nbt_batch/region_batch；每条变更带类型的 expected（仅原先不存在的新字段用 null），不用旧列表下标当稳定身份。
 坏区块先用 region-check 排查，恢复源先 region-export 并核对目录、维度、坐标及 usable，可从明确备份导出；整块删除或恢复用最新检查点指纹并注意关联 entities/poi/mcc。
-方块读改用 region-blocks 的 read/search，提交 block_set 须给出完整旧状态，替换方块实体类型须明确 remove_block_entity 与旧 SNBT；GTNH 等扩展数字 ID 暂不支持 block_set，勿凭可读取推定可写。""",
+方块读改用 region-blocks 的 read/search/preview-batch，可按 dimension 与 world_path 定位；block_batch 每项给出完整 expected 或 expected_sha256 与 state。旧 Anvil 支持扩展数字 ID，MCR 只读。替换方块实体类型须明确 remove_block_entity 与旧 SNBT。
+跨文件定位用 nbt scan（playerdata/saved_data/glob）或 region-scan（entities/block_entities/blocks）；conditions 支持列表通配符与 contains，contains_item 递归查容器。扫描冻结清单后以 scan_job_id 和 target_fingerprint 作为 manifest_sha256 提交 nbt_prune/region_prune；relative_path 可只修补匹配对象内字段，执行仍先核对完整对象哈希。方块清理用 op=set 与 state，clear_block_entity=true 才自动移除对应方块实体。
+停服即时筛选用 region_prune by_filter，必须限定世界或维度、bounds、entity_type/name/legacy_id 和 max_matches；超限整步不写入。核对清单计数、文件范围与样本后再提案，失败保留现场。""",
     "mod_install": """下载与安装 MOD：先用 mc_inventory 核对当前服务端实际版本、加载器、嵌套 JAR、依赖与清单，不用文件名猜身份。
 查来源用 mc_mods，下载经 mc_mods/mc_download 进 B 暂存区，不默认最新版，不直接执行未核实文件；再通过 mc_propose 的 install_download 提交安装，并在方案里写清目标路径及须移除的旧文件。""",
     "schedule": """定时备份与重启：先核实实例与 B 本地时间，再用单独的 mc_propose 提交唯一一个 schedule 步骤，不与修复、试服或 continuation 合并，每步对应独立短码批准。

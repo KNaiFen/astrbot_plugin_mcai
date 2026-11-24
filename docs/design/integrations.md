@@ -13,33 +13,63 @@
 | 旧 `.mcr` | 在任务副本中使用兼容文件名交给后端，保留原始NBT结构 |
 | 多版本实体 | 旧 `Level.Entities/TileEntities` 与新版独立实体区域 |
 | 世界发现 | 原版、Bukkit分离世界、模组维度中的 `region/entities/poi` |
-| 检索统计 | 实体类型、不同UUID表示、方块坐标范围、NBT字段条件；按类型／区块计数与排行 |
+| 检索统计 | 实体类型、不同UUID表示、方块坐标范围、NBT字段条件与容器搜物；按类型／状态／区块计数与排行 |
 
 每条结果携带世界／维度、区域文件、全局区块坐标、NBT路径和 `DataVersion`。负坐标按向下取整处理。未知模组字段保留，不自动转换世界版本。
 
+区域查询与修改可显式指定实例内 `path`，也可用 `dimension` 和坐标自动定位，多世界时用 `world_path` 限定实例内实际维度目录。标准维度 `minecraft:overworld`、`minecraft:the_nether`、`minecraft:the_end` 分别对应主世界、`DIM-1`、`DIM1`；模组资源名 `mod:dimension` 对应 `dimensions/mod/dimension`，1.7.10 等旧世界可用数字维度 `0/-1/1/其他整数` 或 `DIM<number>`。发现范围包括 Bukkit 分离世界目录，例如 `world_nether/DIM-1`；世界与维度条件必须唯一匹配，多个候选或未找到时返回候选路径，不猜测目标。具体用法见[自动定位](../usage/queries.md#维度与坐标自动定位)。
+
+`block_x/block_z` 先向下取整到区块，再由全局区块 `x/z` 向下取整到区域坐标。自动定位的物理 `dataset` 为 `region/entities/poi`，默认 `region`；先找 `.mca`，仅 `region` 在 `.mca` 不存在时回退同坐标 `.mcr`。显式 `path` 直接指定文件，不再按维度推断。自动定位要求目标文件已存在，不创建区域或区块。
+
 独立NBT和区域读取支持`selector`：按UUID（字符串、四整数及Most/Least表示）、方块实体`x/y/z`、物品`Slot`或带类型字段匹配；`relative_path`指向选中对象内字段。`mode: select`返回匹配数量、实际路径和SNBT，`preview_batch`验证并预览批量修改，不写文件。查询可返回多个匹配，实际修改要求每项唯一。
 
-批量修改用`nbt_batch`或同一个区域文件的`region_batch`，每项`changes`包含`op: set/delete`、`nbt_path`、可选`selector/relative_path`和必填`expected`；`set`另有带类型SNBT的`value`。`expected: null`只表示新字段原先不存在，不能用来跳过旧值检查。区域每项另带全局区块`x/z`。一次最多1000项，先按原状态解析全部目标并校验旧值／重叠，之后应用修改；同列表多项删除按原下标处理，不因前一次删除漂移。数组保留Byte/Int/Long类型重建，未修改字段保留。
+批量修改用`nbt_batch`或`region_batch`，每项`changes`包含`op: set/delete`、`nbt_path`、可选`selector/relative_path`，并提供带类型SNBT的`expected`或64位十六进制`expected_sha256`；`set`另有带类型SNBT的`value`。哈希针对目标标签的二进制NBT载荷，不是SNBT文本或整份文件；两者同时提供时都须匹配。`expected: null`只表示新字段原先不存在，不能与哈希并用，也不能跳过旧值检查。区域每项另带全局区块`x/z`；自动定位可按实际区域文件分组。一次最多1000项，同一文件内先按原状态解析全部目标并校验旧值／重叠，之后应用修改；同列表多项删除按原下标处理，不因前一次删除漂移。数组保留Byte/Int/Long类型重建，未修改字段保留。
 
 同一区域批量操作只采集一次副本，按目标区块读取，统一修改后一次保存、重新读取校验，再进入原文件替换与MCC备份路径；正常编辑仍拒绝丢弃损坏的邻居。一个批量步骤失败不会写入候选内容；多个文件步骤仍按既有逐步执行和失败保留现场语义运行，不承诺跨文件事务。
 
 区域写入保留全部原有扇区，只追加编辑过的压缩记录并更新目标头项；旁邻记录和时间戳原字节保留。目标区块通过二进制NBT与Python交换，Float／Double保留原始IEEE位（含负零和NaN载荷），不经整块SNBT往返。单独NBT使用同样的浮点保真读取；旧值比较区分浮点位。旧HeightMap只取固定上游算法的计算结果，不将算法解码的其他字段写回。候选重新解压后按二进制字节核对；外置MCC仍进入原备份与替换范围。
 
+## 跨文件扫描与冻结清理
+
+`mc_region_scan` 通过查询CLI的 `region-scan` 启动后台扫描，逻辑 `dataset` 为 `entities/block_entities/chunks/poi/blocks`。实体与方块实体支持 `entity_type`、UUID、三维方块 `bounds`、NBT `conditions` 和 `contains_item`；现代独立实体文件存在时优先读取，避免旧区块实体副本重复计数。`dataset=blocks` 按注册名 `name`、旧数字 `legacy_id` 和三维范围筛选已存储方块，支持列表、`by_type/by_state/by_chunk/top_chunks` 计数；Java 先按范围与调色板注册名排除无关区块，Python 解码命中区块并计数。方块扫描不应用实体NBT条件或容器搜物条件。
+
+实体类型、UUID与范围过滤下推到Java。无 `conditions/contains_item` 的 `by_type/by_chunk/top_chunks` 使用轻量行，不生成完整对象SNBT；冻结目标时由Java直接计算目标标签原始二进制载荷的SHA-256。NBT条件与容器递归仍在Python执行。条件 `path` 中的 `*` 只展开列表／数组元素；每个条件任一实际路径满足即可，多个条件全部满足。`contains` 对字符串做子串匹配、对列表／数组做带类型元素匹配、对Compound检查字符串键是否存在。
+
+`contains_item: {id, nbt_path?, value?, conditions?}` 递归搜索Compound和列表中的物品 `id`，覆盖嵌套容器、旧 `tag` 与现代 `components` 结构；可用成对 `nbt_path/value` 或 `conditions` 限定该物品标签，递归超过32层明确报错。它筛选包含物品的扫描对象，不自动将匹配物品改成修改目标。
+
+`mc_nbt` 的 `scan`（CLI：`nbt scan`）作为 `nbt_scan` 后台任务扫描独立NBT。`scope=playerdata` 默认唯一主世界的 `playerdata/*.dat`，多世界可用 `world_path` 指定主世界；`saved_data` 默认扫描发现维度的 `data/*.dat`，可用 `world_path/dimension` 收窄；`glob` 使用实例内显式文件模式。`nbt_path` 可含列表／数组通配符；`query` 在选中节点下按忽略大小写的字段名／字符串子串检索，另支持相同的 `conditions/contains_item`。结果可为 `list/by_file/by_type`；读取期间文件大小或修改时间变化会失败，不发布可用清单。
+
+独立NBT扫描完成后始终冻结目标；区域扫描对 `entities/block_entities/blocks` 的列表结果自动冻结，计数模式需显式 `capture_targets=true`。完整目标保存在原后台目录的 `targets.json`，`manifest.json` 记录实例目录、数据集、文件范围、数量、前5个样本及 `partial`；结果摘要返回 `target_count/target_files_count/target_fingerprint`。`target_fingerprint` 是 `targets.json` 内容的SHA-256，后续作为 `manifest_sha256`，并非 `manifest.json` 文件哈希。显示分页或缩略不会缩小冻结目标范围。
+
+批准方案的清理步骤沿用停服、备份、候选校验与失败留现场流程：
+
+| 步骤 | 输入与边界 |
+|---|---|
+| `region_prune`，`mode=from_scan` | 必填 `scan_job_id/manifest_sha256/op`，只接受本实例同目录已完成、非partial的实体／方块实体／方块冻结清单；执行按原文件、坐标／路径及目标哈希核对，不重新筛选扩大范围 |
+| `region_prune`，`mode=by_filter` | 必填 `dataset/bounds/max_matches/op`、`world_path`或`dimension`，且按数据集强制约束筛选与操作字段：实体／方块实体必填非空 `entity_type`（禁用 `name/legacy_id/state/clear_block_entity`），方块必填 `name` 或 `legacy_id` 且仅限 `op=set` 与 `state`（禁用 `entity_type/conditions/contains_item/value/relative_path/expected`）；`max_matches` 为1–100000。审核先列候选区域及MCC文件，精确目标停服后筛选，超过上限整步不写入 |
+| `nbt_prune` | 必填 `scan_job_id/manifest_sha256/op`，消费已完成的独立NBT冻结清单；根目标删除会删除整份文件，根目标设置须为Compound |
+
+实体／方块实体和独立NBT清理的 `op=delete/set` 默认作用于完整匹配对象：`set` 须提供带类型 `value`（不能同时提交 `state`），`delete` 不接受 `value` 或 `state`；可用 `relative_path` 只改对象内字段，可选 `expected` 再核对字段旧值，执行前仍核对完整冻结对象哈希。方块清理只接受 `op=set` 与完整 `state`（不能同时提交 `value`），删除方块须设为目标版本的空气状态；`clear_block_entity=true` 才自动移除对应唯一方块实体，歧义则拒绝。所有区域候选准备完成后才开始替换；跨文件安装失败仍按既有逐文件记录保留现场，不承诺跨文件事务。
+
 ## 方块坐标与状态
 
 `mc_region_blocks`的`read`按`block_x/block_y/block_z`查询一个已存储方块及对应方块实体；`search`按全局区块`x/z`查询该区块的已存储section，可按注册名`name`或旧数字`legacy_id`过滤，分页列表或`by_state`计数。支持现代`sections.block_states`、旧`Level.Sections.Palette/BlockStates`、旧Anvil数字`Blocks/Data/Add`，以及只读MCR列式数组；缺少section明确返回未存储，不当作空气或在线状态。
 
-方案`block_set`提供文件、方块坐标、完整带类型SNBT的`expected/state`。调色板修改重编码索引，按DataVersion区分连续与padded布局，保留其他方块和未知字段；旧数字写入限定ID 0至255和Data 0至15，含扩展ID的区块拒绝推测。方块类型变化且有方块实体时，必须用`remove_block_entity`明确提交其完整旧SNBT；只删方块实体不重编码方块缓存。通过原编解码器校验候选，再停服备份替换，MCC沿用原机制。
+方案`block_set`提供文件或维度、方块坐标、完整带类型SNBT的`expected/state`；`block_batch`用1–1000项`changes`，每项提供方块坐标、`state`与`expected`或`expected_sha256`，按实际区域和区块分组，重复坐标拒绝。`mc_region_blocks preview_batch`使用相同批量参数只预览，不写盘。调色板修改重编码索引，按DataVersion区分连续与padded布局，保留其他方块和未知字段。
+
+旧Anvil支持标准`Blocks/Data/Add`的12-bit数字ID写入，状态格式为`{Id:整数,Data:元数据b}`，ID范围0–4095、Data范围0–15；按需建立或更新`Add`半字节数组。读取`level.dat`中FML `ItemData`或`Registries.minecraft:blocks.ids`映射，辅助显示和按注册名查询；写入仍明确使用数字`Id/Data`。包含`Blocks16/Add2/Data16/BlocksB2/BlockIDs`等未知扩展数组的区块明确拒绝方块语义写入；GTNH等自定义节格式须按实际数组判断，读取成功不能推定可写。MCR列式方块仍只读。
+
+方块类型变化且有方块实体时，`block_set/block_batch`必须用`remove_block_entity`明确提交其完整旧SNBT；只删方块实体不重编码方块缓存。通过原编解码器校验候选，再停服备份替换，MCC沿用原机制。
 
 变更方块会失效光照缓存；现代Heightmaps交服务端重建，旧Anvil HeightMap使用固定MCA Selector算法重算。没有足够版本信息确定布局、过渡快照HeightMap与调色板混用、MCR语义写入或缺少section时明确拒绝，不升级世界、不创建未知section。此工具不运行游戏逻辑，也不会同步推断模组自有缓存、结构、计划刻或POI；涉及这些数据需按目标版本和模组进一步验证。活动区块优先使用服务端命令；离线恢复后需重启并核对实际效果。
 
 ## 区块检查、导出与点恢复
 
-`mc_region_check`检查扇区头、负载长度、MCC存在性、重叠和可解码NBT；带全局区块`x/z`时只检查指定位置，并返回`fingerprint`。默认同时纳入同维度`region/entities/poi`的同一坐标，`include_related: false`可明确缩小到当前文件。缺少完整8192字节区域头时只说明当前无法验证，返回文件体积、修改时间和采集变化，点修复拒绝继续。在线新世界可能尚未落盘，应结合服务端状态／Probe或正常停服后复查；离线持续异常再对照完整备份。
+`mc_region_check`检查扇区头、负载长度、MCC存在性、重叠和可解码NBT；带全局区块`x/z`时只检查指定位置，并返回`fingerprint`。默认同时纳入同维度`region/entities/poi`的同一坐标，`include_related: false`可明确缩小到当前文件。文件存在但缺少完整8192字节区域头时只说明当前无法验证，返回文件体积、修改时间和采集变化，点修复拒绝继续；显式传入 `path` 且目标文件不存在时仍可完成点检查并返回对应空缺关联指纹，供 `region_restore` 恢复重建。在线新世界可能尚未落盘，应结合服务端状态／Probe或正常停服后复查；离线持续异常再对照完整备份。
 
 `mc_region_export`把指定位置的原始压缩记录、外部MCC和来源清单保存到B的`jobs/<job_id>/chunk.zip`，不会安装或修改存档。可带`backup`从同规范目录的原备份提取，备份须实际覆盖所选关联文件；目录备份覆盖其子项。清单记录源目录、维度路径、坐标、DataVersion、来源备份和采集时间，归档计算SHA-256。损坏／采集中变化的导出仍留现场但`usable: false`，不能用于恢复；二进制ZIP供B本地保存或后续操作，`mc_artifact_read/find`用于文本产物。
 
-方案`region_restore`需提供`path/x/z/export_id/expected`，`expected`为当前点检查得到的关联指纹，且检查与导出使用相同关联范围。审核读取导出来源清单；执行前复核归档哈希、规范目录、维度路径和坐标，停服并备份全部实际区域／MCC目标。恢复优先复用可确认未被其他区块占用的目标原扇区，其次使用确认空闲的连续扇区；占用边界不可靠时跳过复用，追加时也避开其他头项声明的范围。除目标头项和写入范围外，其他字节保持不变，包括不可解码的邻居记录。候选先由原Java后端重新读取验证，之后才替换生产文件。源压缩方式和NBT结构保留，不迁移世界版本。
+方案`region_restore`需提供`path/x/z/export_id/expected`，`expected`为当前点检查得到的关联指纹，且检查与导出使用相同关联范围。审核读取导出来源清单；执行前复核归档哈希、规范目录、维度路径和坐标，停服并备份全部实际区域／MCC目标（显式 `path` 目标缺失时备份清单记录不存在状态，并在恢复时新建写入）。恢复优先复用可确认未被其他区块占用的目标原扇区，其次使用确认空闲的连续扇区；占用边界不可靠时跳过复用，追加时也避开其他头项声明的范围。除目标头项和写入范围外，其他字节保持不变，包括不可解码的邻居记录。候选先由原Java后端重新读取验证，之后才替换生产文件。源压缩方式和NBT结构保留，不迁移世界版本。
 
 确需删除损坏区块、等待服务端按其正常机制重新生成时，使用批准方案`region_remove`，同样声明坐标和当前关联指纹，默认处理关联数据并保留备份。它不主动加载／生成区块。恢复和删除均不跨路径搬迁区块；已无差异的内容不重复重写。多关联文件逐个替换，失败时原操作记录`writing/written_files`，保留已完成部分与备份，不自动重跑或回滚。
 

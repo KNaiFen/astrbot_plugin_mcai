@@ -1,4 +1,16 @@
-# 0.20.6 发布说明
+# 0.20.7 发布说明
+
+0.20.7 继续使用 `mcai-9`。请按[升级步骤](operations.md#升级步骤)配套更新 A、B 与托管窗口。随 B 包提供的 Probe 0.5.0 构建与 0.20.1 相同。下载及校验见 [GitHub Release v0.20.7](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.20.7)。
+
+| 模块 | 主要更新与修复（`d801b90`） |
+|---|---|
+| 维度坐标自动定位 | 区块读写、扫描、检查与批量方块改写支持按 `dimension` 或 `world_path` 自动映射到对应区域／实体文件，覆盖现代命名空间维度、旧数字维度和 Bukkit 分世界目录，歧义目录显式报错 |
+| 扫描冻结闭环与哈希校验 | 新增 `mc_nbt scan` 后台批量扫描（`playerdata`／`saved_data`／`glob`），与 `mc_region_scan` 共同落盘冻结目标清单并生成内容指纹，配合 `nbt_prune`、`region_prune`（`from_scan`／受限 `by_filter`）及 `expected_sha256` 执行严格核对、停服备份与单步原子清理；独立 AI 审核升级至 `REVIEW_VERSION = 6` |
+| 全区方块扫描与批量改写 | `mc_region_scan` 新增全区 `dataset="blocks"`（按名称／旧数字 ID／范围筛选与分块计数）；`mc_region_blocks preview_batch` 与方案 `block_batch` 支持单步最多 1000 处跨区块方块批量预览与修改 |
+| Java 筛选下推与深度条件 | `WorldTool.java` 下推实体类型、UUID 与三维范围筛选，计数模式跳过 SNBT 生成并直接使用原始二进制 NBT 计算 SHA-256；`match_condition` 支持列表通配 `*` 与 `contains`，`contains_item` 递归检索嵌套容器（兼容旧 `tag` 与现代 `components`） |
+| 旧版 Anvil 与修复鲁棒性 | 完善标准 1.7.10 Anvil `Blocks/Data/Add` 12 位扩展 ID 与 `HeightMap` 写入及 `level.dat` FML 注册表映射；修复 `by_filter` 跨数据集字段越界、`state/value` 冲突显示、缺失区域文件显式 `path` 点检查与重建恢复，以及单条畸形 UUID 实体中断整块扫描的问题 |
+
+## 0.20.6 发布说明
 
 0.20.6 继续使用 `mcai-9`。请按[升级步骤](operations.md#升级步骤)配套更新 A、B 与托管窗口。随 B 包提供的 Probe 0.5.0 构建与 0.20.1 相同。下载及校验见 [GitHub Release v0.20.6](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.20.6)。
 

@@ -98,12 +98,12 @@ tests/test_plan_continuation.py::test_one_approval_runs_three_observed_batches_w
 | MOD 源码修复、试服与发布 | A 工作区、B 测试端口和复制预检、试玩反馈、同制品发布、验收清理及恢复 | `test_mod_workspace.py`、`test_plan_continuation.py`、`test_client_recovery.py` |
 | 批准安装与经验 | 拒绝不安装、审核后暂存变化、旧文件备份/新增文件恢复、真实runner贯穿验收归档、归档失败重载重试、文档/索引中断去重、人工编辑保留、多案例并发、相关片段与不同目录隔离 | `test_mcai_workflow.py`、`test_web_downloads.py` |
 | 日志和文件查询 | 字面量/正则、大小写、空查询、无匹配、普通/gzip、损坏 gzip、UTF-8/UTF-16/GB18030、中文路径、重叠上下文去重、调用栈归属、跨日日期、时区转换、追加/轮转、空文件和缺失文件 | `test_diagnostics.py`、`test_query_cli.py` |
-| 维护工具与存档修复 | 哈希补丁／编码保留、后台等待／检索、JVM身份与卡死恢复、就绪观察、组件清单差异、身份批量NBT、坏邻居点恢复、方块打包／高度图与原生批准流程 | `test_host_maintenance.py`、`test_host_recovery.py`、`test_host_verification.py`、`test_host_world.py` |
+| 维护工具与存档修复 | 哈希补丁／编码保留、后台等待／检索、JVM身份与卡死恢复、就绪观察、组件清单差异、身份批量NBT、坏邻居点恢复、维度坐标解析与`block_batch`预览／执行、冻结清单`region_prune/nbt_prune`审核批准、停服过滤上限与方块实体移除 | `test_host_maintenance.py`、`test_host_recovery.py`、`test_host_verification.py`、`test_host_world.py` |
 | 大结果 | 行数和字符预算、全局事件序号不连续、重复读同一页、末页/空页、中文和 emoji 的长字段引用、按字符续读、首次大结果创建持久目录 | `test_audit_data.py`、`test_job_interactions.py`、`test_tool_contracts.py` |
 | 在线诊断 | 开服期间执行、工作子目录、中文和空格路径、stdout/stderr、跨输出分块的多字节字符、非零退出码、脚本错误后停止后续语句、无效超时、正常超时、父子进程取消 | `test_diagnostics.py`、`test_job_interactions.py` |
 | 后台协作 | 多请求复用同一操作、并发重复取消、取消已完成/失败任务、同实例扫描串行和排队取消、其他实例并行、扫描期间读控制台、修复前结束所属诊断和扫描、保留其他任务工作 | `test_diagnostics.py`、`test_job_interactions.py` |
-| 存档查询 | 核心检查真实片段、扫描及原生工具流程；专项检查旧／新实体区域、UUID表示、负坐标、过滤范围、条件和排名 | `test_diagnostics.py`、`test_agent_edges.py`、`world_compatibility.py` |
-| 存档修改和恢复 | 核心保留原生runner批准后的批量NBT、方块与区域恢复；专项保留数据类型、编解码、MCR／MCC及损坏邻居矩阵 | `test_host_world.py`、`world_compatibility.py` |
+| 存档查询 | 核心检查真实片段、扫描及原生工具流程；专项检查旧／新实体区域、UUID表示、维度与负坐标解析、歧义拒绝、`nbt_scan`通配条件／递归容器搜物、方块扫描与轻量计数、冻结清单指纹 | `test_diagnostics.py`、`test_agent_edges.py`、`world_compatibility.py` |
+| 存档修改和恢复 | 核心保留原生runner批准后的批量NBT、方块与区域恢复；专项保留冻结`region_prune/nbt_prune`、字段级清理与哈希旧值、`block_batch`及标准`Add`扩展ID写入／FML映射／高度图、未知扩展数组拒绝、数据类型、编解码、MCR／MCC及损坏邻居矩阵 | `test_host_world.py`、`world_compatibility.py` |
 | 修复故障 | 同一目标多次修改只备份原始内容、重叠目录/文件备份、恢复目录时移除新文件、备份失败、替换失败、修复脚本异常/超时保留现场、跳过后续步骤、失败后保持停服、显式停服不被自动重启覆盖、跨实例备份拒绝、有效步骤绑定与纯停服无依赖 | `test_repair_edges.py` |
 | 群任务状态 | 新反馈与来源、修复期间反馈、停止／暂停和重载、完整分段发送及失败续发；设置与实例占用边界保留独立故障场景 | `test_task_interactions.py`、`test_say_mode.py`、`test_audit_agent.py`、`test_review_resume.py` |
 | 真实 Agent 工具链 | 基础与按需加载工具的契约及原生 runner 流程，含Chat／Responses实际请求、错参后正确调用、五个探针入口、暂停续接、后台等待／分页／长字段／取消、操作记录与上下文历史、单回复多工具、未知工具后继续、步数上限、配置错误后恢复、中止和原编号检查点恢复 | `test_tool_contracts.py`、`test_agent_edges.py`、`test_review_resume.py`、`test_plan_continuation.py` |
@@ -118,7 +118,7 @@ tests/test_plan_continuation.py::test_one_approval_runs_three_observed_batches_w
 | 配置生命周期与主机退出 | 实例热重载、待生效字段、拒绝活动改名、配置版本、留证容量、BAT 重启和停服监听、B 退出时已接受操作结算、断线保留窗口配置 | `test_configuration_lifecycle.py`、`test_architecture_repairs.py` |
 | 留证、主动告警与附件 | 故障控制台、旧事件导入、附件身份与 gzip 分块、容量淘汰、B 失联、通知游标、窗口／磁盘／性能告警、另卷备份和过期活跃状态清理 | `test_incidents.py`、`test_incident_files.py`、`test_alerts.py` |
 | 定时维护与数据管理 | 计划审核、时段恢复、在线备份恢复保存、保留份数、任务清理保护、数据库压缩和按月日志清理 | `test_schedules.py`、`test_data_maintenance.py` |
-| 只读群命令与群附件 | 实例和 Probe 状态、问答权限及独立后台任务、附件来源和大小限制、引用身份、图片识别后仅传文字 | `test_readonly_commands.py`、`test_group_attachments.py` |
+| 只读群命令与群附件 | 实例和 Probe 状态、问答权限及独立后台任务、`nbt_scan`后台跟踪与结束取消、附件来源和大小限制、引用身份、图片识别后仅传文字 | `test_readonly_commands.py`、`test_group_attachments.py` |
 | 模型恢复、用量及结果完整性 | 启动恢复、长输入预算与归档重试、持续重试及中止、主请求和审核拒绝未完成输出、任务与每日用量、费用估算和上限续期 | `test_context_272k_regressions.py`、`test_continuous_api_retry.py`、`test_model_request_integrity.py`、`test_model_usage.py` |
 | 审核材料与历史证据 | 原始记录续读、容量收缩、反馈使旧提案失效、脚本依赖与恢复材料、范围去重及归档原文回填 | `test_review_contract.py`、`test_review_material_contract.py`、`test_evidence_context.py` |
 | Probe 就绪、spark 与 JVM 内存 | 当前 JVM 的新鲜响应和会话超时、spark 报告身份及采样权重、真实 JFR 和 HPROF、内存预算降级、产物路径约束 | `test_probe_readiness.py`、`test_spark_report.py`、`test_memory_diagnostics.py` |

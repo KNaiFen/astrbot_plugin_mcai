@@ -7,6 +7,12 @@ from jsonschema import ValidationError
 
 def argument_error(error):
     """Resolve discriminated branches before ranking errors at deeper paths."""
+    if error.validator == "enum":
+        return ValidationError(
+            f"须为以下允许值之一：{', '.join(map(str, error.validator_value))}",
+            path=error.absolute_path,
+            schema=error.schema,
+        )
     if not error.context:
         return error
     choices = error.schema.get("oneOf", [])
@@ -61,6 +67,16 @@ FIELDS = {
     "mc_job_wait": {"after": "cursor"},
     "mc_context_history": {"after": "cursor"},
     "mc_region_scan": {"world": "world_path"},
+    "mc_nbt": {"world": "world_path", "pattern": "glob"},
+    **{
+        name: {"world": "world_path"}
+        for name in (
+            "mc_region_nbt",
+            "mc_region_blocks",
+            "mc_region_check",
+            "mc_region_export",
+        )
+    },
     "mc_objects": {"type": "object_type"},
     "mc_profile": {"type": "object_type"},
 }
@@ -70,6 +86,8 @@ CHECK = {"pattern": "query", "forbid": "forbid_query", "after": "cursor", **COMM
 def field_names(tool, context=()):
     if context and context[-1] in ("check", "standalone_check", "checks"):
         return CHECK
+    if tool == "mc_propose" and context and context[-1] in ("step", "steps"):
+        return {**COMMON, "world": "world_path"}
     return {**COMMON, **(FIELDS.get(tool, {}) if not context else {})}
 
 

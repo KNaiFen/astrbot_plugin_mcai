@@ -7,6 +7,9 @@ from pathlib import PurePosixPath
 from .review import digest
 
 FILE_ACTIONS = {
+    "block_batch",
+    "region_prune",
+    "nbt_prune",
     "write_text",
     "patch_text",
     "nbt_set",
@@ -156,6 +159,9 @@ def approval_excerpt(text):
 
 
 ACTION_LABELS = {
+    "block_batch": "批量修改方块",
+    "region_prune": "批量清理区域对象",
+    "nbt_prune": "批量清理 NBT",
     "write_text": "写入文件",
     "patch_text": "修改文件",
     "nbt_set": "修改 NBT",
@@ -252,7 +258,38 @@ def plan_text(plan):
                 detail += "；移除旧文件：" + "、".join(step["remove_paths"])
         else:
             label = ACTION_LABELS.get(kind, kind)
-            detail = f"{label}：{step['path']}"
+            location = (
+                step.get("path")
+                or step.get("dimension")
+                or step.get("world_path")
+                or step.get("world")
+                or "冻结扫描目标"
+            )
+            detail = f"{label}：{location}"
+            if "changes" in step:
+                detail += f"，共 {len(step['changes'])} 项"
+            if "scan_job_id" in step:
+                detail += "；按已冻结清单"
+            if "bounds" in step:
+                detail += f"；范围 {step['bounds']}，匹配上限 {step['max_matches']}"
+            if kind in ("region_prune", "nbt_prune"):
+                for key, title in (
+                    ("entity_type", "实体类型"),
+                    ("name", "方块"),
+                    ("legacy_id", "旧方块ID"),
+                ):
+                    if key in step:
+                        detail += f"；{title} {step[key]}"
+                field = ".".join(map(str, step.get("relative_path", []))) or "匹配对象"
+                detail += (
+                    f"；删除 {field}"
+                    if step["op"] == "delete"
+                    else f"；设置 {field} 为 {step.get('state', step.get('value'))}"
+                )
+                if step.get("clear_block_entity"):
+                    detail += "；同时移除对应方块实体"
+            if step.get("targets") and "path" not in step:
+                detail += "；目标：" + "、".join(step["targets"])
             if "x" in step and "z" in step:
                 detail += f"，区块 ({step['x']}, {step['z']})"
             if "block_x" in step:

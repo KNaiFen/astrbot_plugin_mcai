@@ -505,12 +505,22 @@ def discover_worlds(directory, excluded=None):
                 excluded is None or not (base / name).resolve().is_relative_to(excluded)
             )
         ]
-        for dataset in ("region", "entities", "poi"):
+        for dataset in ("region", "entities", "poi", "data", "playerdata"):
             if dataset not in folders:
                 continue
             folders.remove(dataset)
+            if dataset in ("data", "playerdata") and not (
+                (base / "level.dat").is_file()
+                or any((base / name).is_dir() for name in ("region", "entities", "poi"))
+            ):
+                continue
             if not any(
-                path.is_file() and re.fullmatch(r"r\.-?\d+\.-?\d+\.mc[ar]", path.name)
+                path.is_file()
+                and (
+                    path.suffix == ".dat"
+                    if dataset in ("data", "playerdata")
+                    else re.fullmatch(r"r\.-?\d+\.-?\d+\.mc[ar]", path.name)
+                )
                 for path in (base / dataset).iterdir()
             ):
                 continue
@@ -533,3 +543,87 @@ def discover_worlds(directory, excluded=None):
                     "发现超过 256 个世界目录，请移出备份目录并缩小实例范围"
                 )
     return sorted(found.values(), key=lambda item: item["path"])
+
+
+def resolve_world_root(directory, excluded=None, *, world_path=None, dimension=None):
+    """Resolve one discovered dimension directory; ambiguity is never guessed."""
+    directory = Path(directory).resolve()
+    worlds = discover_worlds(directory, excluded)
+    if world_path is not None:
+        relative = Path(world_path)
+        target = (
+            directory if str(relative) == "." else resolve_file(directory, relative)
+        )
+        worlds = [item for item in worlds if directory / item["path"] == target]
+    if dimension is not None:
+        value = str(dimension)
+        if re.fullmatch(r"-?\d+", value):
+            number = int(value)
+            value = "." if number == 0 else f"DIM{number}"
+        elif value in (
+            "minecraft:overworld",
+            "minecraft:the_nether",
+            "minecraft:the_end",
+        ):
+            value = {
+                "minecraft:overworld": ".",
+                "minecraft:the_nether": "DIM-1",
+                "minecraft:the_end": "DIM1",
+            }[value]
+        elif ":" in value:
+            if not re.fullmatch(r"[a-z0-9_.-]+:[a-z0-9_./-]+", value) or any(
+                part in ("", ".", "..") for part in value.replace(":", "/").split("/")
+            ):
+                raise ValueError("维度命名空间或路径无效")
+            value = "dimensions/" + value.replace(":", "/", 1)
+        elif value != "." and not re.fullmatch(r"DIM-?\d+", value):
+            raise ValueError("维度须为标准资源名或数字ID")
+        worlds = [item for item in worlds if item["dimension"] == value]
+    if len(worlds) != 1:
+        candidates = [item["path"] for item in worlds] or [
+            item["path"] for item in discover_worlds(directory, excluded)
+        ]
+        raise ValueError(
+            f"世界/维度须唯一匹配，实际{len(worlds)}个；候选：{candidates}"
+        )
+    return directory / worlds[0]["path"]
+
+
+def resolve_region_path(
+    directory,
+    excluded=None,
+    *,
+    path=None,
+    dimension=None,
+    world_path=None,
+    block_x=None,
+    block_z=None,
+    x=None,
+    z=None,
+    dataset="region",
+    require_exists=True,
+):
+    if path is not None:
+        target = resolve_file(directory, path)
+    else:
+        if dataset not in ("region", "entities", "poi"):
+            raise ValueError("区域dataset须为region、entities或poi")
+        if block_x is not None or block_z is not None:
+            if block_x is None or block_z is None or x is not None or z is not None:
+                raise ValueError("须提供一对方块坐标或一对区块坐标")
+            x, z = block_x // 16, block_z // 16
+        if x is None or z is None:
+            raise ValueError("缺少区块或方块坐标")
+        base = resolve_world_root(
+            directory, excluded, world_path=world_path, dimension=dimension
+        )
+        target = base / dataset / f"r.{x // 32}.{z // 32}.mca"
+        if (
+            dataset == "region"
+            and not target.exists()
+            and target.with_suffix(".mcr").is_file()
+        ):
+            target = target.with_suffix(".mcr")
+    if require_exists and not target.is_file():
+        raise ValueError(f"区域文件不存在：{target}")
+    return target

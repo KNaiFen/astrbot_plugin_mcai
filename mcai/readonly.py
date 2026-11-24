@@ -62,6 +62,7 @@ READ_TOOLS = (
     }
 )
 BACKGROUND = {
+    "nbt_scan",
     "probe",
     "files_query",
     "logs",
