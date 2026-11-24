@@ -24,7 +24,7 @@ function markSection() {
 }
 markSection();
 window.addEventListener('hashchange', () => { markSection(); window.scrollTo(0, 0); });
-let host = null, poll = null;
+let host = null, hostLoaded = false, poll = null;
 let catalog, readPriceBindings;
 function show(text, error = false) {
   const dialogError = document.querySelector('#management-dialog-error');
@@ -41,7 +41,11 @@ function values() {
   const result = {};
   for (const element of form.elements) {
     if (!element.name) continue;
-    result[element.name] = element.type === 'checkbox' ? element.checked : element.type === 'number' ? Number(element.value) : element.tagName === 'TEXTAREA' ? element.value.split(/[\s,，]+/).filter(Boolean) : element.value;
+    result[element.name] = element.type === 'checkbox' ? element.checked : element.type === 'number' ? Number(element.value) : element.value;
+    if (['admin_ids', 'group_ids', 'incident_routes', 'model_prices'].includes(element.name)) {
+      const separator = ['admin_ids', 'group_ids'].includes(element.name) ? /[\s,，]+/ : /\r?\n/;
+      result[element.name] = element.value.split(separator).map(value => value.trim()).filter(Boolean);
+    }
   }
   if (!result.host_token) delete result.host_token;
   if (!result.curseforge_api_key) delete result.curseforge_api_key;
@@ -103,7 +107,19 @@ async function loadA() {
   readPriceBindings = setupEditors(form, { ...data, bindings: prices.bindings }, () => hostApi('servers'),
     { pick: pickPrice, models: () => catalog?.models || [] });
 }
-async function saveA() { await api('POST', 'settings', values()); }
+async function saveA() {
+  const invalid = Array.from(form.elements).find(element => element.willValidate && !element.validity.valid);
+  if (invalid) {
+    location.hash = `#${invalid.closest('.settings-section').id}`;
+    markSection();
+    for (let parent = invalid.parentElement; parent; parent = parent.parentElement) {
+      if (parent.tagName === 'DETAILS') parent.open = true;
+    }
+    invalid.reportValidity();
+    throw new Error(invalid.validationMessage);
+  }
+  await api('POST', 'settings', values());
+}
 form.addEventListener('submit', event => { event.preventDefault(); action(event.submitter, async () => {
   await saveA();
   show('A 配置已保存并生效。');
@@ -215,6 +231,7 @@ async function loadHost() {
   showIncidentSettings(host);
   if (host.error) show(`实例热重载错误：${host.error}`, true);
   else if (host.restart_required) show(`主机配置已保存，重启 B 后生效。当前运行：PowerShell ${host.effective.powershell_path}；存档 Java 配置 ${host.effective.world_tools.java_path || '默认'}；额度 ${host.effective.operations_memory_limit_mib} MiB。`);
+  hostLoaded = true;
 }
 document.querySelector('#load-host').onclick = function () { action(this, loadHost); };
 document.querySelector('#add-instance').onclick = () => instance();
@@ -291,16 +308,21 @@ incidentForm.addEventListener('submit', event => {
       incident_restart_window_seconds: Number(restartWindow.value || restartWindow.placeholder),
       incident_capacity_mib: Number(incidentCapacity.value || incidentCapacity.placeholder),
     });
+    host = await api('GET', 'host');
+    showIncidentSettings(host);
     if (result.application_error) {
       show(`留证容量 ${result.incident_capacity_mib} MiB 已保存，当前仍为 ${result.effective.incident_capacity_mib} MiB。处理错误后重新保存：${result.application_error}`, true);
       return;
     }
-    showIncidentSettings(await api('GET', 'host'));
     show('主动留证设置已保存并生效。');
   });
 });
 document.querySelector('#refresh-incident-usage').onclick = function () {
-  action(this, async () => showIncidentSettings(await api('GET', 'host'), !host));
+  action(this, async () => {
+    const loadValues = !host;
+    host = await api('GET', 'host');
+    showIncidentSettings(host, loadValues);
+  });
 };
 const names = { conversation: '普通对话', image: '图片识别', stream: '流式响应', function_call: '工具调用与续接', reasoning_effort: '排障思考强度', web_search: 'API 托管搜索', web_search_preview: '兼容托管搜索', alpha_search: '独立搜索', alpha_open: '独立搜索打开网页', alpha_find: '独立搜索页内查找', progress: '执行进度汇报', review_json: '审核模型与 JSON' };
 const statuses = { testing: '测试中', passed: '验证通过', unsupported: '明确不支持', unobserved: '本次未观察到', failed: '请求失败' };
@@ -712,7 +734,7 @@ document.querySelector('#export-diagnostics').onclick = function () {
   });
 };
 const hostApi = (view, params = {}) => api('GET', 'management/host', { view, ...params });
-const management = createManagement({ api, hostApi, bridge, action, show, loadHost, ensureHost: () => host ? Promise.resolve() : loadHost(), diskSize, storageTable });
+const management = createManagement({ api, hostApi, bridge, action, show, loadHost, ensureHost: () => hostLoaded ? Promise.resolve() : loadHost(), diskSize, storageTable });
 styleSettings(document);
 management.open(location.hash || '#servers');
 window.addEventListener('hashchange', () => management.open(location.hash || '#servers'));

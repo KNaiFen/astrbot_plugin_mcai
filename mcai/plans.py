@@ -2,6 +2,7 @@
 
 import copy
 import hashlib
+import re
 from pathlib import PurePosixPath
 
 from .review import digest
@@ -28,9 +29,27 @@ FILE_ACTIONS = {
 }
 
 
-def effective_steps(steps, running, target_lists):
-    from .verification import validate_checks
+def validate_checks(checks):
+    for index, check in enumerate(checks):
+        if not check.get("regex"):
+            continue
+        for field in (
+            ("pattern", "forbid")
+            if check["kind"] == "ready"
+            else ("query",)
+            if check["kind"] == "text"
+            else ()
+        ):
+            if field in check:
+                try:
+                    re.compile(check[field])
+                except re.error as exc:
+                    raise ValueError(
+                        f"checks[{index}].{field} 正则无效：{exc}"
+                    ) from exc
 
+
+def effective_steps(steps, running, target_lists):
     for step in steps:
         if step["action"] == "verify":
             validate_checks(step["checks"])
@@ -198,15 +217,33 @@ def verify_check_text(check):
     return f"{kind} {check['path']}" if "path" in check else kind
 
 
-def plan_text(plan):
-    lines = []
+def _stage_line(text):
+    cleaned = text.strip()
+    for prefix in ("- ", "• ", "* "):
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix) :].strip()
+            break
+    return approval_excerpt(cleaned) if cleaned else ""
+
+
+def plan_sections(plan):
+    meta = []
+    if directory := plan.get("expected_directory"):
+        meta.append("目标实例目录：" + directory)
     if summary := (plan.get("summary") or "").strip():
-        lines.append("方案说明：" + summary)
-    lines.append(
-        "测试副本执行步骤：" if plan.get("environment") == "test" else "执行步骤："
+        meta.append("方案说明：" + summary)
+    continuation = plan.get("continuation")
+    base_heading = (
+        "测试副本执行步骤" if plan.get("environment") == "test" else "执行步骤"
     )
+    step_lines = [
+        f"{base_heading}（本批实际执行）：" if continuation else f"{base_heading}："
+    ]
     labels = {"start": "启动服务端", "stop": "停止服务端", "restart": "重启服务端"}
-    for index, step in enumerate(plan["steps"], 1):
+    script_total = sum(1 for step in plan["steps"] if step["action"] == "script")
+    script_index = 0
+    scripts = []
+    for step in plan["steps"]:
         kind = step["action"]
         if kind in labels:
             detail = labels[kind]
@@ -243,7 +280,19 @@ def plan_text(plan):
         elif kind == "command":
             detail = "执行控制台命令：" + step["command"]
         elif kind == "script":
-            detail = "执行修复脚本；备份范围：" + "、".join(step["backup_paths"])
+            script_index += 1
+            backup_scope = "、".join(step["backup_paths"])
+            detail = (
+                f"执行修复脚本 {script_index}；备份范围：{backup_scope}"
+                if script_total > 1
+                else f"执行修复脚本；备份范围：{backup_scope}"
+            )
+            script_header = (
+                f"脚本摘要 {script_index}（备份范围：{backup_scope}）："
+                if script_total > 1
+                else "脚本摘要："
+            )
+            scripts.append(f"{script_header}\n{approval_excerpt(step['script'])}")
         elif kind == "verify":
             detail = "验证：" + "；".join(
                 verify_check_text(check) for check in step["checks"]
@@ -296,21 +345,39 @@ def plan_text(plan):
                 detail += (
                     f"，坐标 ({step['block_x']}, {step['block_y']}, {step['block_z']})"
                 )
-        lines.append(f"{index}. {approval_excerpt(detail)}")
-        if kind == "script":
-            lines.append("脚本摘要：" + approval_excerpt(step["script"]))
-    if directory := plan.get("expected_directory"):
-        lines.append("目标实例目录：" + directory)
-    if plan.get("continuation"):
-        lines.extend(
-            (
-                "允许范围：" + plan["continuation"]["scope"],
-                "完成条件：" + plan["continuation"]["completion"],
-            )
-        )
+        step_lines.append(f"- {approval_excerpt(detail)}")
     if any(
         step["action"] == "command" and not step.get("backup_paths")
         for step in plan["steps"]
     ):
-        lines.append("在线命令无恢复备份。")
-    return "\n".join(lines)
+        step_lines.append("在线命令无恢复备份。")
+    sections = []
+    if meta:
+        sections.append("\n".join(meta))
+    sections.append("\n".join(step_lines))
+    stages = [
+        line
+        for item in (continuation or {}).get("planned_stages") or ()
+        if isinstance(item, str) and (line := _stage_line(item))
+    ]
+    if stages:
+        sections.append(
+            "\n".join(
+                ["后续规划（按实测动态推进）：", *(f"- {stage}" for stage in stages)]
+            )
+        )
+    primary = "\n\n".join(sections)
+    extras = []
+    if scripts:
+        extras.append("\n\n".join(scripts))
+    if continuation:
+        extras.append(
+            f"允许范围：{continuation['scope']}\n\n"
+            f"完成条件：{continuation['completion']}"
+        )
+    return primary, extras
+
+
+def plan_text(plan):
+    primary, extras = plan_sections(plan)
+    return "\n\n".join((primary, *extras))

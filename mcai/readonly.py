@@ -7,7 +7,7 @@ import json
 import re
 import uuid
 from contextlib import aclosing
-from pathlib import PurePosixPath
+from pathlib import PurePosixPath, PureWindowsPath
 
 import aiohttp
 from astrbot.core.agent.hooks import BaseAgentRunHooks
@@ -21,11 +21,12 @@ from jsonschema import ValidationError, validate
 from .agent_runtime import check_response, effort_provider, request_provider
 from .astrbot_agent import McTool, McToolSet
 from .client import RemoteError
-from .query_cli import QueryHelp, parse_query, query_operation
-from .tool_arguments import arguments_for
+from .queries import PRIVATE_KEY_RE, is_sensitive_path
+from .query_cli import QueryHelp, parse_query, query_argv, query_operation
+from .tool_arguments import arguments_for, model_continuations
 from .tool_help import tool_help
 from .tool_results import model_result
-from .tool_schemas import TOOLS
+from .tool_schemas import QUERY_TOOLS, TOOLS
 from .tracing import trace_event, traced_provider
 
 ASK_STEPS = 10
@@ -110,30 +111,13 @@ KV_SECRET_RE = re.compile(
     r"(?:\"([^\r\n\"]*)\"|'([^\r\n']*)'|([^\s,;#\r\n}\]]+))"
 )
 SENSITIVE_KEY_RE = re.compile(r"(?:^|[._-])(?:" + _SECRET_KEY_BODY + r"|token)$", re.I)
-SENSITIVE_EXACT_NAMES = frozenset(
-    {
-        "banned-ips.json",
-        "banned-ips.txt",
-        ".env",
-        "authorized_keys",
-        "known_hosts",
-    }
-)
-SENSITIVE_SUFFIXES = frozenset(
-    {".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".kdbx", ".ppk"}
-)
-SENSITIVE_NAME_RE = re.compile(
-    r"^(?:\.env\..+|banned-ips.*|id_rsa.*|id_ed25519.*|id_ecdsa.*"
-    r"|(?:.*[._-])?(?:secret|secrets|credential|credentials|password|passwords|passwd)(?:[._-].*)?)$",
-    re.I,
-)
 IP_QUERY_RE = re.compile(
     r"(?:\d{1,3}|\\d(?:\{[^}]+\}|\+|\*)?|\[[0-9-]+\])\s*(?:\\\.|\.)\s*"
     r"(?:\d{1,3}|\\d(?:\{[^}]+\}|\+|\*)?|\[[0-9-]+\])\s*(?:\\\.|\.)\s*"
     r"(?:\d{1,3}|\\d(?:\{[^}]+\}|\+|\*)?|\[[0-9-]+\])\s*(?:\\\.|\.)"
 )
 SENSITIVE_QUERY_RE = re.compile(
-    r"(?:rcon\\?\.password|banned-ips|\b(?:password|passwd|secret_key|api[_-]?key|private[_-]?key|client[_-]?secret|access[_-]?token|auth[_-]?token)\b)",
+    r"(?:rcon\\?\.password|banned-ips|\b(?:password|passwd|secret_key|api[_-]?key|private[ _-]?key|client[_-]?secret|access[_-]?token|auth[_-]?token)\b)",
     re.I,
 )
 VERSION_KEYS = frozenset(
@@ -191,6 +175,7 @@ def _replace_kv_secret(match):
 def redact_ask_text(text, *, preserve_versions=False):
     if not text:
         return text
+    text = PRIVATE_KEY_RE.sub("[已脱敏私钥]", text)
     text = IPV6_CANDIDATE_RE.sub(_replace_ipv6, text)
     if not preserve_versions:
         text = IPV4_RE.sub("[已脱敏IP]", text)
@@ -204,24 +189,6 @@ def redact_ask_text(text, *, preserve_versions=False):
 
 def is_sensitive_key(key):
     return bool(isinstance(key, str) and SENSITIVE_KEY_RE.search(key.strip()))
-
-
-def is_sensitive_path(raw):
-    if not isinstance(raw, str) or not raw.strip():
-        return False
-    normalized = raw.replace("\\", "/")
-    for segment in PurePosixPath(normalized).parts:
-        cleaned = segment.strip().strip("*?").lower()
-        if not cleaned:
-            continue
-        if cleaned in SENSITIVE_EXACT_NAMES:
-            return True
-        if any(cleaned.endswith(suffix) for suffix in SENSITIVE_SUFFIXES):
-            return True
-        stem = cleaned.rsplit(".", 1)[0] if "." in cleaned else cleaned
-        if SENSITIVE_NAME_RE.fullmatch(cleaned) or SENSITIVE_NAME_RE.fullmatch(stem):
-            return True
-    return False
 
 
 def check_ask_query(query):
@@ -238,15 +205,31 @@ def check_ask_query(query):
 
 def sanitize_ask_data(value, *, key=None, hide_status_paths=False):
     if isinstance(value, str):
+        if value.lstrip().startswith(("{", "[")):
+            try:
+                structured = json.loads(value)
+            except json.JSONDecodeError:
+                pass
+            else:
+                if isinstance(structured, (dict, list)):
+                    return json.dumps(
+                        sanitize_ask_data(
+                            structured, hide_status_paths=hide_status_paths
+                        ),
+                        ensure_ascii=False,
+                    )
         return redact_ask_text(
             value, preserve_versions=bool(key and key.lower() in VERSION_KEYS)
         )
     if isinstance(value, list):
-        return [sanitize_ask_data(item, key=key) for item in value]
+        return [
+            sanitize_ask_data(item, key=key, hide_status_paths=hide_status_paths)
+            for item in value
+        ]
     if isinstance(value, dict):
         if isinstance(value.get("path"), str) and is_sensitive_path(value["path"]):
             return {
-                "path": value["path"],
+                "path": redact_ask_text(value["path"]),
                 "redacted": True,
                 "text": "[已屏蔽敏感文件]",
             }
@@ -269,7 +252,9 @@ def sanitize_ask_data(value, *, key=None, hide_status_paths=False):
                     cleaned[item_key] = "[已脱敏]"
                     continue
             cleaned[item_key] = sanitize_ask_data(
-                item_value, key=item_key if isinstance(item_key, str) else None
+                item_value,
+                key=item_key if isinstance(item_key, str) else None,
+                hide_status_paths=hide_status_paths,
             )
         return cleaned
     return value
@@ -602,14 +587,30 @@ async def run_question(
                 raise ValueError(
                     "只读问答只开放 process 和 jvm 诊断；持续采样、录制、堆转储及其他诊断请使用排障任务。"
                 )
+            action, arguments = query_operation(query, options)
             for field in ("path", "pattern", "attachment"):
-                if is_sensitive_path(options.get(field)):
+                if is_sensitive_path(arguments.get(field)):
                     raise ValueError(
                         "只读问答不允许读取包含现实 IP 或密钥凭据的敏感文件。"
                     )
-            if "query" in options:
-                check_ask_query(options["query"])
-            action, arguments = query_operation(query, options)
+            if "query" in arguments:
+                check_ask_query(arguments["query"])
+            if query == "mc_logs":
+                pattern = arguments.get("pattern", "logs/**/*.log*").replace("\\", "/")
+                parts = PurePosixPath(pattern).parts
+                if (
+                    PureWindowsPath(pattern).anchor
+                    or ":" in pattern
+                    or any(part.rstrip(" .") == "" for part in pattern.split("/"))
+                ):
+                    raise ValueError("只读问答的日志查询必须位于 logs/ 目录内。")
+                if len(parts) == 1 and re.fullmatch(r"[^/]*\.log[^/]*", pattern, re.I):
+                    pattern = "logs/**/" + pattern
+                elif len(parts) < 2 or parts[0].rstrip(" .").lower() != "logs":
+                    raise ValueError("只读问答的日志查询必须位于 logs/ 目录内。")
+                arguments["pattern"] = pattern
+            if query in ("mc_files", "mc_logs"):
+                arguments["exclude_sensitive"] = True
         elif name in JOB_MODES:
             if arguments["job_id"] not in reads.jobs:
                 raise ValueError("只能读取本次问答启动的后台工作。")
@@ -633,18 +634,34 @@ async def run_question(
     async def dispatch(name, arguments):
         try:
             raw_result = await invoke(name, arguments)
-            result = model_result(
-                name,
-                arguments,
-                sanitize_ask_data(raw_result, hide_status_paths=(name == "mc_status")),
+            result_name, result_arguments = name, arguments
+            if name == "mc_query" and "help" not in raw_result:
+                result_name, result_arguments = parse_query(arguments["argv"])
+            result = model_continuations(
+                model_result(
+                    result_name,
+                    arguments_for(result_name, result_arguments, internal=True),
+                    raw_result,
+                )
             )
+            next_call = result.get("next_call")
+            if next_call and next_call["name"] in QUERY_TOOLS:
+                next_call.update(
+                    name="mc_query",
+                    arguments={
+                        "argv": query_argv(next_call["name"], next_call["arguments"])
+                    },
+                )
+            result = sanitize_ask_data(result, hide_status_paths=(name == "mc_status"))
         except (ValueError, ValidationError, *BACKEND_ERRORS) as exc:
             result = {
                 "ok": False,
                 "error": {
-                    "message": exc.message
-                    if isinstance(exc, ValidationError)
-                    else str(exc) or type(exc).__name__
+                    "message": redact_ask_text(
+                        exc.message
+                        if isinstance(exc, ValidationError)
+                        else str(exc) or type(exc).__name__
+                    )
                 },
             }
         trace_event(

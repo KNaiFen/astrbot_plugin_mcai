@@ -19,7 +19,7 @@ from .client import ReleaseDeferred, RemoteError
 from .knowledge import Knowledge
 from .model_usage import task_usage
 from .paths import resolve_file
-from .plans import approval_command, plan_identity, plan_text
+from .plans import approval_command, plan_identity, plan_sections, plan_text
 from .review import digest
 from .tool_results import plain_output
 from .web import WebPages
@@ -169,6 +169,7 @@ class Tasks:
         self.outbox_sends = {}
         self.outbox_sending = set()
         self.closing = False
+        self.retired_clients = []
 
     def save(self, job):
         key, messages = job["id"], job["messages"]
@@ -268,29 +269,47 @@ class Tasks:
             elif job["state"] == "applying":
                 self.wake(job)
 
-    def message(self, job, text, mention=None, *, identity=None):
+    def message(self, job, text="", mention=None, *, identity=None, parts=None):
         from .search import render_citations
 
-        text = render_citations(self.store, job["id"], text)
-        text = re.sub(r"\n\s*\n(?=[^\n]*/mcai[a-z]+\b)", "\n", text.strip())
-        text = space_commands(text)
-        if not text:
-            return
-        self.log(job, "group_message", text=text)
+        if parts is None:
+            text = render_citations(self.store, job["id"], text)
+            text = re.sub(r"\n\s*\n(?=[^\n]*/mcai[a-z]+\b)", "\n", text.strip())
+            text = space_commands(text)
+            if not text:
+                return
+            self.log(job, "group_message", text=text)
+            outbox_text = f"「{job['name']}」：{text}"
+            saved_parts = None
+        else:
+            cleaned = [
+                space_commands(render_citations(self.store, job["id"], part.strip()))
+                for part in parts
+                if part and part.strip()
+            ]
+            if not cleaned:
+                return
+            cleaned[0] = f"「{job['name']}」：\n{cleaned[0]}"
+            outbox_text = "\n\n".join(cleaned)
+            self.log(
+                job,
+                "group_message",
+                text=outbox_text.removeprefix(f"「{job['name']}」："),
+            )
+            saved_parts = cleaned if len(cleaned) > 1 else None
         key = f"{identity}-0" if identity else uuid.uuid4().hex
         if not self.store.get("outbox", key):
-            self.store.save(
-                "outbox",
-                key,
-                {
-                    "id": key,
-                    "task": job["id"],
-                    "origin": job["origin"],
-                    "text": f"「{job['name']}」：{text}",
-                    "mention": mention,
-                    "sent": False,
-                },
-            )
+            record = {
+                "id": key,
+                "task": job["id"],
+                "origin": job["origin"],
+                "text": outbox_text,
+                "mention": mention,
+                "sent": False,
+            }
+            if saved_parts is not None:
+                record["parts"] = saved_parts
+            self.store.save("outbox", key, record)
 
     def progress(self, job, identity, text, *, forward=False):
         if job["stop_requested"] or not text.strip():
@@ -368,6 +387,19 @@ class Tasks:
         except OSError as exc:
             raise ValueError(f"续接失败，无法写入审计：{exc}") from exc
         job.pop("pause_reason")
+        if (
+            job.get("plan")
+            and not job.get("operation")
+            and not any(item["sender"] != "system" for item in job["pending"])
+        ):
+            job["state"] = "waiting"
+            self.save(job)
+            self.message(
+                job,
+                f"已恢复等待审批，原方案与短码保留。管理员批准：“{approval_command(job)}”",
+                job["admin"],
+            )
+            return
         notice = "继续排查。"
         if job.pop("token_limit_pause", False):
             job["token_limit_renewals"] = job.get("token_limit_renewals", 0) + 1
@@ -677,6 +709,13 @@ class Tasks:
             raise ValueError("实例不存在，请先 mc_instances 识别目标")
         if not entry.get("selectable", True):
             raise ValueError("实例已待移除，不能绑定新任务")
+        for job in self.jobs.values():
+            if (
+                job.get("directory") == entry["canonical_directory"]
+                and job["stop_requested"]
+                and job.get("cancel_pending")
+            ):
+                self.wake(job)
         return entry
 
     async def select_instance(self, job, instance, reason):
@@ -748,11 +787,15 @@ class Tasks:
                 directory=directory,
                 reason=reason,
             )
-            for previous in self.jobs.values():
-                if previous.get("directory") == directory and previous.get(
-                    "archive_state"
-                ) in ("pending", "ready"):
+        for previous in self.jobs.values():
+            if previous.get("directory") == directory and previous["state"] in (
+                "done",
+                "stopped",
+            ):
+                if previous.get("archive_state") in ("pending", "ready"):
                     self.archive_later(previous)
+                if previous.get("cleanup", {}).get("pending"):
+                    self.wake(previous)
         try:
             history = self.knowledge.context(
                 directory,
@@ -760,7 +803,7 @@ class Tasks:
                 + "\n"
                 + "\n".join(item["text"] for item in job["feedback"]),
             )
-        except ValueError as exc:
+        except (OSError, ValueError) as exc:
             history = {"error": str(exc)}
             self.log(
                 job, "knowledge_context_error", directory=directory, error=str(exc)
@@ -996,7 +1039,7 @@ class Tasks:
                 return
             try:
                 result = await self.web_control_status(control)
-            except (aiohttp.ClientError, TimeoutError, RemoteError, ValueError) as exc:
+            except (aiohttp.ClientError, TimeoutError, RuntimeError, ValueError) as exc:
                 last_error = str(exc) or type(exc).__name__
             else:
                 last_error = None
@@ -1256,11 +1299,16 @@ class Tasks:
         job.pop("proposal_invalidated", None)
         self.save(job)
         self.log(job, "plan", plan=job["plan"])
-        hints = f"\n管理员批准：“{approval_command(job)}”\n需补充或调整：“/mcaisay {job['name']} 内容”"
+        primary, extras = plan_sections(plan)
+        hints = (
+            f"\n\n管理员批准：“{approval_command(job)}”"
+            f"\n需补充或调整：“/mcaisay {job['name']} 内容”"
+        )
         self.message(
             job,
-            plan_text(plan) + hints,
-            job["admin"],
+            mention=job["admin"],
+            identity=f"propose-{plan['id']}",
+            parts=[primary + hints, *extras],
         )
 
     def active_plan(self, job):
@@ -1374,7 +1422,7 @@ class Tasks:
             reason = "缺少方案短码" if not code else "该短码不是当前待批准方案"
             raise ValueError(
                 f"「{job['name']}」：{reason}。请核对当前方案：\n"
-                f"{plan_text(plan)}\n管理员批准：“{approval_command(job)}”"
+                f"{plan_text(plan)}\n\n管理员批准：“{approval_command(job)}”"
             )
         if job["id"] in self.workers:
             raise ValueError("正在整理排查结果，请稍后再批准")
@@ -1411,6 +1459,8 @@ class Tasks:
         self.wake(job)
 
     def stop(self, job, done=False):
+        if job["stop_requested"] or job["state"] in ("done", "stopped"):
+            raise ValueError("任务正在结束或已停止，不能再次中止或验收")
         waiver = job.get("trial_release_waived")
         if (
             done
@@ -1454,6 +1504,8 @@ class Tasks:
         self.wake(job)
 
     def pause_requested(self, job):
+        if job["stop_requested"] or job["state"] in ("done", "stopped"):
+            raise ValueError("任务正在结束或已停止，不能暂停")
         if job["state"] == "paused":
             raise ValueError(
                 f"「{job['name']}」：任务已暂停，管理员使用 “/mcairesume {job['name']}” 续接。"
@@ -1747,9 +1799,13 @@ class Tasks:
                                 "repair_log",
                                 {"operation": key},
                                 task_id=job["id"],
+                                stopped=lambda: job["stop_requested"],
                             )
                             status = await self.client.call(
-                                job["instance"], "status", task_id=job["id"]
+                                job["instance"],
+                                "status",
+                                task_id=job["id"],
+                                stopped=lambda: job["stop_requested"],
                             )
                             job.setdefault("repairs", []).append(
                                 {
@@ -1763,6 +1819,7 @@ class Tasks:
                                 "console_query",
                                 {"limit": 20},
                                 task_id=job["id"],
+                                stopped=lambda: job["stop_requested"],
                             )
                             job["pending"].append(
                                 {
@@ -1933,3 +1990,5 @@ class Tasks:
         if self.local_jobs:
             await self.local_jobs.close()
         await self.client.close()
+        for client in self.retired_clients:
+            await client.close()

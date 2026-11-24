@@ -569,10 +569,10 @@ def review_evidence(sources, limit=4000, *, edges=0):
             and source["tool"]
             in ("mc_artifact_read", "mc_context_history", "mc_console_line")
         ):
-            target = read_scope(source)
+            scope = read_scope(source)
             start = source["arguments"].get("offset", 0)
             end = start + len(raw["text"])
-            previous = ranges.setdefault(target, [])
+            previous = ranges.setdefault(scope, [])
             segments = [(start, end)]
             covered = []
             for left, right, key, text in previous:

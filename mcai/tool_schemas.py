@@ -1361,13 +1361,13 @@ TOOLS = [
     ),
     (
         "mc_propose",
-        "提交方案或已批准方案的下一批具体步骤。首次可用continuation声明允许范围与完成条件，审核后返回awaiting_approval、plan_id和批准命令；管理员批准一次后，续批填写plan_id，审核通过即queued，无需重复批准。续批不能修改continuation。文件修改仍停服备份；snapshot由程序自动插入，不可作为公开action提交。command可在线执行，无恢复备份须一并简短说明；script声明全部备份路径。",
+        "提交方案或已批准方案的下一批具体步骤。能一次性确定参数和路径的常规操作直接放进同一批steps；确须按现场结果动态推进时，首次用continuation声明允许范围、完成条件与后续阶段规划（planned_stages），审核后返回awaiting_approval、plan_id和批准命令；管理员批准一次后，续批填写plan_id，审核通过即queued，无需重复批准。续批不能修改continuation。文件修改仍停服备份；snapshot由程序自动插入，不可作为公开action提交。command可在线执行，无恢复备份须一并简短说明；script声明全部备份路径。",
         {
             **contract(
                 {
                     "summary": {
                         "type": "string",
-                        "description": "给群里管理员看的一两句人话说明（百字内为宜）：只写原因/目的、主要影响或备份现状；别重复步骤清单、排查流水、启动参数或只读核对清单，纯在线命令仅需带一句无恢复备份。",
+                        "description": "给群里管理员看的一两句人话说明（百字内为宜）：只写原因/目的、主要影响、关键风险或备份现状；别重复步骤清单、后续规划、排查流水、启动参数或只读核对清单，纯在线命令仅需带一句无恢复备份。",
                     },
                     "steps": {
                         "type": "array",
@@ -1386,8 +1386,19 @@ TOOLS = [
                                 "minLength": 1,
                                 "description": "明确可核验的结束条件或目标状态。",
                             },
+                            "planned_stages": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 8,
+                                "items": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "pattern": "\\S",
+                                },
+                                "description": "面向管理员的后续动态推进规划（每条简短一句话，用管理员能直接看懂的日常中文写，禁止出现内部工具名、动作名、参数名或代码术语；列出批准首批后预计如何排查/修改/验证并收尾，动态分支写清依据，不重复首批steps或整段复述scope）。",
+                            },
                         },
-                        ("scope", "completion"),
+                        ("scope", "completion", "planned_stages"),
                     ),
                     "plan_id": {"type": "string", "minLength": 1},
                     "trial_feedback_id": {

@@ -102,14 +102,14 @@ EXAMPLES = {
     },
 }
 GUIDANCE = {
-    "mc_propose": "首次提交summary与具体steps；summary发给群里管理员看，用一两句人话写清原因、目标与关键风险或备份状态即可（启动参数和只读核验证据由程序直接交给审核，不要写进summary）。需按结果分批决策时同时声明continuation.scope/completion。"
+    "mc_propose": "首次提交summary与具体steps；能一次性确定全部参数与路径的常规操作直接放进同一批steps，不要无故拆成多轮。summary发给群里管理员看，用一两句人话写清原因、目标与关键风险或备份状态即可（启动参数、后续规划和只读核验证据不要堆进summary）。确需按现场结果分批决策时，同时声明continuation的scope、completion与planned_stages（用管理员能直接看懂的日常中文简洁分点写出首批之后预计如何动态推进与收尾，禁止出现内部工具名、动作名、参数名或代码术语）。"
     "返回awaiting_approval后结束本轮等待程序提示批准。批准后续批仅带原plan_id、summary与steps；"
     "每批仍独立审核，原授权范围内无需再次批准。观察实际结果再续批，完成后mc_plan_finish并请求验收。"
     "文件写入、NBT修改或恢复前停服，程序按目标备份；通用script须声明全部backup_paths。"
     "NBT批量变更提供expected或expected_sha256，null仅用于确认新字段不存在。方块批改用block_batch，可按dimension/world_path定位。"
     "region_prune/nbt_prune用scan_job_id及扫描返回的target_fingerprint作为manifest_sha256；relative_path可修补对象内字段。"
     "region_prune by_filter须限定世界/维度、bounds、对象类型或方块过滤及max_matches；超限整步拒绝。快照由程序插入。"
-    '\n多轮首批：mc_propose {"summary":"发第一阶段维护公告（在线命令无恢复备份）","continuation":{"scope":"仅向当前实例发送已确认的两阶段维护公告","completion":"第二阶段公告已发送并核对控制台"},"steps":[{"action":"command","command":"say Maintenance phase 1"}]}'
+    '\n多轮首批：mc_propose {"summary":"分两阶段发送维护公告（在线命令无恢复备份）","continuation":{"scope":"仅向当前实例发送已确认的两阶段维护公告","completion":"第二阶段公告已发送并核对控制台","planned_stages":["核对首条公告输出后发送第二阶段公告","确认控制台回显无异常并收尾"]},"steps":[{"action":"command","command":"say Maintenance phase 1"}]}'
     '\n后续批次：mc_propose {"plan_id":"P","summary":"第一阶段已发出，继续发第二阶段公告（在线命令无恢复备份）","steps":[{"action":"command","command":"say Maintenance phase 2"}]}',
     "mc_verify": "ready和text默认字面量匹配，query=Done (无需regex=true。text可直接查询目标行原文；"
     "regex=true时^/$默认针对整份文本，逐行锚定须显式使用(?m)，不要误把单行表达式当作多行验证。"

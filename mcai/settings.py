@@ -965,6 +965,8 @@ class Settings:
             for key, value in fields.items():
                 if type(value) is not types[schema[key]["type"]]:
                     raise ValueError(f"{key} 类型不正确")
+            if "host_token" in fields and not fields["host_token"].strip():
+                del fields["host_token"]
             if any(
                 fields.get(key, 0) < 0
                 for key in (
@@ -1039,11 +1041,7 @@ class Settings:
                         "任务或能力测试正在运行，请暂停任务或等待操作完成后保存 A 配置"
                     )
                 config = {**plugin.config, **fields}
-                client = HostClient(
-                    config["host_url"],
-                    config["host_token"],
-                    config.get("host_fingerprint", ""),
-                )
+                client = self.connection_client(fields)
                 agent = AstrBotAgent(
                     plugin.context,
                     config.get("provider_id", ""),
@@ -1078,7 +1076,8 @@ class Settings:
                     plugin.tasks.downloads.config["curseforge_api_key"] = fields[
                         "curseforge_api_key"
                     ]
-                await plugin.tasks.client.close()
+                # Background requests can still hold this client across the swap.
+                plugin.tasks.retired_clients.append(plugin.tasks.client)
                 plugin.tasks.client, plugin.tasks.agent = client, agent
                 plugin.tasks.task_token_limit = config.get("task_token_limit", 0)
                 plugin.tasks.model_failure_pause_minutes = config.get(
@@ -1119,14 +1118,31 @@ class Settings:
             ],
         }
 
-    async def connection_test(self):
-        body = await request.json()
+    def connection_client(self, body):
+        if not isinstance(body, dict):
+            raise ValueError("连接配置必须是 JSON 对象")
         config = self.plugin.config
-        client = HostClient(
-            body.get("host_url", config["host_url"]),
-            body.get("host_token") or config["host_token"],
-            body.get("host_fingerprint", config.get("host_fingerprint", "")),
+        for key in ("host_url", "host_token", "host_fingerprint"):
+            if key in body and not isinstance(body[key], str):
+                raise ValueError(f"{key} 类型不正确")
+        token = body.get("host_token", "")
+        url = body.get("host_url", config["host_url"])
+        fingerprint = body.get("host_fingerprint", config.get("host_fingerprint", ""))
+        fingerprints = [
+            "".join(value.replace(":", "").split()).lower()
+            for value in (fingerprint, config.get("host_fingerprint", ""))
+        ]
+        if not token.strip() and (
+            url.rstrip("/") != config["host_url"].rstrip("/")
+            or fingerprints[0] != fingerprints[1]
+        ):
+            raise ValueError("变更 B 地址或证书指纹时，必须重新填写非空 host_token")
+        return HostClient(
+            url, token if token.strip() else config["host_token"], fingerprint
         )
+
+    async def connection_test(self):
+        client = self.connection_client(await request.json())
         try:
             async with asyncio.timeout(15):
                 instances = await client.request("GET", "/instances")

@@ -5,13 +5,41 @@ import io
 import json
 import os
 import re
+import zlib
 from collections import deque
 from contextlib import closing
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from .evidence import json_size
 from .paths import resolve_file
 from .text_files import BOMS, patch_text
+
+SENSITIVE_EXACT_NAMES = frozenset(
+    {
+        "banned-ips.json",
+        "banned-ips.txt",
+        ".env",
+        "authorized_keys",
+        "known_hosts",
+    }
+)
+SENSITIVE_SUFFIXES = frozenset(
+    {".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".kdbx", ".ppk"}
+)
+SENSITIVE_NAME_RE = re.compile(
+    r"^(?:\.env\..+|banned-ips.*|id_rsa.*|id_ed25519.*|id_ecdsa.*"
+    r"|(?:.*[._-])?(?:secret|secrets|credential|credentials|password|passwords|passwd)(?:[._-].*)?)$",
+    re.I,
+)
+PRIVATE_KEY_LABEL = r"(?:[A-Z0-9]+[ -])*PRIVATE KEY(?: BLOCK)?"
+PRIVATE_KEY_RE = re.compile(
+    rf"-{{4,5}}\s*BEGIN (?P<label>{PRIVATE_KEY_LABEL})\s*-{{4,5}}"
+    r".*?(?:-{4,5}\s*END (?P=label)\s*-{4,5}|\Z)",
+    re.I | re.S,
+)
+PRIVATE_KEY_MARKER_RE = re.compile(
+    rf"-{{4,5}}\s*(BEGIN|END) {PRIVATE_KEY_LABEL}\s*-{{4,5}}", re.I
+)
 
 LOG_HEADER = re.compile(
     r"^(?P<bracket>\[)?(?:(?P<iso>\d{4}-\d\d-\d\d)[ T]|"
@@ -90,7 +118,41 @@ def shared_binary(path):
     return os.fdopen(msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY), "rb")
 
 
-def find_files(directory, pattern, excluded=None):
+def is_sensitive_path(raw):
+    if not isinstance(raw, str) or not raw.strip():
+        return False
+    for segment in PureWindowsPath(raw).parts:
+        # Check the Win32 base name, including aliases with trailing dots/spaces or ADS.
+        cleaned = segment.split(":", 1)[0].strip().strip("*?").rstrip(" .").lower()
+        if not cleaned:
+            continue
+        if cleaned in SENSITIVE_EXACT_NAMES:
+            return True
+        if any(cleaned.endswith(suffix) for suffix in SENSITIVE_SUFFIXES):
+            return True
+        stem = cleaned.rsplit(".", 1)[0] if "." in cleaned else cleaned
+        if SENSITIVE_NAME_RE.fullmatch(cleaned) or SENSITIVE_NAME_RE.fullmatch(stem):
+            return True
+    return False
+
+
+def redact_private_key_line(line, hidden):
+    safe, cursor = [], 0
+    for marker in PRIVATE_KEY_MARKER_RE.finditer(line):
+        if marker[1].upper() == "BEGIN" and not hidden:
+            safe.extend((line[cursor : marker.start()], "[已脱敏私钥]"))
+            hidden = True
+        elif marker[1].upper() == "END" and hidden:
+            hidden = False
+        else:
+            continue
+        cursor = marker.end()
+    if not hidden:
+        safe.append(line[cursor:])
+    return "".join(safe) or "[已脱敏私钥]", hidden
+
+
+def find_files(directory, pattern, excluded=None, *, exclude_sensitive=False):
     root = Path(directory).resolve()
     if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
         raise ValueError("glob 必须位于实例目录内")
@@ -98,22 +160,36 @@ def find_files(directory, pattern, excluded=None):
         if not path.is_file():
             continue
         actual = resolve_file(root, path.relative_to(root))
+        if exclude_sensitive and (
+            is_sensitive_path(path.relative_to(root).as_posix())
+            or is_sensitive_path(actual.relative_to(root).as_posix())
+        ):
+            continue
         if excluded and actual.is_relative_to(Path(excluded).resolve()):
             continue
         yield actual
 
 
-def file_rows(directory, args):
+def file_rows(directory, args, cancelled=lambda: False):
     mode = args["mode"]
+    if mode not in ("find", "search"):
+        path = resolve_file(directory, args["path"])
+        if args.get("exclude_sensitive") and is_sensitive_path(
+            path.relative_to(directory).as_posix()
+        ):
+            raise ValueError("只读问答不允许读取敏感文件。")
     if mode == "find":
-        for path in find_files(directory, args.get("pattern", "**/*")):
+        for path in find_files(
+            directory,
+            args.get("pattern", "**/*"),
+            exclude_sensitive=args.get("exclude_sensitive", False),
+        ):
             yield {
                 "path": path.relative_to(directory).as_posix(),
                 "size": path.stat().st_size,
                 "modified_ns": path.stat().st_mtime_ns,
             }
     elif mode == "stat":
-        path = resolve_file(directory, args["path"])
         before = path.stat()
         with shared_binary(path) as stream:
             digest = hashlib.file_digest(stream, "sha256").hexdigest()
@@ -134,12 +210,12 @@ def file_rows(directory, args):
             ),
         }
     elif mode == "preview_patch":
-        _, preview = patch_text(resolve_file(directory, args["path"]), args)
+        _, preview = patch_text(path, args)
         yield preview
     elif mode == "search":
         counts = {}
         for row in log_rows(
-            directory, {**args, "pattern": args.get("pattern", "**/*")}, lambda: False
+            directory, {**args, "pattern": args.get("pattern", "**/*")}, cancelled
         ):
             if "error" in row or row.get("partial"):
                 yield row
@@ -153,25 +229,51 @@ def file_rows(directory, args):
                 **({"count": count} if args["result"] == "count" else {}),
             }
     elif mode in ("read", "tail"):
-        path = resolve_file(directory, args["path"])
-        with io.TextIOWrapper(
-            shared_binary(path), encoding=args.get("encoding", "utf-8")
-        ) as stream:
-            lines = enumerate(stream, 1)
-            if mode == "tail":
-                lines = deque(lines, maxlen=args.get("line_count", 100))
-            for number, line in lines:
+        if cancelled():
+            return
+        size = path.stat().st_size
+        if size > LOG_MAX_SCAN_BYTES:
+            raise ValueError("文件读取超过64MiB，请缩小文件后重试")
+        scan = {}
+        with (
+            shared_binary(path) as source,
+            io.TextIOWrapper(
+                io.BufferedReader(_LogSnapshot(source, size, scan)),
+                encoding=args.get("encoding", "utf-8"),
+            ) as stream,
+        ):
+            tail = deque(maxlen=args.get("line_count", 100))
+            hidden = False
+            number = scanned_chars = 0
+            while not cancelled():
+                line = stream.readline(LOG_MAX_LINE_CHARS + 1)
+                if not line:
+                    break
+                number += 1
+                scanned_chars += len(line)
+                if len(line) > LOG_MAX_LINE_CHARS:
+                    raise ValueError("文件单行超过120000字符，请定向缩小文件")
+                if scanned_chars > LOG_MAX_SCAN_BYTES:
+                    raise ValueError("文件扫描超过64MiB字符上限，请缩小文件")
+                if args.get("exclude_sensitive"):
+                    line, hidden = redact_private_key_line(line, hidden)
                 if number < args.get("start_line", 1):
                     continue
                 if mode == "read" and number >= args.get("start_line", 1) + args.get(
                     "line_count", 100
                 ):
                     break
-                yield {
+                row = {
                     "path": args["path"],
                     "line": number,
                     "text": line.rstrip("\r\n"),
                 }
+                if mode == "tail":
+                    tail.append(row)
+                else:
+                    yield row
+            if mode == "tail" and not cancelled():
+                yield from tail
     else:
         raise ValueError("未知文件查询模式")
 
@@ -193,7 +295,11 @@ def _log_rows(directory, args, cancelled, scan):
         end = end.astimezone().replace(tzinfo=None)
     before, after = args.get("before", 3), args.get("after", 8)
     scanned_bytes = 0
-    for path in find_files(directory, args.get("pattern", "logs/**/*.log*")):
+    for path in find_files(
+        directory,
+        args.get("pattern", "logs/**/*.log*"),
+        exclude_sensitive=args.get("exclude_sensitive", False),
+    ):
         if cancelled():
             return
         if scan["scanned_files"] >= LOG_MAX_FILES:
@@ -208,6 +314,7 @@ def _log_rows(directory, args, cancelled, scan):
         remaining, emitted = 0, 0
         unknown_reported = False
         number = 0
+        hidden = False
         try:
             with (
                 shared_binary(path) as raw,
@@ -245,6 +352,8 @@ def _log_rows(directory, args, cancelled, scan):
                         return
                     number += 1
                     scan["scanned_lines"] += 1
+                    if args.get("exclude_sensitive"):
+                        line, hidden = redact_private_key_line(line, hidden)
                     if match:
                         line_date = match["iso"] or (
                             f"{match['year']}-{int(match['month']):02d}-{match['day']}"
@@ -311,7 +420,7 @@ def _log_rows(directory, args, cancelled, scan):
         except _LogSourceLimit:
             scan.update(truncated_reason="source_bytes", event_complete=number == 0)
             return
-        except (OSError, UnicodeError, EOFError) as exc:
+        except (OSError, UnicodeError, EOFError, zlib.error) as exc:
             yield {
                 "path": path.relative_to(directory).as_posix(),
                 "error": f"{type(exc).__name__}: {exc}",

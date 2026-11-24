@@ -20,6 +20,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 from .model_usage import UsageWriteError, record_request
+from .monthly_logs import LOCK as LOG_LOCK
 from .monthly_logs import append as append_log
 from .monthly_logs import diagnostic_sources
 from .protocol import PRODUCT_VERSION, PROTOCOL
@@ -73,7 +74,7 @@ def trace_event(store, kind, *, task=None, **fields):
     if not task:
         append_log(path, line, entry["time"])
     else:
-        with path.open("ab") as stream:
+        with LOG_LOCK, path.open("ab") as stream:
             stream.write(line)
     return entry
 
@@ -417,8 +418,10 @@ def filter_event_runs(
             if path in monthly:
                 stream, remaining = monthly[path]
             else:
-                stream = stack.enter_context(path.open("rb"))
-                remaining = os.fstat(stream.fileno()).st_size
+                # Appends only change the suffix; pin a complete prefix under the writer lock.
+                with LOG_LOCK:
+                    stream = stack.enter_context(path.open("rb"))
+                    remaining = os.fstat(stream.fileno()).st_size
             while remaining != 0 and (
                 line := stream.readline(-1 if remaining is None else remaining)
             ):
@@ -434,7 +437,7 @@ def filter_event_runs(
                 stamp, task = row["time"], row.get("task")
                 ordered &= stamp >= previous
                 previous = stamp
-                if requested and task is not None and task not in requested:
+                if requested and task not in requested:
                     continue
                 in_range = start <= stamp <= end
                 if in_range and not requested and task in tasks:

@@ -84,6 +84,7 @@ async def task_search(tasks, job, provider, arguments, call_id):
         ),
         tasks.agent.attempts,
         pause_on_error=False,
+        check_stop=False,
     )
     sources = session.setdefault("sources", {})
     for source in result["results"]:

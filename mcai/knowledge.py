@@ -413,7 +413,13 @@ class Knowledge:
 
     async def append(self, job, text):
         async with self.lock:
-            directory = job["directory"]
+            raw_directory = job["directory"]
+            if (
+                not isinstance(raw_directory, str)
+                or not Path(raw_directory).is_absolute()
+            ):
+                raise ValueError("directory 须为规范绝对目录")
+            directory = canonical_directory(raw_directory)
             entry = self.entry(directory)
             if entry is None:
                 entry = {
@@ -428,6 +434,9 @@ class Knowledge:
             )
             marker = f"<!-- mcai-case {job['id']} -->"
             if marker not in existing:
+                text = text.replace("<!-- mcai-case", "&lt;!-- mcai-case").replace(
+                    "<!-- mcai-server", "&lt;!-- mcai-server"
+                )
                 date = datetime.fromtimestamp(job["created"]).isoformat(
                     timespec="seconds"
                 )
@@ -440,12 +449,15 @@ class Knowledge:
                 os.replace(temporary, path)
             if self.entry(directory) is None:
                 content = self.index.read_text(encoding="utf-8")
+                if content:
+                    content = content.rstrip("\r\n") + "\n\n"
                 content += (
                     "<!-- mcai-server "
                     + json.dumps(entry, ensure_ascii=False)
                     + " -->\n"
                     f"- [{job['instance']}]({entry['file']})：`{directory}`\n"
                 )
+                self.entries(content)
                 temporary = self.index.with_suffix(".tmp")
                 temporary.write_text(content, encoding="utf-8")
                 os.replace(temporary, self.index)

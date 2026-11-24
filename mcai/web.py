@@ -1,6 +1,7 @@
 """Task-local, pageable web documents. Search is supplied by the model API."""
 
 import asyncio
+import codecs
 import json
 import time
 import uuid
@@ -36,6 +37,10 @@ class WebPages:
                 kind = response.content_type
                 charset = response.charset or "utf-8-sig"
                 url = str(response.url)
+            try:
+                codecs.lookup(charset)
+            except LookupError as exc:
+                raise ValueError(f"网页声明了不支持的字符编码：{charset}") from exc
             title = None
             if kind in ("text/html", "application/xhtml+xml"):
                 source = data.decode(charset)
@@ -50,7 +55,9 @@ class WebPages:
                 if not extracted or not extracted.text:
                     raise ValueError("无法提取网页正文，可能需要登录或动态浏览器")
                 title, body = extracted.title, extracted.text
-                document = html.fromstring(source)
+                document = html.fromstring(
+                    source.encode("utf-8"), parser=html.HTMLParser(encoding="utf-8")
+                )
                 links = []
                 for anchor in document.xpath("//a[@href]"):
                     link = urljoin(url, anchor.get("href"))

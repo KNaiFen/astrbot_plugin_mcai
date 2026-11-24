@@ -6,7 +6,6 @@ import difflib
 import hashlib
 import json
 import re
-import shlex
 import shutil
 import subprocess
 from collections import Counter, deque
@@ -16,7 +15,7 @@ from pathlib import Path
 
 from .paths import resolve_file
 
-REVIEW_VERSION = 6
+REVIEW_VERSION = 7
 REVIEW_FRAME_BYTES = 5 * 1024**2
 FULLTEXT_THRESHOLD = 4096
 SCRIPT_SUFFIXES = (".ps1", ".bat", ".cmd", ".py")
@@ -47,14 +46,38 @@ DESTRUCTIVE_COMMANDS = frozenset(
 )
 DYNAMIC_EXECUTION_COMMANDS = frozenset({"invoke-expression", "iex"})
 DIAGNOSTIC_DISALLOWED_COMMANDS = frozenset({"add-type", "invoke-command", "icm"})
-ENCODED_COMMAND_FLAGS = frozenset(
-    {
-        "-ec",
-        *(
-            "-encodedcommand"[:length]
-            for length in range(2, len("-encodedcommand") + 1)
-        ),
-    }
+# PowerShell ConsoleHost matches these prefixes in order, rather than using
+# the cmdlet parameter binder's unique-prefix rule.
+POWERSHELL_CLI_OPTIONS = (
+    ("configurationname", "config", True),
+    ("configurationfile", "configurationf", True),
+    ("commandwithargs", "commandwithargs", True),
+    ("commandwithargs", "cwa", True),
+    ("command", "c", True),
+    ("file", "f", True),
+    ("executionpolicy", "ex", True),
+    ("executionpolicy", "ep", True),
+    ("encodedcommand", "e", True),
+    ("encodedcommand", "ec", True),
+    ("encodedarguments", "encodeda", True),
+    ("encodedarguments", "ea", True),
+    ("inputformat", "inp", True),
+    ("inputformat", "if", True),
+    ("outputformat", "o", True),
+    ("outputformat", "of", True),
+    ("windowstyle", "w", True),
+    ("workingdirectory", "wo", True),
+    ("workingdirectory", "wd", True),
+    ("settingsfile", "settings", True),
+    ("custompipename", "cus", True),
+    ("noprofileloadtime", "noprofileloadtime", False),
+    ("noprofile", "nop", False),
+    ("nologo", "nol", False),
+    ("noexit", "noe", False),
+    ("noninteractive", "noni", False),
+    ("interactive", "i", False),
+    ("sta", "sta", False),
+    ("mta", "mta", False),
 )
 CONSOLE_DISALLOWED_COMMANDS = frozenset(
     {
@@ -124,6 +147,63 @@ TEST_READONLY_CONSOLE_COMMAND = re.compile(
 )
 
 
+def shell_invocation(words):
+    """Return a literal shell entry point, or mark an indeterminate invocation."""
+    name = words[0].replace("\\", "/").split("/")[-1].lower()
+    if name in ("cmd", "cmd.exe"):
+        for index, word in enumerate(words[1:], 1):
+            if word is None:
+                return "unresolved", None
+            if word.lower() in ("/c", "/k"):
+                arguments = words[index + 1 :]
+                if not arguments or any(word is None for word in arguments):
+                    return "unresolved", None
+                return ".bat", (
+                    arguments[0]
+                    if len(arguments) == 1
+                    else subprocess.list2cmdline(arguments)
+                )
+        return "unresolved", None
+    index = 1
+    while index < len(words):
+        word = words[index]
+        if word is None:
+            return "unresolved", None
+        if not word.startswith(("-", "/", "–", "—", "―")):
+            return "file", word
+        key = word.lstrip("-/–—―").lower()
+        option = next(
+            (
+                (full, takes_value)
+                for full, minimum, takes_value in POWERSHELL_CLI_OPTIONS
+                if (full.startswith(key) and key.startswith(minimum)) or key == minimum
+            ),
+            None,
+        )
+        if option is None:
+            return "unresolved", None
+        full, takes_value = option
+        index += 1
+        if full == "encodedcommand":
+            return "encoded", None
+        if full in ("command", "commandwithargs", "file"):
+            arguments = words[index:]
+            if not arguments or arguments[0] in (None, "-"):
+                return "unresolved", None
+            if full == "file":
+                return "file", arguments[0]
+            if any(word is None for word in arguments):
+                return "unresolved", None
+            return ".ps1", (
+                arguments[0] if full == "commandwithargs" else " ".join(arguments)
+            )
+        if takes_value:
+            if index >= len(words) or words[index] is None:
+                return "unresolved", None
+            index += 1
+    return "unresolved", None
+
+
 def validate_script_command(words, source, *, diagnostic=False):
     if not words or not words[0]:
         return
@@ -137,21 +217,20 @@ def validate_script_command(words, source, *, diagnostic=False):
     if diagnostic and name in DIAGNOSTIC_DISALLOWED_COMMANDS:
         raise ValueError(f"在线诊断脚本不允许调用高危命令：{name}")
     if name in ("pwsh", "pwsh.exe", "powershell", "powershell.exe"):
-        for word in words[1:]:
-            if isinstance(word, str) and word.lower() in ENCODED_COMMAND_FLAGS:
-                raise ValueError("脚本禁止使用混淆编码参数 -EncodedCommand")
+        if shell_invocation(words)[0] == "encoded":
+            raise ValueError("脚本禁止使用混淆编码参数 -EncodedCommand")
 
 
 def validate_diagnostic_script(source, powershell_path):
     with powershell_parser(powershell_path) as parse:
-        pending = deque([(source, None)])
+        pending = deque([(source, "powershell")])
         seen = set()
         while pending:
-            text, root = pending.popleft()
-            if (text, str(root)) in seen:
+            text, language = pending.popleft()
+            if (text, language) in seen:
                 continue
-            seen.add((text, str(root)))
-            for command in parse(text, root):
+            seen.add((text, language))
+            for command in script_commands(text, language, parse, None):
                 words = command["words"]
                 validate_script_command(words, command["source"], diagnostic=True)
                 if not words or not words[0]:
@@ -165,24 +244,11 @@ def validate_diagnostic_script(source, powershell_path):
                     "cmd",
                     "cmd.exe",
                 ):
-                    options = [
-                        word.lower() if isinstance(word, str) else None
-                        for word in words
-                    ]
-                    for option in ("/c", "/k", "-command", "-c"):
-                        if option not in options:
-                            continue
-                        index = options.index(option) + 1
-                        argument = words[index] if index < len(words) else None
-                        if argument is not None and not name.startswith("cmd"):
-                            pending.append((argument, None))
-                        elif argument is not None and all(
-                            word is not None for word in words[index:]
-                        ):
-                            pending.append(
-                                (subprocess.list2cmdline(words[index:]), None)
-                            )
-                        break
+                    kind, argument = shell_invocation(words)
+                    if kind in (".ps1", ".bat"):
+                        pending.append(
+                            (argument, "bat" if kind == ".bat" else "powershell")
+                        )
 
 
 def _check_console_command_tokens(tokens, raw):
@@ -206,10 +272,28 @@ def _check_console_command_tokens(tokens, raw):
     if head == "banlist" and len(tokens) > 1 and tokens[1].lower() == "ips":
         raise ValueError("在线诊断不允许通过 banlist ips 查询玩家 IP。")
     if head == "execute":
-        for index, token in enumerate(tokens[1:], 1):
-            if token.lower() == "run" and index + 1 < len(tokens):
+        index = 1
+        while index < len(tokens):
+            token = tokens[index].lower()
+            if (
+                token in ("if", "unless")
+                and index + 4 < len(tokens)
+                and tokens[index + 1].lower() == "score"
+            ):
+                # Targets and objective names may themselves be run/store/if.
+                index += 6 if tokens[index + 4].lower() == "matches" else 7
+                continue
+            if (
+                token == "store"
+                and index + 1 < len(tokens)
+                and tokens[index + 1].lower() in ("result", "success")
+            ):
+                raise ValueError(
+                    "mc_console_send 不允许 execute store 写入；请改用 mc_propose。"
+                )
+            if token == "run" and index + 1 < len(tokens):
                 _check_console_command_tokens(tokens[index + 1 :], raw)
-                break
+            index += 1
 
 
 def validate_diagnostic_console_commands(commands):
@@ -371,6 +455,46 @@ def powershell_parser(executable):
         reader.shutdown()
 
 
+def cmd_commands(source, *, split_commands=True):
+    """Tokenize literal CMD commands; apostrophes and backslashes are ordinary."""
+    commands = []
+    for line in re.sub(r"\^\r?\n", "", source).splitlines():
+        line = line.strip().removeprefix("@")
+        if not line or line.lower().startswith(("rem ", "::")):
+            continue
+        words, word = [], []
+        quoted, started, start, index = False, False, 0, 0
+        while index <= len(line):
+            char = line[index] if index < len(line) else None
+            if char == "^" and not quoted and index + 1 < len(line):
+                index += 1
+                word.append(line[index])
+                started = True
+            elif char == '"':
+                quoted = not quoted
+                started = True
+            elif char is None or (
+                not quoted and (char.isspace() or split_commands and char in "&|")
+            ):
+                if started:
+                    words.append("".join(word))
+                    word, started = [], False
+                if char is None or split_commands and char in "&|":
+                    if words:
+                        words[0] = words[0].removeprefix("@")
+                        if words[0].lower() == "call":
+                            words = words[1:]
+                        commands.append(
+                            {"words": words, "source": line[start:index].strip()}
+                        )
+                    words, start = [], index + 1
+            else:
+                word.append(char)
+                started = True
+            index += 1
+    return commands
+
+
 def script_commands(source, language, parse, root):
     if language == "powershell":
         return parse(source, root)
@@ -398,8 +522,11 @@ def script_commands(source, language, parse, root):
                     ]
                     if isinstance(argument, (ast.List, ast.Tuple))
                     else [
-                        word.strip('"')
-                        for word in shlex.split(argument.value, posix=False)
+                        word
+                        for command in cmd_commands(
+                            argument.value, split_commands=False
+                        )
+                        for word in command["words"]
                     ]
                     if isinstance(argument, ast.Constant)
                     and isinstance(argument.value, str)
@@ -427,16 +554,7 @@ def script_commands(source, language, parse, root):
                 {"words": words, "source": ast.get_source_segment(source, node)}
             )
         return commands
-    commands = []
-    for line in source.replace("^\n", "").splitlines():
-        line = line.strip().removeprefix("@")
-        if not line or line.lower().startswith(("rem ", "::")):
-            continue
-        words = [word.strip('"') for word in shlex.split(line, posix=False)]
-        if words and words[0].lower() == "call":
-            words = words[1:]
-        commands.append({"words": words, "source": line})
-    return commands
+    return cmd_commands(source)
 
 
 def review_material(
@@ -642,40 +760,12 @@ def review_material(
                     "cmd",
                     "cmd.exe",
                 ):
-                    options = [
-                        word.lower() if isinstance(word, str) else None
-                        for word in words
-                    ]
-                    for option in ("-file", "-f", "/c", "/k", "-command", "-c"):
-                        if option not in options:
-                            continue
-                        index = options.index(option) + 1
-                        argument = words[index] if index < len(words) else None
-                        if option in ("-file", "-f"):
-                            reference = argument
-                        elif argument is not None:
-                            if name.startswith("cmd"):
-                                if any(word is None for word in words[index:]):
-                                    unresolved.append(command["source"])
-                                    break
-                                argument = subprocess.list2cmdline(words[index:])
-                            pending.append(
-                                (
-                                    argument,
-                                    ".bat" if name.startswith("cmd") else ".ps1",
-                                    None,
-                                    top,
-                                    context,
-                                    step,
-                                )
-                            )
-                        if argument is None:
-                            unresolved.append(command["source"])
-                        break
-                    if any(
-                        option in options
-                        for option in ("-encodedcommand", "-enc", "-e")
-                    ):
+                    kind, argument = shell_invocation(words)
+                    if kind == "file":
+                        reference = argument
+                    elif kind in (".ps1", ".bat"):
+                        pending.append((argument, kind, None, top, context, step))
+                    else:
                         unresolved.append(command["source"])
                 elif re.fullmatch(r"(?:python(?:\d+(?:\.\d+)*)?|py)(?:\.exe)?", name):
                     for index, word in enumerate(words[1:], 1):

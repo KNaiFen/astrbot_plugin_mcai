@@ -20,18 +20,24 @@ from .review import validate_diagnostic_script, verify_scripts
 ACTIVE = {"pending", "running"}
 
 
+def kill_tree(parent):
+    try:
+        children = parent.children(recursive=True)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        children = []
+    for process in [*reversed(children), parent]:
+        try:
+            process.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass  # A vanished or inaccessible process must not block the others.
+
+
 async def terminate_tree(process):
     if process.returncode is not None:
         return
     try:
-        parent = psutil.Process(process.pid)
-        for child in reversed(parent.children(recursive=True)):
-            try:
-                child.kill()
-            except psutil.NoSuchProcess:
-                pass
-        parent.kill()
-    except psutil.NoSuchProcess:
+        kill_tree(psutil.Process(process.pid))
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
         pass
     await process.wait()
 
@@ -52,10 +58,8 @@ class Jobs:
                     try:
                         parent = psutil.Process(job["pid"])
                         if parent.create_time() == job["process_created"]:
-                            for child in reversed(parent.children(recursive=True)):
-                                child.kill()
-                            parent.kill()
-                    except psutil.NoSuchProcess:
+                            kill_tree(parent)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
                         pass
                 job.update(
                     status="interrupted",

@@ -25,7 +25,7 @@ from .mcai.memory_job import MemoryJob
 from .mcai.model_usage import parse_prices, task_usage
 from .mcai.monthly_logs import A_LOGS, rotate
 from .mcai.paths import workspace_root
-from .mcai.plans import approval_command, plan_text, schedule_time
+from .mcai.plans import approval_command, plan_sections, schedule_time
 from .mcai.readonly import answer_question, server_status
 from .mcai.runtime_rules import install_rules
 from .mcai.storage import Store
@@ -187,17 +187,19 @@ def message_parts(text):
         end = min(offset + GROUP_MESSAGE_PART_LIMIT, len(text))
         if end < len(text):
             boundary = text.rfind("\n", offset, end)
-            if boundary >= offset:
+            if boundary > offset:
                 end = boundary + 1
         yield text[offset:end]
         offset = end
 
 
 def forwarded_text(text, bot_id):
+    parts = text if isinstance(text, (list, tuple)) else (text,)
     return Nodes(
         [
-            Node(uin=str(bot_id), name="MCAI", content=[Plain(part)])
-            for part in message_parts(text)
+            Node(uin=str(bot_id), name="MCAI", content=[Plain(subpart)])
+            for item in parts
+            for subpart in message_parts(item)
         ]
     )
 
@@ -475,7 +477,7 @@ class MCAI(Star):
                 )
         except (
             aiohttp.ClientError,
-            RemoteError,
+            RuntimeError,
             OSError,
             ValueError,
             TimeoutError,
@@ -554,7 +556,7 @@ class MCAI(Star):
                 )
                 await self.poll_incidents(routes)
             except (
-                RemoteError,
+                RuntimeError,
                 OSError,
                 ValueError,
                 TimeoutError,
@@ -610,24 +612,53 @@ class MCAI(Star):
 
     async def notify(self, item):
         origin, text, mention = item["origin"], item["text"], item["mention"]
+        parts = item.get("parts") or [text]
         mentions = [At(qq=mention)] if mention else []
         sent = item.get("parts_sent", 0)
         chains = [mentions + [Plain(text)]]
+        forwarded = item.get("forwarded")
         threshold = self.config.get(
             "group_forward_threshold", DEFAULT_GROUP_FORWARD_THRESHOLD
         )
-        if sent or len(text) > min(threshold, GROUP_MESSAGE_PART_LIMIT):
+        if (
+            sent
+            or len(parts) > 1
+            or len(text) > min(threshold, GROUP_MESSAGE_PART_LIMIT)
+        ):
             platform = self.context.get_platform_inst(origin.split(":", 1)[0])
-            if platform and platform.meta().name == "aiocqhttp":
+            if (
+                platform
+                and platform.meta().name == "aiocqhttp"
+                and (
+                    sent
+                    and item.get("forwarded", True)
+                    or not sent
+                    and (len(parts) > 1 or len(text) > threshold)
+                )
+            ):
                 if sent:
                     chains = [mentions]
-                elif len(text) > threshold:
+                else:
                     login = await platform.get_client().get_login_info()
-                    chains = [[forwarded_text(text, login["user_id"])]]
+                    forwarded = True
+                    chains = [
+                        [
+                            forwarded_text(
+                                parts if len(parts) > 1 else text,
+                                login["user_id"],
+                            )
+                        ]
+                    ]
                     if mentions:
                         chains.append(mentions)
-            elif len(text) > GROUP_MESSAGE_PART_LIMIT:
-                chains = [[Plain(part)] for part in message_parts(text)]
+            elif len(parts) > 1 or len(text) > GROUP_MESSAGE_PART_LIMIT:
+                if not sent:
+                    forwarded = False
+                chains = [
+                    [Plain(subpart)]
+                    for part in parts
+                    for subpart in message_parts(part)
+                ]
                 chains[0][:0] = mentions
                 chains = chains[sent:]
         for index, chain in enumerate(chains, 1):
@@ -636,10 +667,16 @@ class MCAI(Star):
                 raise RuntimeError("平台暂时无法发送消息")
             if index < len(chains):
                 # 后续分段或 @ 失败时，重试从它开始并使用独立的发送次数。
-                item.update(parts_sent=sent + index, attempts=1)
+                item.update(
+                    parts_sent=sent + index,
+                    attempts=1,
+                    **({"forwarded": forwarded} if forwarded is not None else {}),
+                )
                 self.store.save("outbox", item["id"], item)
 
-    async def collect_attachments(self, workspace, task, event, attachments):
+    async def collect_attachments(
+        self, workspace, task, event, attachments, *, folders=None
+    ):
         async def recognize(path):
             return await recognize_image(
                 self.context,
@@ -650,7 +687,9 @@ class MCAI(Star):
                 path,
             )
 
-        return await receive_attachments(workspace, task, attachments, recognize)
+        return await receive_attachments(
+            workspace, task, attachments, recognize, folders=folders
+        )
 
     def _group_allowed(self, event: AstrMessageEvent, group: str, trace: dict) -> bool:
         allowed = allowed_group_ids(self.config.get("group_ids"))
@@ -739,24 +778,33 @@ class MCAI(Star):
 
         event.send = traced_send
 
-        def reply(text):
-            text = space_commands(text)
+        def reply(text="", *, parts=None):
+            formatted = [space_commands(part) for part in (parts or (text,))]
+            combined = "\n\n".join(formatted) if parts else formatted[0]
             trace_event(
-                self.store, "command_reply", **trace, reply=text, status="prepared"
+                self.store, "command_reply", **trace, reply=combined, status="prepared"
             )
-            if onebot and len(text) > self.config.get(
-                "group_forward_threshold", DEFAULT_GROUP_FORWARD_THRESHOLD
+            if onebot and (
+                len(formatted) > 1
+                or len(combined)
+                > self.config.get(
+                    "group_forward_threshold", DEFAULT_GROUP_FORWARD_THRESHOLD
+                )
             ):
                 settings = self.context.get_config(event.unified_msg_origin)[
                     "platform_settings"
                 ]
+                nodes = [settings["reply_prefix"] + formatted[0], *formatted[1:]]
                 chain = [
-                    forwarded_text(settings["reply_prefix"] + text, event.get_self_id())
+                    forwarded_text(
+                        nodes if len(nodes) > 1 else nodes[0],
+                        event.get_self_id(),
+                    )
                 ]
                 if settings["reply_with_mention"]:
                     chain.append(At(qq=sender))
                 return event.chain_result(chain)
-            return event.plain_result(text)
+            return event.plain_result(combined)
 
         try:
             if command not in {
@@ -980,31 +1028,39 @@ class MCAI(Star):
                         f"用法：“/mcaisay {name} 内容”，请填写要补充的信息（也可直接附上或引用群文件、图片）。"
                     )
                 records, notices = [], []
-                if attachments:
-                    self.tasks.check_feedback(job, is_admin)
-                    workspace = self.tasks.workspace
-                    root = str(workspace.root)
-                    if job.get("workspace_root", root) != root:
-                        raise ValueError(
-                            "任务工作区位置已变化，请恢复本任务原工作区配置"
+                folders, received = [], False
+                try:
+                    if attachments:
+                        self.tasks.check_feedback(job, is_admin)
+                        workspace = self.tasks.workspace
+                        root = str(workspace.root)
+                        if job.get("workspace_root", root) != root:
+                            raise ValueError(
+                                "任务工作区位置已变化，请恢复本任务原工作区配置"
+                            )
+                        records, notices, saved = await self.collect_attachments(
+                            workspace, job["id"], event, attachments, folders=folders
                         )
-                    records, notices, saved = await self.collect_attachments(
-                        workspace, job["id"], event, attachments
-                    )
-                    self.tasks.check_feedback(job, is_admin)
-                    if saved:
-                        job["workspace_root"] = root
-                        self.tasks.save(job)
-                accepted = bool(content.strip() or records)
-                if accepted:
-                    self.tasks.feedback(
-                        job,
-                        sender,
-                        content.strip(),
-                        is_admin=is_admin,
-                        feedback_id=trace["event_id"],
-                        attachments=records,
-                    )
+                        self.tasks.check_feedback(job, is_admin)
+                        if saved:
+                            job["workspace_root"] = root
+                            self.tasks.save(job)
+                    accepted = bool(content.strip() or records)
+                    if accepted:
+                        self.tasks.feedback(
+                            job,
+                            sender,
+                            content.strip(),
+                            is_admin=is_admin,
+                            feedback_id=trace["event_id"],
+                            attachments=records,
+                        )
+                    received = True
+                finally:
+                    if not received:
+                        for folder in folders:
+                            if folder.exists():
+                                shutil.rmtree(folder)
                 if notices:
                     yield reply("\n".join(notices))
                 if accepted and job["state"] == "paused":
@@ -1037,19 +1093,17 @@ class MCAI(Star):
             elif command == "mcaipause":
                 self.tasks.pause_requested(job)
             elif command == "mcaiplan":
-                text = (
-                    plan_text(job["plan"])
-                    + (
-                        f"\n任务已暂停，管理员续接：“/mcairesume {name}”"
-                        if job["state"] == "paused"
-                        else f"\n管理员批准：“{approval_command(job)}”"
-                    )
-                    + f"\n需调整：“/mcaisay {name} 内容”"
-                    if job["plan"]
-                    else f"当前没有待批准方案。使用 “/mcaistatus {name}” 查看进度，或 “/mcaisay {name} 内容” 补充线索。"
-                )
                 approved = job.get("approved_plan")
-                if not job["plan"] and approved:
+                if job["plan"]:
+                    primary, extras = plan_sections(job["plan"])
+                    footer = (
+                        f"\n\n任务已暂停，管理员续接：“/mcairesume {name}”"
+                        if job["state"] == "paused"
+                        else f"\n\n管理员批准：“{approval_command(job)}”"
+                    ) + f"\n需调整：“/mcaisay {name} 内容”"
+                    plan_parts = [f"「{name}」：\n{primary}{footer}", *extras]
+                elif approved:
+                    primary, extras = plan_sections(approved["snapshot"]["plan"])
                     plan_status = {
                         "active": "执行中",
                         "completed": "已完成",
@@ -1066,9 +1120,8 @@ class MCAI(Star):
                         "done": "已验收",
                         "stopped": "已中止",
                     }[job["state"]]
-                    text = (
-                        plan_text(approved["snapshot"]["plan"])
-                        + f"\n批准人 QQ：{approved.get('approved_by', '未记录')}"
+                    footer = (
+                        f"\n\n批准人 QQ：{approved.get('approved_by', '未记录')}"
                         + f"\n方案状态：{plan_status}；任务状态：{task_status}"
                         + (
                             f"\n任务已暂停，管理员续接：“/mcairesume {name}”"
@@ -1081,12 +1134,17 @@ class MCAI(Star):
                             else f"\n执行资格已结束。使用 “/mcaistatus {name}” 查看进度。"
                         )
                     )
-                text = f"「{name}」：{text}"
-                if onebot:
-                    yield reply(text)
+                    plan_parts = [f"「{name}」：\n{primary}{footer}", *extras]
                 else:
-                    for part in message_parts(text):
-                        yield reply(part)
+                    plan_parts = [
+                        f"「{name}」：当前没有待批准方案。使用 “/mcaistatus {name}” 查看进度，或 “/mcaisay {name} 内容” 补充线索。"
+                    ]
+                if onebot:
+                    yield reply(parts=plan_parts)
+                else:
+                    for part in plan_parts:
+                        for chunk in message_parts(part):
+                            yield reply(chunk)
             else:
                 say_paused = job.get("say_paused", False)
                 audience = "管理员" if say_paused else "群成员"

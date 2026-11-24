@@ -566,7 +566,20 @@ async def fit_history(
             raise capacity_error(
                 "受保护的最新用户消息和完整交互组已超过请求预算", protected_size
             )
-        eligible = [group for group in groups if not protected.intersection(group)]
+        intervals = [[]]
+        for group in groups:
+            if protected.intersection(group):
+                if intervals[-1]:
+                    intervals.append([])
+            else:
+                intervals[-1].append(group)
+        eligible = max(
+            intervals,
+            key=lambda interval: (
+                any(not split_checkpoint(messages[group.start]) for group in interval),
+                tokens([messages[i] for group in interval for i in group]),
+            ),
+        )
         checkpoints = {
             group.start: value
             for group in eligible
@@ -614,6 +627,9 @@ async def fit_history(
         projected = {}
         for group in eligible:
             if group.start in checkpoints:
+                projected[group.start] = [
+                    {"role": "user", "content": checkpoints[group.start][0]}
+                ]
                 continue
             calls = {
                 call["id"]: call["function"]["name"]
@@ -637,19 +653,17 @@ async def fit_history(
             projected[group.start] = chunk
 
         def render(selected):
+            previous = (
+                checkpoints[selected[0].start][0]
+                if selected and selected[0].start in checkpoints
+                else None
+            )
             content = [
                 message
                 for group in selected
+                if not (previous is not None and group == selected[0])
                 for message in projected.get(group.start, [])
             ]
-            previous = next(
-                (
-                    checkpoints[group.start][0]
-                    for group in selected
-                    if group.start in checkpoints
-                ),
-                None,
-            )
             return json.dumps(
                 {
                     "task_context": task_context,
@@ -829,12 +843,9 @@ async def fit_history(
                 ensure_ascii=False,
             )
             updated = [
+                *messages[: selected[0].start],
                 checkpoint,
-                *[
-                    message
-                    for i, message in enumerate(messages)
-                    if i not in selected_indices
-                ],
+                *messages[selected[-1].stop :],
             ]
             if estimate(updated) < previous_tokens:
                 break

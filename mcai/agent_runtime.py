@@ -282,7 +282,12 @@ async def model_request(
                 api_complete = True
                 if validate is not None:
                     validate(result)
-            except (asyncio.CancelledError, ReviewInvalidated, ReviewCapacityError):
+            except (
+                asyncio.CancelledError,
+                ReviewInvalidated,
+                ReviewCapacityError,
+                ModelUnavailable,
+            ):
                 raise
             except UsageWriteError as exc:
                 if not check_stop:
@@ -334,6 +339,9 @@ async def model_request(
                     state.pop("slow_error", None)
                     delay = RETRY_DELAYS[min(state["protocol_failures"] - 1, 1)]
                 elif check_stop:
+                    slow_error = slow_api_error(exc)
+                    if not slow_error and not retryable(exc):
+                        break
                     state["failures"] = state.get("failures", 0) + 1
                     state.setdefault("first_failed_at", time.time())
                     state["error_type"] = type(exc).__name__
@@ -343,7 +351,7 @@ async def model_request(
                     delay = API_RETRY_DELAYS[
                         min(state["failures"] - 1, len(API_RETRY_DELAYS) - 1)
                     ]
-                    state["slow_error"] = slow_api_error(exc)
+                    state["slow_error"] = slow_error
                     if state["slow_error"]:
                         state["error_type"] = state["slow_error"]
                         delay = API_SLOW_RETRY_DELAY
@@ -356,8 +364,8 @@ async def model_request(
                 tasks.save(job)
             else:
                 job.pop("model_retry", None)
-                if check_stop and (reason := tasks.check_token_limit(job)):
-                    raise ModelUnavailable(reason)
+                if check_stop:
+                    tasks.check_token_limit(job)
                 tasks.save(job)
                 return result
         reason = f"{stage}请求未完成：{state['error']}"
@@ -602,6 +610,7 @@ class MainProvider:
         self.inject = inject
         self.input_ready = asyncio.Event()
         self.preparing = False
+        self.context_steered = False
 
     async def prepare(self, kwargs, *, force=False):
         self.preparing = True
@@ -609,6 +618,7 @@ class MainProvider:
             await self.inject(kwargs, force=force)
             if force and self.input_ready.is_set():
                 # Finish compaction, then rebuild with pending feedback before retrying.
+                self.context_steered = True
                 raise asyncio.CancelledError
         finally:
             self.preparing = False
@@ -616,6 +626,7 @@ class MainProvider:
     async def request(self, call, kwargs):
         while True:
             self.input_ready.clear()
+            self.context_steered = False
             if self.inject:
                 try:
                     await self.prepare(kwargs)
@@ -651,11 +662,21 @@ class MainProvider:
                 if self.preparing:
                     await asyncio.wait({operation})
             finally:
+                cancelled_for_input = (
+                    not operation.done() and not operation.cancelling()
+                )
                 operation.cancel()
                 incoming.cancel()
                 await asyncio.gather(operation, incoming, return_exceptions=True)
             if not self.input_ready.is_set():
                 return operation.result()
+            if operation.cancelled():
+                if not cancelled_for_input and not self.context_steered:
+                    operation.result()
+            elif operation.exception() is not None:
+                operation.result()
+            if self.job["stop_requested"]:
+                raise asyncio.CancelledError
             if self.job["state"] == "paused":
                 raise ModelUnavailable(self.job["pause_reason"])
             self.job.pop("model_retry", None)
@@ -710,6 +731,17 @@ class MainProvider:
         self.final_text = render_citations(
             self.tasks.store, self.job["id"], self.final_text
         )
+        if self.job.get("token_limit_pause"):
+            # Keep paid text and calibration without preparing any new tool calls.
+            text_result = copy.copy(result)
+            text_result.tools_call_name = []
+            self.capture(text_result)
+            if self.final_text:
+                self.job["messages"].append(
+                    {"role": "assistant", "content": self.final_text}
+                )
+            self.tasks.save(self.job)
+            raise ModelUnavailable(self.job["pause_reason"])
         if result.tools_call_name:
             # Persist new tool references outside the cleanup check/delete window.
             async with self.tasks.reference_lock:
@@ -753,7 +785,7 @@ evidence由程序从同一任务的持久原始工具记录独立取证。大结
 mc_exec 和 mc_console_send 只允许诊断；生产修改必须提交 mc_propose。
 mc_query diagnostics heap_dump 属于高开销在线取证（非状态变更，无需改走 mc_propose 或停服），但会造成短时停顿并占用数 GB 磁盘：仅当已核对目标 JVM PID、磁盘剩余空间充足、输出路径隔离，且所引 admin_feedback_id 确为管理员（is_admin=true）在获知停顿与磁盘代价后的明确同意回复时才可放行；缺任一项一律拒绝。
 mc_propose 是等待管理员批准的方案，你的通过不代替管理员批准，允许范围明确的日常运维和故障修复方案。
-首次带continuation的提案同时审核允许范围、完成条件和首批步骤，其中 continuation.scope 必须明确限定具体目标对象（如指定文件、坐标/区块范围、特定模组）与允许动作类别，不得放行“排查或修复全服所有异常”等无边界宽泛授权。续批带plan_id时，以程序提供的approved_plan为已批准原文，结合observations审核具体步骤是否仍在范围内；范围内可更换命令或工具，无需再次人工批准。改变目标、扩大范围或失败后的新修复应拒绝沿用原批准，说明须重新提案。主模型的本批summary不能扩大原批准范围。
+首次带continuation的提案同时审核允许范围、完成条件、后续规划（planned_stages）和首批步骤，其中 continuation.scope 必须明确限定具体目标对象（如指定文件、坐标/区块范围、特定模组）与允许动作类别，不得放行“排查或修复全服所有异常”等无边界宽泛授权；continuation.planned_stages 须与首批步骤及允许范围一致，如实说明后续动态推进阶段，不得夸大承诺或误导管理员。续批带plan_id时，以程序提供的approved_plan为已批准原文，结合observations审核具体步骤是否仍在范围内；范围内可更换命令或工具，无需再次人工批准。改变目标、扩大范围或失败后的新修复应拒绝沿用原批准，说明须重新提案。主模型的本批summary不能扩大原批准范围。
 纯在线 command 可不提供恢复备份，在方案中明确说明即可；不要求额外在线备份、停服或第二次人工确认。文件修改仍须停服备份。
 外部脚本内容缺失或实际效果无法确定时拒绝。不能依据文件名推断脚本安全。同一连续会话内，前序已核验的本机工具身份或临时对象归属在配置与哈希未变时可直接沿用，不重复阻断。
 scripts中planned为本批明确写入或恢复后的脚本正文；steps列出使用该版本的有效步骤下标（从0开始），未列steps的只供上下文参考。结合effective_steps判断真正会执行哪个版本。旧正文仅作变更前证据，已被替换且不会执行的旧依赖不要求补齐。unresolved_references是程序未解析或未读取的引用，不能当作已核实；若它影响本次实际执行则拒绝并指出缺少的具体材料。
@@ -1206,13 +1238,27 @@ class Reviewer:
                     return True
             return False
 
-        prompt, request_estimate = measure(payload)
-        if not fits(request_estimate):
-            payload["feedback"] = await self.compact_feedback(
+        feedback_compacted = False
+
+        async def compact():
+            nonlocal feedback_compacted, payload, prompt, request_estimate
+            if feedback_compacted or not payload["feedback"]:
+                return False
+            feedback_compacted = True
+            feedback = await self.compact_feedback(
                 tasks, job, record, provider, {**payload, "rules": rules}, limit
             )
             check_review_feedback(job, record)
-            prompt, request_estimate = measure(payload)
+            reduced = {**payload, "feedback": feedback}
+            smaller, estimate = measure(reduced)
+            if len(smaller) >= len(prompt) or estimate >= request_estimate:
+                return False
+            payload, prompt, request_estimate = reduced, smaller, estimate
+            return True
+
+        prompt, request_estimate = measure(payload)
+        if not fits(request_estimate):
+            await compact()
             while not fits(request_estimate) and shrink():
                 pass
             if not fits(request_estimate):
@@ -1287,7 +1333,7 @@ class Reviewer:
 
         async def recover_context(error):
             nonlocal identity
-            if not shrink():
+            if not await compact() and not shrink():
                 raise capacity(
                     "审核API明确拒绝上下文容量，操作未执行；请自动收窄证据或拆分实际步骤，保留原操作状态与授权范围。"
                 ) from error

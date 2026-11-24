@@ -280,7 +280,7 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
         const card = item(row.name, `任务 ${row.id} · 群 ${row.group} · 实例 ${row.instance || '待识别'}\n${usage}${row.pause_reason ? `\n暂停原因：${row.pause_reason}` : ''}${row.pause_after_operation ? '\n修复结算后暂停' : ''}`, row.state);
         if (row.model_retry) card.append(node('p', `最近模型重试：${row.model_retry.error || row.model_retry.category || format(row.model_retry)}`));
         if (row.archive_error) card.append(node('p', `归档错误：${row.archive_error}`, 'modal-error'));
-        if (row.continuation) card.append(node('p', `多轮授权 ${row.continuation_status}\n范围：${row.continuation.scope}\n完成条件：${row.continuation.completion}`));
+        if (row.continuation) card.append(node('p', `多轮授权 ${row.continuation_status}${row.continuation.planned_stages?.length ? `\n后续规划：${row.continuation.planned_stages.join('；')}` : ''}\n范围：${row.continuation.scope}\n完成条件：${row.continuation.completion}`));
         if (row.cancel_pending) card.append(node('p', '正在结算取消；实例仍被占用。'));
         const actions = node('div', null, 'data-actions');
         const update = async (action, data = {}) => { const result = await post('tasks', { id: row.id, action, ...data }); await tasks(page); return result; };
@@ -643,7 +643,6 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
       return;
     }
     if (opened.has(hash)) return;
-    opened.add(hash);
     const run = {
       '#servers': servers,
       '#server-configs': ensureHost,
@@ -653,6 +652,9 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
       '#tasks': tasks,
       '#incidents': () => Promise.all([refreshEvents(), ensureHost()]),
     }[hash];
-    run?.().catch(error => show(error.message, true));
+    if (run) {
+      opened.add(hash);
+      run().catch(error => show(error.message, true)).finally(() => opened.delete(hash));
+    }
   } };
 }

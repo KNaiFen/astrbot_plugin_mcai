@@ -4,12 +4,13 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import time
-from pathlib import Path
 from urllib.parse import urlsplit
 
 import aiohttp
 
+from .paths import resolve_file
 from .protocol import PRODUCT_VERSION
 from .public_http import PublicResolver, get_public_url
 
@@ -20,16 +21,33 @@ RETRY_DELAYS = (2, 5)
 LOADERS = {"forge": 1, "fabric": 4, "quilt": 5, "neoforge": 6}
 
 
+def mod_id(value, *, numeric=False):
+    if numeric and type(value) is int:
+        value = str(value)
+    if not isinstance(value, str) or not re.fullmatch(
+        r"[1-9][0-9]*" if numeric else r"[A-Za-z0-9_-]+", value
+    ):
+        raise ValueError("MOD 项目或版本编号格式不正确")
+    return value
+
+
 class Downloads:
     def __init__(self, store, config, *, resolver=None):
         self.store, self.config = store, config
         self.resolver = resolver if resolver is not None else PublicResolver()
 
-    def headers(self, url):
+    def headers(self, url, *, curseforge=False):
         headers = {"User-Agent": USER_AGENT}
-        host = urlsplit(url).hostname or ""
-        if url.startswith(CURSEFORGE.rstrip("/") + "/") or host.endswith(
-            ".forgecdn.net"
+        target = urlsplit(url)
+        host = target.hostname or ""
+        if (
+            curseforge
+            and target.scheme == "https"
+            and target.username is None
+            and (
+                url.startswith(CURSEFORGE.rstrip("/") + "/")
+                or host.endswith(".forgecdn.net")
+            )
         ):
             key = self.config.get("curseforge_api_key")
             if not key:
@@ -46,7 +64,7 @@ class Downloads:
                     async with session.get(
                         url,
                         params=params,
-                        headers=self.headers(url),
+                        headers=self.headers(url, curseforge=True),
                         allow_redirects=False,
                     ) as response:
                         response.raise_for_status()
@@ -87,6 +105,8 @@ class Downloads:
                     },
                 )
             project = args.get("project_id")
+            if project is not None:
+                project = mod_id(project)
             if mode == "project":
                 return await self.request(f"{MODRINTH}/project/{project}")
             if mode == "versions":
@@ -105,7 +125,8 @@ class Downloads:
                     "items": versions[offset : offset + 20],
                     "next_offset": offset + 20 if offset + 20 < len(versions) else None,
                 }
-            version = await self.request(f"{MODRINTH}/version/{args['version_id']}")
+            version_id = mod_id(args["version_id"])
+            version = await self.request(f"{MODRINTH}/version/{version_id}")
             if mode == "file":
                 return version
             if project and version["project_id"] != project:
@@ -117,9 +138,8 @@ class Downloads:
                 files = [item for item in files if item.get("primary")]
             if len(files) != 1:
                 raise ValueError("请明确选择要下载的 filename")
-            project_info = await self.request(
-                f"{MODRINTH}/project/{version['project_id']}"
-            )
+            version_project = mod_id(version["project_id"])
+            project_info = await self.request(f"{MODRINTH}/project/{version_project}")
             file = files[0]
             return {
                 "url": file["url"],
@@ -147,7 +167,7 @@ class Downloads:
             if args.get("loader"):
                 params["modLoaderType"] = LOADERS[args["loader"]]
             return await self.request(CURSEFORGE + "/mods/search", params)
-        project = args["project_id"]
+        project = mod_id(args["project_id"], numeric=True)
         if mode == "project":
             info = await self.request(f"{CURSEFORGE}/mods/{project}")
             info["description"] = (
@@ -161,7 +181,7 @@ class Downloads:
             if args.get("loader"):
                 params["modLoaderType"] = LOADERS[args["loader"]]
             return await self.request(f"{CURSEFORGE}/mods/{project}/files", params)
-        file_id = args["file_id"]
+        file_id = mod_id(args["file_id"], numeric=True)
         file = (await self.request(f"{CURSEFORGE}/mods/{project}/files/{file_id}"))[
             "data"
         ]
@@ -192,11 +212,12 @@ class Downloads:
             "hashes": {
                 ({1: "sha1", 2: "md5"}[item["algo"]]): item["value"]
                 for item in file.get("hashes", [])
+                if item["algo"] in (1, 2)
             },
             "source": source,
             "project": info["name"],
             "project_id": project,
-            "file_id": file_id,
+            "file_id": args["file_id"],
             "game_versions": file["gameVersions"],
             "dependencies": file.get("dependencies", []),
         }
@@ -215,19 +236,22 @@ class Downloads:
         folder = self.store.directory / "downloads" / key
         folder.mkdir(parents=True, exist_ok=True)
         target, partial = folder / "content", folder / "content.part"
-        if Path(metadata["filename"]).name != metadata["filename"] or any(
-            char in metadata["filename"] for char in ("/", "\\", ":")
+        if not metadata["filename"] or any(
+            char in metadata["filename"] for char in ("/", "\\")
         ):
             raise ValueError("下载文件名必须是单个文件名")
+        resolve_file(folder, metadata["filename"])
         for attempt in range(3):
-            if jobs.stopped(key):
-                return
             try:
+                if jobs.stopped(key):
+                    return
                 async with get_public_url(
                     metadata["url"],
                     resolver=self.resolver,
                     timeout=600,
-                    headers=self.headers,
+                    headers=lambda url: self.headers(
+                        url, curseforge=metadata["source"] == "curseforge"
+                    ),
                 ) as response:
                     response.raise_for_status()
                     hashes = {
@@ -283,6 +307,8 @@ class Downloads:
                 if attempt == 2:
                     raise
                 await asyncio.sleep(RETRY_DELAYS[attempt])
+            finally:
+                partial.unlink(missing_ok=True)
 
     async def verify(self, key, instance, task):
         record = self.store.get("download", key)

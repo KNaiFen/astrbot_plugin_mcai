@@ -15,6 +15,7 @@ from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
 from .agent_runtime import request_provider
 from .capabilities import image_unsupported, provider_identity
+from .public_http import PublicResolver, get_public_url
 from .tracing import traced_provider
 
 MIB = 1024**2
@@ -41,7 +42,12 @@ def message_attachments(event, context, admin_ids, is_admin):
                     "admins_id"
                 ]
                 for item in media:
-                    yield item, sender, sender in admin_ids or sender in astrbot_admins
+                    yield (
+                        item,
+                        sender,
+                        bool(sender)
+                        and (sender in admin_ids or sender in astrbot_admins),
+                    )
 
 
 def safe_parts(name):
@@ -67,7 +73,7 @@ def copy_limited(source, destination, limit):
         while block := source.read(128 * 1024):
             size += len(block)
             if size > limit:
-                raise size_error(EXTRACT_LIMIT)
+                raise size_error(limit)
             target.write(block)
     return size
 
@@ -109,15 +115,15 @@ def extract_archive(path, folder, suffix):
 
 
 def copy_local(source, destination, limit):
+    source = source.resolve()
+    if not source.is_relative_to(Path(get_astrbot_temp_path()).resolve()):
+        raise ValueError("平台本地附件必须位于 AstrBot 临时目录内")
     if not source.is_file():
         raise ValueError("平台没有返回可读取的文件")
     if source.stat().st_size > limit:
         raise size_error(limit)
-    shutil.copyfile(source, destination)
-    size = destination.stat().st_size
-    if size > limit:
-        raise size_error(limit)
-    return size
+    with source.open("rb") as stream:
+        return copy_limited(stream, destination, limit)
 
 
 async def download_file(reference, target):
@@ -125,12 +131,10 @@ async def download_file(reference, target):
         raise ValueError("平台没有提供文件地址")
     if not reference.startswith(("http://", "https://")):
         return await asyncio.to_thread(copy_local, Path(reference), target, FILE_LIMIT)
-    async with (
-        aiohttp.ClientSession(
-            raise_for_status=True, timeout=aiohttp.ClientTimeout(total=60)
-        ) as session,
-        session.get(reference) as response,
-    ):
+    async with get_public_url(
+        reference, resolver=PublicResolver(), timeout=60, headers=lambda _: {}
+    ) as response:
+        response.raise_for_status()
         if response.content_length is not None and response.content_length > FILE_LIMIT:
             raise size_error(FILE_LIMIT)
         size = 0
@@ -182,7 +186,7 @@ async def recognize_image(context, store, task, origin, provider_id, path):
     return text
 
 
-async def receive_attachments(workspace, task, sources, recognize):
+async def receive_attachments(workspace, task, sources, recognize, *, folders=None):
     records, replies = [], []
     saved = False
     root = workspace.directory(task)
@@ -192,10 +196,12 @@ async def receive_attachments(workspace, task, sources, recognize):
         name = "图片" if image else PureWindowsPath(part.name or "").name
         try:
             folder.mkdir(parents=True)
+            if folders is not None:
+                folders.append(folder)
             if image:
                 reference = part.url or part.file or ""
                 async with asyncio.timeout(60):
-                    source = Path(await part.convert_to_file_path())
+                    source = Path(await part.convert_to_file_path()).resolve()
                 try:
                     target = folder / ("image" + source.suffix.lower())
                     size = await asyncio.to_thread(

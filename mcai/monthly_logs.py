@@ -46,7 +46,11 @@ def rotate(path, stamp):
     with LOCK:
         if not path.exists():
             return
-        previous = month(path.stat().st_mtime)
+        modified = path.stat().st_mtime
+        try:
+            previous = month(modified)
+        except (OSError, ValueError, OverflowError):
+            previous = month(stamp)
         if previous >= month(stamp):
             return
         targets = {}
@@ -58,8 +62,19 @@ def rotate(path, stamp):
                     if extension == ".jsonl":
                         # A pre-upgrade file can contain more than one month.
                         try:
-                            label = month(json.loads(line)["time"])
-                        except (ValueError, TypeError, KeyError):
+                            timestamp = json.loads(line)["time"]
+                            if timestamp < 0:
+                                raise ValueError("negative log timestamp")
+                            label = month(timestamp)
+                            if not valid_month(label):
+                                label = previous
+                        except (
+                            OSError,
+                            OverflowError,
+                            ValueError,
+                            TypeError,
+                            KeyError,
+                        ):
                             pass  # Preserve invalid legacy lines for diagnosis.
                     if label not in targets:
                         target = archive_path(path, label)
@@ -74,11 +89,14 @@ def rotate(path, stamp):
                             streams.enter_context(gzip.open(temporary, "ab")),
                         )
                     targets[label][2].write(line)
-            for target, temporary, _ in targets.values():
-                temporary.replace(target)
             # Existing diagnostic readers may still have the old file open on Windows.
+            # Retire the source before committing archives so a sharing violation
+            # leaves both the active file and existing archives unchanged.
             retired = path.with_name(f".{path.name}.{uuid.uuid4().hex}.rotated")
             path.replace(retired)
+            for target, temporary, _ in targets.values():
+                temporary.replace(target)
+            # An archive commit failure keeps the retired source for diagnosis.
             retired.unlink()
         finally:
             for _, temporary, _ in targets.values():

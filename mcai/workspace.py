@@ -111,14 +111,14 @@ class Workspace:
                 current.st_mtime_ns,
             ):
                 raise ValueError("读取期间工作区文件已变化，请重新读取")
-        return {
+        result = {
             "path": args["path"],
             "text": text,
             "next_cursor": f"{revision}:{position}" if more else None,
-            "next_offset": args.get("offset", 0) + len(text)
-            if more and "cursor" not in args
-            else None,
         }
+        if "cursor" not in args:
+            result["next_offset"] = args.get("offset", 0) + len(text) if more else None
+        return result
 
     def jar_path(self, task_id, path, artifact_path):
         # artifact_path is supplied by the caller only after Downloads.verify.
@@ -355,7 +355,7 @@ class Workspace:
             ),
         )
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-        timeout = args.get("timeout_seconds", 1800)
+        timeout = args.get("timeout", args.get("timeout_seconds", 1800))
         try:
             async with asyncio.timeout(timeout):
                 while data := await process.stdout.read(4096):

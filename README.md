@@ -29,7 +29,7 @@
 
 ## 安装前准备
 
-当前版本为 **0.20.7**，A、B 和托管窗口使用 `mcai-9`。见 [0.20.7 下载与校验和](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.20.7)及[发布说明](docs/usage/releases.md)。已有部署请先看[升级步骤](#更新时保留什么)。
+当前版本为 **0.20.8**，A、B 和托管窗口使用 `mcai-9`。见 [0.20.8 下载与校验和](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.20.8)及[发布说明](docs/usage/releases.md)。已有部署请先看[升级步骤](#更新时保留什么)。
 
 B 使用 `mcai_windows_host.zip`，其中附带可选的 Probe 0.5.0；A 使用 `astrbot_plugin_mcai.zip`。需要从源码安装时，见[构建说明](docs/development/README.md#构建与发行)。
 

@@ -1,4 +1,16 @@
-# 0.20.7 发布说明
+# 0.20.8 发布说明
+
+0.20.8 继续使用 `mcai-9`。请按[升级步骤](operations.md#升级步骤)配套更新 A、B 与托管窗口；随 B 包提供的 Probe 0.5.0 已同步重构并发读写、旧版本适配与停服落盘，请一并停服替换服务端中的同名 JAR。下载及校验见 [GitHub Release v0.20.8](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.20.8)。
+
+| 模块 | 主要更新与修复（`6156436`） |
+|---|---|
+| 安全边界与审核解析 | 隐藏 `connection/test` 与设置接口的 `host_token` 回传并收紧 CurseForge API 凭据／URL 校验；`resolve_file` 拦截 Windows ADS 与保留设备名；`/mcaiask` 限制 `logs/**` 检索边界并增强敏感文件过滤与连续私钥脱敏；送审即时冻结规则快照与哈希（`REVIEW_VERSION = 7`），替换 BAT `shlex` 为适配引号／续行的命令解析，统一 PowerShell 解析与多指令控制台命令校验；试服链路检查、备份目录边界与 `prepared=True` 恢复覆盖校验补齐 |
+| 状态机、恢复与群聊排版 | 修复终止中任务并发改态、`apply_plan`/`remote` 恢复护栏及 `mc_query`/`mc_test_server` 实例绑定守卫；修正 272k 上下文预算与驱逐回读；区分永久错误快速暂停并修正 `main` 请求、用量统计及日志导出并发问题；配置保存安全替换连接并延后清理旧连接；待批方案改用项目符号与独立脚本摘要支持多轮规划，超 `1800` 字转发消息改为完整分段发送；经验索引原子校验并对归档目录统一 `canonical_directory` 归一化 |
+| B 端终端、调度与留证运维 | 托管终端重连不阻塞并绑定原连接回包，执行通道超时／断流及时清理并排空残帧；取消标志持久合并防进度覆盖；数据清理扩充完整引用保护，定时维护校验后台作业并支持替代链轮替；健康告警抑制共享盘重复提醒；主机设置与热重载共用锁并加入可选 `host_revision`，支持关闭试服窗口后释放工作区切换限制；月度日志先退场再归档，故障留证源文件限制 256 MiB／gzip 64 MiB |
+| MCAI Probe 与诊断引擎 | Probe 所有协议文件启用 Windows 共享删除读取与原子替换重试；就绪检查隔离坏第三方 JAR；修复 1.16.5 `DISPLAYTEST`／`MPL-2.0`／强转／Spark 发送者保留及 1.7.10 世界判断，停服等待收尾并忽略迟到回调；打通 `heap_dump -> hprof_summary` 闭环并严格分离 `stdout`/`stderr`，修复分代 ZGC／Shenandoah 堆计算与单调时钟 CPU 统计 |
+| 离线存档、设置页与发布流水线 | 修复 `WorldTools.scan` 管道错位与 SNBT 非有限浮点往返（实体／方块实体／点检查改用二进制 NBT），统一严格正则文件名校验、`bounds` 负坐标与多版本兼容，`region_prune` 候选改存磁盘并自动释放；文件查询支持取消与体积／行长上限，日志检索捕获 `zlib.error`；修正设置页隐藏必填校验、失败重试、`host` 版本同步、`=` 截断、离线备份盘容错与 `mc_web` XHTML 编码；发行收集与 `--package-only` 改用明确白名单，GitHub Release 改为先建草稿再逐项核对 SHA-256 后公开 |
+
+## 0.20.7 发布说明
 
 0.20.7 继续使用 `mcai-9`。请按[升级步骤](operations.md#升级步骤)配套更新 A、B 与托管窗口。随 B 包提供的 Probe 0.5.0 构建与 0.20.1 相同。下载及校验见 [GitHub Release v0.20.7](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.20.7)。
 

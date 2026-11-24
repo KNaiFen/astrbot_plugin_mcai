@@ -54,10 +54,15 @@ def record_request(store, task, stage, provider, model, usage):
     details = (
         usage.get("input_tokens_details") or usage.get("prompt_tokens_details") or {}
     )
-    cached = details.get("cached_tokens", usage.get("prompt_cache_hit_tokens"))
+    cached = details.get("cached_tokens")
+    if cached is None:
+        cached = usage.get("prompt_cache_hit_tokens")
+    if cached is None:
+        cached = usage.get("cache_read_input_tokens")
     if "input_other" in usage:
-        cached = usage["input_cached"]
-        incoming = usage["input_other"] + cached
+        if usage.get("input_cached") is not None:
+            cached = usage["input_cached"]
+        incoming = (usage["input_other"] or 0) + (cached or 0)
     known = incoming is not None and outgoing is not None
     increment = {
         "requests": 1,

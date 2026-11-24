@@ -127,6 +127,9 @@ class HostClient:
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 if once:
                     raise
+                if sink is not None:
+                    sink.seek(0)
+                    sink.truncate(0)
                 logger.warning("连接中断，%.1f 秒后重连：%s", delay, exc)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 10)
@@ -266,6 +269,14 @@ class HostClient:
                         allow_redirects=False,
                         timeout=FILE_TRANSFER_TIMEOUT,
                     ) as response:
+                        if response.status in (502, 503, 504):
+                            raise aiohttp.ClientConnectionError(
+                                f"HTTP {response.status}"
+                            )
+                        if 300 <= response.status < 400:
+                            raise RemoteError(
+                                "控制地址发生重定向，请将 host_url 设置为最终 HTTPS 地址"
+                            )
                         if response.headers.get("X-MCAI-Protocol") != PROTOCOL:
                             raise RemoteError("A/B 产品协议不匹配")
                         if response.status >= 400:
@@ -275,7 +286,7 @@ class HostClient:
                         size = 0
                         with temporary.open("wb") as output:
                             async for chunk in response.content.iter_chunked(262144):
-                                output.write(chunk)
+                                await asyncio.to_thread(output.write, chunk)
                                 size += len(chunk)
                     temporary.replace(destination)
                     return size

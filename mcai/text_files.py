@@ -2,8 +2,12 @@
 
 import codecs
 import difflib
+import gzip
 import hashlib
+import io
+import json
 import re
+import tomllib
 
 BOMS = (
     (codecs.BOM_UTF32_LE, "utf-32-le"),
@@ -22,6 +26,28 @@ def decode_text(data, encoding=None):
     return data.decode(codec), codec, b""
 
 
+def parse_document(data, format, encoding=None):
+    if format == "nbt":
+        import nbtlib
+
+        return nbtlib.File.parse(
+            io.BytesIO(gzip.decompress(data) if data.startswith(b"\x1f\x8b") else data)
+        )
+    text, _, _ = decode_text(data, encoding)
+    if format == "json":
+        return json.loads(text)
+    if format == "toml":
+        return tomllib.loads(text)
+    if format == "yaml":
+        import yaml
+
+        try:
+            return yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            raise ValueError(f"YAML 格式无效：{exc}") from exc
+    raise ValueError("支持校验的格式为 json/toml/yaml/nbt")
+
+
 def patch_text(path, arguments):
     return patch_data(path.read_bytes(), arguments, path.name)
 
@@ -32,24 +58,42 @@ def patch_data(data, arguments, name):
         raise ValueError("文件已变化，请重新读取并提案")
     original, codec, marker = decode_text(data, arguments.get("encoding"))
     content = original
-    ending = re.search(r"\r\n|\r|\n", original)
-    ending = ending.group() if ending else "\n"
     if not arguments["edits"]:
         raise ValueError("补丁不能为空")
     for edit in arguments["edits"]:
         old, new = edit["old"], edit["new"]
         if not old:
             raise ValueError("补丁原文不能为空")
-        if old not in content:
-            old = re.sub(r"\r\n|\r|\n", lambda _: ending, old)
-        if content.count(old) != 1:
+        # Match logical lines while retaining the endings of this exact occurrence.
+        pattern = re.compile(
+            r"(?:\r\n|\r|\n)".join(
+                re.escape(part) for part in re.split(r"\r\n|\r|\n", old)
+            )
+        )
+        matches = list(pattern.finditer(content))
+        if len(matches) != 1:
             raise ValueError("补丁原文必须唯一匹配，请补充上下文")
-        new = re.sub(r"\r\n|\r|\n", lambda _: ending, new)
-        content = content.replace(old, new, 1)
-    updated = marker + content.encode(codec)
+        match = matches[0]
+        endings = re.findall(r"\r\n|\r|\n", match[0])
+        nearby = re.search(r"\r\n|\r|\n", content[match.start() :])
+        ending = endings[-1] if endings else nearby[0] if nearby else "\n"
+        old_lines = re.split(r"\r\n|\r|\n", match[0])
+        new_lines = re.split(r"\r\n|\r|\n", new)
+        new_endings = [ending] * (len(new_lines) - 1)
+        for operation, start, stop, first, last in difflib.SequenceMatcher(
+            a=old_lines, b=new_lines, autojunk=False
+        ).get_opcodes():
+            if operation in ("equal", "replace"):
+                for previous, current in zip(range(start, stop), range(first, last)):
+                    if previous < len(endings) and current < len(new_endings):
+                        new_endings[current] = endings[previous]
+        new = "".join(
+            line + (new_endings[index] if index < len(new_endings) else "")
+            for index, line in enumerate(new_lines)
+        )
+        content = content[: match.start()] + new + content[match.end() :]
+    updated = marker + content.encode("utf-8" if codec == "utf-8-sig" else codec)
     if arguments.get("format"):
-        from .verification import parse_document
-
         parse_document(updated, arguments["format"], codec)
     return updated, {
         "sha256": actual,

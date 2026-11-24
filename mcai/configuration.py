@@ -9,11 +9,14 @@ import os
 import re
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
+from threading import Lock
 
 from .environment import canonical_directory
 
 RESTART_PROMPT = "Start server in 10 seconds. Press ctrl+c to stop right now."
+WRITE_LOCK = Lock()
 DEFAULT_INCIDENT_RESTART_WINDOW = 120
 DEFAULT_INCIDENT_CAPACITY = 256
 ALERT_DEFAULTS = {
@@ -49,10 +52,14 @@ def launcher_identity(config):
 
 def write_json(path, value):
     path = Path(path)
-    temporary = path.with_name(path.name + ".tmp")
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     data = (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-    temporary.write_bytes(data)
-    temporary.replace(path)
+    try:
+        temporary.write_bytes(data)
+        with WRITE_LOCK:
+            temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return data
 
 
@@ -105,7 +112,10 @@ def bat_codepage(path, encoding="auto", data=None):
             "CMD 不支持 UTF-16/UTF-32 BAT，请将启动 BAT 保存为 UTF-8 或系统 ANSI 编码"
         )
     if encoding != "auto":
-        normalized = codecs.lookup(encoding).name
+        try:
+            normalized = codecs.lookup(encoding).name
+        except LookupError as exc:
+            raise ValueError(f"未知 BAT 编码：{encoding}") from exc
         if normalized in ("utf-8", "utf-8-sig"):
             return 65001
         if normalized in ("gbk", "gb18030"):

@@ -191,6 +191,13 @@ def model_result(name, arguments, result, operation_id=None):
             "mc_console_read",
             {"after": data["cursor"], "session_id": data["session_id"], **environment},
         )
+    elif (
+        name == "mc_workspace"
+        and arguments["mode"] == "read"
+        and data.get("next_cursor") is not None
+    ):
+        next_args.pop("offset", None)
+        next_args["cursor"] = data["next_cursor"]
     elif data.get("next_offset") is not None:
         next_args["offset"] = data["next_offset"]
         if name == "mc_web" and arguments["mode"] == "open":

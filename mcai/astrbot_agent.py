@@ -3,7 +3,6 @@ import copy
 import hashlib
 import json
 import os
-import re
 import shutil
 import time
 import uuid
@@ -104,7 +103,7 @@ PROMPT = (
 - 群里不带检索链接、内部引用编号和工具原文，不泄露现实 IP/端口、密码、Token 等隐私（游戏内坐标、实体与常规报错正常说明）。
 - 先查本地工具与现场产物，同一知识点联网检索 1~2 轮无新进展就停；缺关键信息或需管理员拍板时只调用 mc_say 提问并立即结束本轮，同轮不再附带 final；阶段结论和结案请求用 final（对应 phase: final_answer），刚在进度里答过的不必整段重复。
 - 只有主目标已验证解决或管理员明确收手时才请发送 “/mcaidone 任务名” 验收，并附 “/mcaisay 任务名 内容”；未定论或待决策时只引导 “/mcaisay 任务名 内容” 或 “/mcaipause 任务名”。命令提示用中文双引号并在两边留空格，不用 Markdown 加粗或标题。
-- 提交 mc_propose 时，summary 只写给群内管理员看的一两句人话（交代原因、目标、关键风险或备份状态），不重复步骤清单、排查经过或启动参数、只读核对清单等审核自证内容；技术依据由程序直接送审。
+- 提交 mc_propose 时，能单批写全确定步骤的不要硬拆多轮；确需按实测动态分批时，用 continuation 的 planned_stages 以管理员能直接看懂的日常中文简短分点写明首批后的预计阶段和动态分支，禁止出现内部工具名、动作名、参数名或代码术语。summary 只写给群内管理员看的一两句人话（交代原因、目标、关键风险或备份状态），不重复步骤清单、后续规划、排查经过或启动参数、只读核对清单等审核自证内容；技术依据由程序直接送审。
 
 【工具契约】
 先用 mc_instances 与 mc_select_instance 绑定实例；文件、日志、NBT/区域与进程/JVM 诊断统一用 mc_query，低频专项用 mc_tools 加载。ok 只表示受理；遇到 context_capacity 收窄证据或拆步重试；unknown 沿原 operation_id 核实，不换编号重放；参数失败按 error.path 就地修正。"""
@@ -285,14 +284,15 @@ class AstrBotAgent:
     def summary_rules(self):
         return self.summary_rules_path.read_text(encoding="utf-8-sig")
 
+    def rules_snapshot(self):
+        return {
+            "task_policy": TASK_POLICY,
+            "main": self.rules(),
+            "review": self.review_rules(),
+        }
+
     def rules_hash(self):
-        return digest(
-            {
-                "task_policy": TASK_POLICY,
-                "main": self.rules(),
-                "review": self.review_rules(),
-            }
-        )
+        return digest(self.rules_snapshot())
 
     def stop(self, job_id):
         runner = self.runners.get(job_id)
@@ -308,7 +308,11 @@ class AstrBotAgent:
         if job.get("release_checkpoint") or job.get("release_submitted"):
             return True
         try:
-            await tasks.client.request("GET", f"/operations/{job['operation']}")
+            await tasks.client.request(
+                "GET",
+                f"/operations/{job['operation']}",
+                stopped=lambda: job["stop_requested"],
+            )
             return True
         except RemoteError as exc:
             if not str(exc).startswith("HTTP 404:"):
@@ -353,7 +357,6 @@ class AstrBotAgent:
 
     async def run(self, tasks, job):
         rules = self.rules()
-        review_rules = self.review_rules()
         summary_rules = self.summary_rules()
         say_queued = False
         current = None
@@ -363,20 +366,43 @@ class AstrBotAgent:
             factor = BASELINE_FACTORS["main"]
             available = (
                 budget.get("input_limit", budget.get("limit", 272000))
-                - estimated_input(tasks.store, budget_provider, "main", 0)
-            ) / factor - budget.get("overhead_tokens", 0)
+                - estimated_input(
+                    tasks.store,
+                    budget_provider,
+                    "main",
+                    tokens([{"role": "system", "content": system}])
+                    + tokens(
+                        [
+                            {
+                                "role": "system",
+                                "content": json.dumps(
+                                    tool_definitions, ensure_ascii=False
+                                ),
+                            }
+                        ]
+                    )
+                    + tokens(job["messages"]),
+                )
+            ) / factor
             usage = job.get("context_usage")
-            if usage and usage["identity"] == context_identity(
-                budget_provider, system, tool_definitions
+            if (
+                usage
+                and usage["identity"]
+                == context_identity(budget_provider, system, tool_definitions)
+                and digest(job["messages"][: usage["messages"]]) == usage["prefix"]
             ):
-                available = max(
+                tail = job["messages"][usage["messages"] :]
+                if tail and tail[0]["role"] == "assistant":
+                    tail = tail[1:]
+                available = min(
                     available,
                     (
                         budget["input_limit"]
                         - usage["input_tokens"]
                         - usage["output_tokens"]
                     )
-                    / factor,
+                    / factor
+                    - tokens(tail),
                 )
             return max(
                 128,
@@ -490,16 +516,45 @@ class AstrBotAgent:
                 stopped=lambda: job["stop_requested"],
             )
 
+        async def local(record, arguments):
+            workspace = record["name"] == "mc_workspace"
+            record.setdefault("operation", record["id"])
+            record["state"] = "submitted"
+            tasks.store.save("tool_call", record["id"], record)
+            return await tasks.local_jobs.start(
+                {
+                    "id": record["operation"],
+                    "instance": job["instance"],
+                    "task_id": job["id"],
+                    "action": "workspace" if workspace else "download",
+                },
+                lambda key: (
+                    tasks.workspace.execute(
+                        tasks.local_jobs,
+                        key,
+                        job["id"],
+                        {**arguments, "script_hashes": record["checks"]},
+                    )
+                    if workspace
+                    else tasks.downloads.download(tasks.local_jobs, key, arguments)
+                ),
+            )
+
         async def execute(record):
             if record.get("state") == "completed":
                 track(record["result"], record)
                 return record["result"]
             name, arguments = record["name"], copy.deepcopy(record["arguments"])
+            submitted = (
+                record.get("state") == "submitted"
+                or bool(record.get("remote"))
+                or bool(record.get("batch_operation"))
+            )
             if (
                 job["stop_requested"]
                 or job["state"] == "paused"
                 or job["state"] == "waiting"
-            ):
+            ) and not submitted:
                 result = {
                     "not_executed": True,
                     "error_code": "precondition_failed",
@@ -691,19 +746,6 @@ class AstrBotAgent:
                 heap_dump = (
                     action == "diagnostics" and query_arguments["mode"] == "heap_dump"
                 )
-                if not heap_dump:
-                    return await remote(record, action, query_arguments)
-                feedback = tasks.admin_feedback(
-                    job, query_arguments.get("admin_feedback_id")
-                )
-                if feedback is None:
-                    return {
-                        "not_executed": True,
-                        "error_code": "precondition_failed",
-                        "execution_state": "not_executed",
-                        "reason": "堆转储须引用当前任务中管理员明确同意的 admin_feedback_id。",
-                    }
-                arguments = query_arguments
             if name == "mc_tools":
                 names = arguments.get("names", [])
                 workflow = arguments.get("workflow")
@@ -764,8 +806,6 @@ class AstrBotAgent:
                 return tasks.knowledge.query(arguments, job.get("directory"))
             if name == "mc_web":
                 return await tasks.web.call(job["id"], arguments)
-            if name == "mc_test_server":
-                return await remote(record, "test_server", arguments)
             if name == "mc_search":
                 if not self.enable_alpha_search:
                     raise ValueError("独立搜索尚未启用，请在插件设置中测试并开启")
@@ -795,6 +835,28 @@ class AstrBotAgent:
                     raise ValueError(
                         "尚未确定服务端，请 mc_instances 查看并 mc_select_instance 绑定；不确定时向群里追问"
                     )
+            if name == "mc_test_server":
+                return await remote(record, "test_server", arguments)
+            if name == "mc_query":
+                if not heap_dump:
+                    return await remote(record, action, query_arguments)
+                feedback = tasks.admin_feedback(
+                    job, query_arguments.get("admin_feedback_id")
+                )
+                if feedback is None:
+                    return {
+                        "not_executed": True,
+                        "error_code": "precondition_failed",
+                        "execution_state": "not_executed",
+                        "reason": "堆转储须引用当前任务中管理员明确同意的 admin_feedback_id。",
+                    }
+                arguments = query_arguments
+            if record.get("state") == "submitted" and name in (
+                "mc_workspace",
+                "mc_download",
+                "mc_mods",
+            ):
+                return await local(record, arguments)
             if name == "mc_knowledge":
                 return tasks.knowledge.query(
                     {**arguments, "mode": "case"}, job["directory"]
@@ -834,17 +896,17 @@ class AstrBotAgent:
                 approved = tasks.require_plan(job, arguments["plan_id"])
                 if job.get("operation") or job["state"] == "applying":
                     raise ValueError("当前批次尚未结算，请先读取结果")
-                if (
-                    approved["snapshot"]["plan"]["reviewed"]["rules_hash"]
-                    != self.rules_hash()
-                ):
-                    tasks.end_plan(job, "invalidated", "运行规则已变化")
-                    raise ValueError("运行规则已变化，请重新提案等待批准")
             elif workspace_exec:
                 scope = tasks.active_plan(job)
                 if scope is None:
                     raise ValueError("工作区脚本需要先批准当前多轮方案")
                 approved = tasks.require_plan(job, scope["snapshot"]["plan"]["id"])
+            if approved and (
+                approved["snapshot"]["plan"]["reviewed"]["rules_hash"]
+                != self.rules_hash()
+            ):
+                tasks.end_plan(job, "invalidated", "运行规则已变化")
+                raise ValueError("运行规则已变化，请重新提案等待批准")
             trial_release = None
             if (
                 name == "mc_propose"
@@ -886,12 +948,16 @@ class AstrBotAgent:
                             operation_id=record["trial_evidence_operation"],
                         )
                     else:
+                        outbox = (
+                            tasks.store.get("outbox", trial["id"] + "-0")
+                            if trial
+                            else None
+                        ) or {}
                         if (
                             not trial
                             or feedback.get("trial_id") != trial["id"]
-                            or not (
-                                tasks.store.get("outbox", trial["id"] + "-0") or {}
-                            ).get("sent")
+                            or not outbox.get("sent")
+                            or outbox.get("discarded")
                             or test_operation_id is not None
                             and test_operation_id != trial.get("test_operation_id")
                         ):
@@ -1042,16 +1108,24 @@ class AstrBotAgent:
                         },
                         task_id=job["id"],
                         operation_id=record["id"],
+                        stopped=lambda: job["stop_requested"],
                     )
+                rules_snapshot = self.rules_snapshot()
+                rules_hash = digest(rules_snapshot)
+                if approved and (
+                    approved["snapshot"]["plan"]["reviewed"]["rules_hash"] != rules_hash
+                ):
+                    tasks.end_plan(job, "invalidated", "运行规则已变化")
+                    raise ReviewInvalidated("运行规则已变化，请重新提案等待批准")
                 try:
                     decision = await self.reviewer.decide(
                         tasks,
                         job,
                         record,
-                        review_rules,
+                        rules_snapshot["review"],
                         material,
                         approved=approved,
-                        rules_hash=self.rules_hash(),
+                        rules_hash=rules_hash,
                     )
                 except ReviewCapacityError as exc:
                     job.pop("model_retry", None)
@@ -1089,6 +1163,10 @@ class AstrBotAgent:
                 tasks.store.save("tool_call", record["id"], record)
             if needs_review:
                 check_review_feedback(job, record)
+                if record["decision"]["rules_hash"] != self.rules_hash():
+                    if approved:
+                        tasks.end_plan(job, "invalidated", "运行规则已变化")
+                    raise ReviewInvalidated("审核期间运行规则已变化，原调用未执行。")
                 if job["stop_requested"] or job["state"] == "paused":
                     raise ReviewInvalidated("任务已停止或暂停，原调用未执行。")
                 if record["decision"]["decision"] == "deny":
@@ -1252,37 +1330,11 @@ class AstrBotAgent:
                         "bytes": target.stat().st_size,
                     }
                 tasks.require_plan(job, approved["snapshot"]["plan"]["id"])
-                record.setdefault("operation", record["id"])
-                record["state"] = "submitted"
-                tasks.store.save("tool_call", record["id"], record)
-                return await tasks.local_jobs.start(
-                    {
-                        "id": record["operation"],
-                        "instance": job["instance"],
-                        "task_id": job["id"],
-                        "action": "workspace",
-                    },
-                    lambda key: tasks.workspace.execute(
-                        tasks.local_jobs, key, job["id"], arguments
-                    ),
-                )
+                return await local(record, arguments)
             if name in ("mc_mods", "mc_download"):
                 if name == "mc_mods" and arguments["mode"] != "download":
                     return await tasks.downloads.mods(arguments)
-                record.setdefault("operation", record["id"])
-                record["state"] = "submitted"
-                tasks.store.save("tool_call", record["id"], record)
-                return await tasks.local_jobs.start(
-                    {
-                        "id": record["operation"],
-                        "instance": job["instance"],
-                        "task_id": job["id"],
-                        "action": "download",
-                    },
-                    lambda key: tasks.downloads.download(
-                        tasks.local_jobs, key, arguments
-                    ),
-                )
+                return await local(record, arguments)
             if name == "mc_pause":
                 tasks.pause(job, arguments["reason"])
                 return {
@@ -1542,11 +1594,18 @@ class AstrBotAgent:
                             message.get("content"), str
                         ):
                             continue
-                        match = re.search(
-                            r'"evidence_id"\s*:\s*"([a-f0-9]{32})"', message["content"]
-                        )
-                        if match:
-                            previous = tasks.store.get("tool_call", match[1])
+                        content = object_content(message["content"])
+                        data = content.get("data")
+                        if (
+                            content.get("evicted")
+                            or "context_entry" in content
+                            or not isinstance(data, dict)
+                            or "context_entry" in data
+                            or "text" not in data
+                        ):
+                            continue
+                        if evidence_id := content.get("evidence_id"):
+                            previous = tasks.store.get("tool_call", evidence_id)
                             if previous and previous["id"] != record["id"]:
                                 previous = tool_evidence(previous)
                                 if read_scope(previous) == read_scope(current_source):
@@ -1554,7 +1613,9 @@ class AstrBotAgent:
                     unique = review_evidence([*sources, current_source], 12000)[-1][
                         "result"
                     ]
-                    if isinstance(unique, dict) and unique.get("covered_by"):
+                    if isinstance(unique, dict) and (
+                        unique.get("covered_by") or unique.get("same_as")
+                    ):
                         record["model_result"]["data"] = plain_output(unique)
                 original = record["model_result"]
                 data = original["data"]
@@ -1655,11 +1716,20 @@ class AstrBotAgent:
             records = []
             for key in step["calls"]:
                 record = tasks.store.get("tool_call", key)
-                if job["state"] == "paused" and record.get("state") != "completed":
+                submitted = (
+                    record.get("state") == "submitted"
+                    or bool(record.get("remote"))
+                    or bool(record.get("batch_operation"))
+                )
+                if (
+                    job["state"] == "paused"
+                    and record.get("state") != "completed"
+                    and not submitted
+                ):
                     return
                 if (
                     record.get("state") != "completed"
-                    and not record.get("remote")
+                    and not submitted
                     and record.get("feedback_revision") != len(job.get("feedback", []))
                 ):
                     record.update(
@@ -1685,8 +1755,6 @@ class AstrBotAgent:
                 ):
                     say_queued = True
                 records.append(record)
-                if job["state"] == "paused":
-                    break
             if len(records) != len(step["calls"]):
                 return
             job["messages"].append(
@@ -2042,10 +2110,17 @@ class AstrBotAgent:
             return
         if (
             job["state"] == "paused"
-            or job["state"] in ("applying", "waiting")
+            or job["state"] == "applying"
             or job["stop_requested"]
-            or (job["plan"] and not job["pending"])
         ):
+            return
+        if job["plan"]:
+            job["messages"].extend(drain_main_input())
+            append_runtime_state(job["messages"])
+            job["state"] = "waiting"
+            tasks.save(job)
+            return
+        if job["state"] == "waiting":
             return
         wrapper = AgentContextWrapper(
             context=AstrAgentContext(context=self.context, event=event),

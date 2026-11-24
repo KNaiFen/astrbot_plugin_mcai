@@ -16,6 +16,11 @@ class Store:
         self.directory.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.directory / "state.sqlite3")
         self.db.execute("PRAGMA journal_mode=WAL")
+        index = self.db.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='live_tasks'"
+        ).fetchone()
+        if index and "$.cleanup.pending" not in index[0]:
+            self.db.execute("DROP INDEX live_tasks")
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS records (
                 kind TEXT, id TEXT, body TEXT NOT NULL,
@@ -34,6 +39,7 @@ class Store:
             CREATE INDEX IF NOT EXISTS live_tasks ON records(kind)
                 WHERE kind='task' AND (json_extract(body, '$.state') NOT IN ('done', 'stopped')
                     OR json_extract(body, '$.cancel_pending')=1
+                    OR json_extract(body, '$.cleanup.pending')=1
                     OR json_extract(body, '$.archive_state') IN ('pending', 'ready'));
         """)
 

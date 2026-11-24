@@ -12,7 +12,7 @@ from .monthly_logs import LOCK, archive_path, rotate, valid_month
 from .paths import resolve_file
 from .storage_usage import SCAN_SECONDS, database_usage
 
-A_CATEGORIES = {"traces", "web_page", "workspace", "outbox"}
+A_CATEGORIES = {"traces", "web_page", "workspace", "outbox", "downloads"}
 B_CATEGORIES = {"jobs", "downloads", "backups"}
 REPREVIEW = "清理范围或任务状态已变化，请重新预览"
 REFERENCE_FIELDS = {
@@ -21,9 +21,17 @@ REFERENCE_FIELDS = {
     "operation",
     "operation_id",
     "job_id",
+    "scan_job_id",
+    "baseline",
+    "baseline_job_id",
+    "inventory_job_id",
+    "test_operation_id",
+    "ready_operation_id",
     "export_id",
     "download_id",
     "download_ids",
+    "left_download_id",
+    "right_download_id",
     "export_ids",
     "reference",
     "argv",
@@ -155,6 +163,8 @@ def references(value):
             if field in REFERENCE_FIELDS:
                 for reference in item if isinstance(item, list) else [item]:
                     if isinstance(reference, str):
+                        if reference.startswith("--") and "=" in reference:
+                            reference = reference.split("=", 1)[1]
                         yield Path(reference).name
             yield from references(item)
     elif isinstance(value, list):
@@ -215,6 +225,49 @@ def a_plan(store, workspace, task, server_dirs, categories):
                     if folder.is_relative_to(keep) or keep.is_relative_to(folder):
                         raise ValueError("任务工作区与其他插件数据重叠，拒绝清理")
             items.append(item)
+
+    if "downloads" in categories:
+        if any(row["task_id"] == key for row in store.active("background_job")):
+            raise ValueError("A 端任务仍有未结算后台作业，不能清理下载")
+        # Failed downloads have a job identity even without a download record.
+        for (item_id,) in store.db.execute(
+            """SELECT DISTINCT id FROM records WHERE json_extract(body, '$.task_id')=?
+               AND (kind='download' OR
+                    (kind='background_job' AND json_extract(body, '$.kind')='download'))
+               ORDER BY id""",
+            (key,),
+        ):
+            artifact_id(item_id)
+            item = path_item(
+                "downloads", item_id, store.directory, f"downloads/{item_id}", deadline
+            )
+            if item and any(
+                Path(item["path"]).is_relative_to(server)
+                or server.is_relative_to(Path(item["path"]))
+                for server in server_dirs
+            ):
+                raise ValueError("下载清理路径与服务端重叠，拒绝清理")
+            record = store.db.execute(
+                "SELECT body FROM records WHERE kind='download' AND id=?", (item_id,)
+            ).fetchone()
+            if record:
+                encoded = record[0].encode()
+                item = item or {
+                    "kind": "downloads",
+                    "id": item_id,
+                    "path": f"state.sqlite3 / download / {item_id}",
+                    "version": None,
+                    "bytes": 0,
+                }
+                item.update(
+                    file_bytes=item["bytes"],
+                    bytes=item["bytes"] + len(encoded),
+                    records=1,
+                    record_bytes=len(encoded),
+                    record=("download", hashlib.sha256(encoded).hexdigest()),
+                )
+            if item:
+                items.append(item)
 
     for kind in ("web_page", "outbox"):
         if kind not in categories:

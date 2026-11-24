@@ -188,7 +188,9 @@ function rowEditor(field, type, data, fetchServers, priceCatalog) {
     rowBody.append(wrapper);
   }
   for (const line of field.value.split(/\r?\n/).filter(Boolean)) {
-    const [key, value = ''] = line.split('=', 2);
+    const separator = line.indexOf('=');
+    const key = separator < 0 ? line : line.slice(0, separator);
+    const value = separator < 0 ? '' : line.slice(separator + 1);
     add([key, ...(type === 'routes' ? value.split(':GroupMessage:') : value.split(':'))]);
   }
   const footer = node('div', null, 'actions');

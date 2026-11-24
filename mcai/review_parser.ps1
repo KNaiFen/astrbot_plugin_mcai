@@ -206,8 +206,13 @@ while ($null -ne ($line = $inputStream.ReadLine())) {
         $commands.Add(@{ words = $words.ToArray(); source = $command.Extent.Text })
     }
     foreach ($member in $ast.FindAll({ param($node) $node -is [InvokeMemberExpressionAst] }, $true)) {
+        if ($member.Member -isnot [StringConstantExpressionAst]) {
+            $commands.Add(@{ words = @($null); source = $member.Extent.Text })
+            continue
+        }
         $method = $member.Member.Value
-        if ($method -in @('Create', 'InvokeScript') -and $member.Extent.Text -match '(?i)(scriptblock|InvokeCommand|ExecutionContext)') {
+        if ($method -in @('Create', 'InvokeScript', 'NewScriptBlock') -and
+            $member.Extent.Text -match '(?i)(scriptblock|powershell|InvokeCommand|ExecutionContext)') {
             $commands.Add(@{ words = @('__unsafe_ast__', $method); source = $member.Extent.Text })
         }
     }
