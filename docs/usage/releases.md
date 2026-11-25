@@ -1,4 +1,12 @@
-# 0.20.9 发布说明
+# 0.20.10 发布说明
+
+0.20.10 继续使用 `mcai-9`。本次改动仅涉及 A 端（AstrBot 插件），若 B 端、托管窗口与 Probe 0.5.0 已升级至 0.20.8，只需更新 A 端插件即可，无需重启 B 端、托管窗口或替换 Probe；从 0.20.7 或更旧版本升级仍请按[升级步骤](operations.md#升级步骤)配套更新。随 B 包提供的 Probe 0.5.0 构建与 0.20.8 相同。下载及校验见 [GitHub Release v0.20.10](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.20.10)。
+
+| 模块 | 主要更新与修复（`99ddde7`） |
+|---|---|
+| 群指令表情回应统一 | 将 `/mcaiask` 只读问答在 QQ 端的消息表情回应由 `124`（`👌`）统一调整为 `476`（`[不是吧]`），与其余异步任务指令保持一致 |
+
+## 0.20.9 发布说明
 
 0.20.9 继续使用 `mcai-9`。本次改动仅涉及 A 端（AstrBot 插件），若 B 端、托管窗口与 Probe 0.5.0 已升级至 0.20.8，只需更新 A 端插件即可，无需重启 B 端、托管窗口或替换 Probe；从 0.20.7 或更旧版本升级仍请按[升级步骤](operations.md#升级步骤)配套更新。随 B 包提供的 Probe 0.5.0 构建与 0.20.8 相同。下载及校验见 [GitHub Release v0.20.9](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.20.9)。
 

@@ -58,8 +58,7 @@ COMMANDS = {
 }
 GROUP_MESSAGE_PART_LIMIT = 1800
 DEFAULT_GROUP_FORWARD_THRESHOLD = 400
-ASK_ACK_EMOJI_ID = "124"
-COMMAND_ACK_EMOJI_ID = "476"
+ACK_EMOJI_ID = "476"
 HELP_TEXT = (
     "MCAI 群命令指南\n"
     "说明：任务名不含空格、最多 40 字；命令与参数间留空格；有唤醒前缀限制时请带前缀（默认 / ）或 @Bot。\n"
@@ -290,7 +289,7 @@ class MCAI(Star):
         event,
         identity,
         *,
-        emoji_id=ASK_ACK_EMOJI_ID,
+        emoji_id=ACK_EMOJI_ID,
         trace_kind="ask_ack_failed",
     ):
         platform = event.get_platform_name()
@@ -362,7 +361,7 @@ class MCAI(Star):
         await self.acknowledge_message(
             event,
             identity,
-            emoji_id=ASK_ACK_EMOJI_ID,
+            emoji_id=ACK_EMOJI_ID,
             trace_kind="ask_ack_failed",
         )
 
@@ -372,7 +371,7 @@ class MCAI(Star):
             self.acknowledge_message(
                 event,
                 identity,
-                emoji_id=COMMAND_ACK_EMOJI_ID,
+                emoji_id=ACK_EMOJI_ID,
                 trace_kind="command_ack_failed",
             )
         )
