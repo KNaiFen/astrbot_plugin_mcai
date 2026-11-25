@@ -564,6 +564,8 @@ class Settings:
         else:
             item.update(sent=True, discarded=True)
         store.save("outbox", key, item)
+        if action == "retry":
+            self.plugin.tasks.wake_outbox()
         if action == "discard":
             store.log(
                 "message_outbox_discarded",
@@ -776,6 +778,18 @@ class Settings:
             return {"items": result, "count": len(rows)}
         body = await request.json()
         key, action = body["id"], body["action"]
+        if action in ("approve", "resume"):
+            existing = tasks.jobs.get(key)
+            if existing and (
+                action == "resume"
+                and existing["state"] == "paused"
+                and not existing["stop_requested"]
+                or action == "approve"
+                and existing.get("plan")
+                and isinstance(body.get("code"), str)
+                and body["code"].strip().upper() == existing["plan"]["approval_code"]
+            ):
+                await tasks.wait_worker_idle(existing)
         async with tasks.create_lock:
             job = tasks.jobs.get(key)
             if action == "archive":

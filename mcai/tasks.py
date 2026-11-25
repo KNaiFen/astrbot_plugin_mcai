@@ -166,10 +166,94 @@ class Tasks:
         self.workers = {}
         self.model_requests = {}
         self.outbox_worker = None
+        self.outbox_wakeup = asyncio.Event()
         self.outbox_sends = {}
         self.outbox_sending = set()
+        self.activity_revision = 0
+        self._synced_activity_revision = -1
+        self._activity_sync_lock = asyncio.Lock()
         self.closing = False
         self.retired_clients = []
+
+    def wake_outbox(self):
+        self.outbox_wakeup.set()
+
+    def active_instances(self):
+        return [
+            [job["directory"], job["id"]]
+            for job in self.jobs.values()
+            if job.get("directory") and occupies_instance(job)
+        ]
+
+    def bump_activity(self):
+        self.activity_revision += 1
+
+    async def sync_activity(self, *, force=False):
+        if self.client is None or not hasattr(self.client, "request"):
+            return
+        async with self._activity_sync_lock:
+            while True:
+                revision = self.activity_revision
+                if not force and self._synced_activity_revision == revision:
+                    return
+                active = json.dumps(self.active_instances(), ensure_ascii=False)
+                try:
+                    async with asyncio.timeout(4):
+                        await self.client.request(
+                            "GET",
+                            "/incidents",
+                            once=True,
+                            params={"active": active, "active_only": "1"},
+                        )
+                except (
+                    aiohttp.ClientError,
+                    RuntimeError,
+                    OSError,
+                    ValueError,
+                    TimeoutError,
+                ) as exc:
+                    self.store.log("activity_sync_pending", error=str(exc))
+                    return
+                self._synced_activity_revision = revision
+                force = False
+                if self.activity_revision == revision:
+                    return
+
+    async def wait_worker_idle(self, job, timeout=2.0):
+        worker = self.workers.get(job["id"])
+        if worker is not None:
+            await asyncio.wait({worker}, timeout=timeout)
+
+    async def wait_stopping_jobs(self, name, directory=None, timeout=3.0):
+        deadline = time.monotonic() + timeout
+        woken = set()
+        while True:
+            workers = []
+            for job in list(self.jobs.values()):
+                if not job.get("stop_requested"):
+                    continue
+                matches = (
+                    job.get("directory") == directory
+                    if directory is not None
+                    else job.get("instance") == name
+                )
+                if not matches:
+                    continue
+                if (
+                    job.get("cancel_pending")
+                    and job["id"] not in self.workers
+                    and job["id"] not in woken
+                ):
+                    woken.add(job["id"])
+                    self.wake(job)
+                if worker := self.workers.get(job["id"]):
+                    workers.append(worker)
+            if not workers:
+                return woken
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return woken
+            await asyncio.wait(workers, timeout=remaining)
 
     def save(self, job):
         key, messages = job["id"], job["messages"]
@@ -310,6 +394,7 @@ class Tasks:
             if saved_parts is not None:
                 record["parts"] = saved_parts
             self.store.save("outbox", key, record)
+            self.wake_outbox()
 
     def progress(self, job, identity, text, *, forward=False):
         if job["stop_requested"] or not text.strip():
@@ -339,6 +424,7 @@ class Tasks:
                     "progress_task": job["id"],
                 },
             )
+            self.wake_outbox()
         self.store.save("progress", key, {"id": key})
 
     def pause(self, job, reason):
@@ -429,6 +515,7 @@ class Tasks:
     async def deliver(self):
         try:
             while True:
+                self.outbox_wakeup.clear()
                 try:
                     for item in self.store.pending_outbox(now=time.time()):
                         lane = (
@@ -443,7 +530,17 @@ class Tasks:
                         )
                 except Exception:
                     self.log_delivery_error("message_outbox_poll_error")
-                await asyncio.sleep(1)
+                waiter = asyncio.create_task(self.outbox_wakeup.wait())
+                sleeper = asyncio.create_task(asyncio.sleep(1))
+                try:
+                    await asyncio.wait(
+                        (waiter, sleeper), return_when=asyncio.FIRST_COMPLETED
+                    )
+                finally:
+                    for task in (waiter, sleeper):
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(waiter, sleeper, return_exceptions=True)
         finally:
             sends = tuple(self.outbox_sends.values())
             for send in sends:
@@ -453,11 +550,14 @@ class Tasks:
             self.outbox_sending.clear()
 
     async def deliver_pending(self, item, lane):
+        should_wake = False
         try:
             # Give the head the first chance to send when the platform recovers.
-            if (
-                await self.deliver_item(item) is False
-                and lane[1] is None
+            delivered = await self.deliver_item(item)
+            if delivered is not False:
+                should_wake = True
+            elif (
+                lane[1] is None
                 and item["attempts"] > MESSAGE_PROBE_FAILURES
                 and item["failures"] > MESSAGE_PROBE_FAILURES
                 and (probe := self.store.outbox_probe(item))
@@ -467,6 +567,7 @@ class Tasks:
                     if await self.deliver_item(probe):
                         item["single_fault"] = True
                         self.store.save("outbox", item["id"], item)
+                        should_wake = True
                 finally:
                     self.outbox_sending.remove(probe["id"])
         except Exception:
@@ -474,6 +575,8 @@ class Tasks:
         finally:
             self.outbox_sending.remove(item["id"])
             del self.outbox_sends[lane]
+            if should_wake:
+                self.wake_outbox()
 
     def log_delivery_error(self, kind, **fields):
         details = traceback.format_exc()
@@ -570,6 +673,17 @@ class Tasks:
             self.wake(job)
         return True
 
+    def check_create(self, group, name):
+        if " " in name or len(name) > 40:
+            raise ValueError("任务名请控制在 40 字内，不带空格")
+        if any(
+            job["group"] == group
+            and job["name"] == name
+            and job["state"] not in ("done", "stopped")
+            for job in self.jobs.values()
+        ):
+            raise ValueError("任务名已存在")
+
     async def create(
         self,
         group,
@@ -586,7 +700,7 @@ class Tasks:
     ):
         entry = await self.instance_entry(instance) if instance is not None else None
         async with self.create_lock:
-            return self._create(
+            job = self._create(
                 group,
                 origin,
                 name,
@@ -598,7 +712,15 @@ class Tasks:
                 attachments,
                 workspace_root,
                 quoted_origin=quoted_origin,
+                wake=False,
             )
+            if job.get("directory"):
+                self.bump_activity()
+        if job.get("directory"):
+            await self.sync_activity()
+        if job["state"] == "running" and not job["stop_requested"]:
+            self.wake(job)
+        return job
 
     def _create(
         self,
@@ -614,16 +736,9 @@ class Tasks:
         workspace_root,
         *,
         quoted_origin=None,
+        wake=True,
     ):
-        if " " in name or len(name) > 40:
-            raise ValueError("任务名请控制在 40 字内，不带空格")
-        if any(
-            job["group"] == group
-            and job["name"] == name
-            and job["state"] not in ("done", "stopped")
-            for job in self.jobs.values()
-        ):
-            raise ValueError("任务名已存在")
+        self.check_create(group, name)
         if entry and any(
             job.get("directory") == entry["canonical_directory"]
             and occupies_instance(job)
@@ -681,7 +796,8 @@ class Tasks:
                 job,
                 f"开始排查。\n群成员可用 “/mcaisay {name} 内容” 补充线索；普通群聊不会进入任务。\n查看进度：“/mcaistatus {name}”",
             )
-            self.wake(job)
+            if wake:
+                self.wake(job)
         else:
             self.message(
                 job,
@@ -780,6 +896,7 @@ class Tasks:
                 task_id=job["id"],
             )
         if old != directory:
+            self.bump_activity()
             self.log(
                 job,
                 "instance_selected",
@@ -787,6 +904,7 @@ class Tasks:
                 directory=directory,
                 reason=reason,
             )
+            await self.sync_activity()
         for previous in self.jobs.values():
             if previous.get("directory") == directory and previous["state"] in (
                 "done",
@@ -827,6 +945,7 @@ class Tasks:
         mention=None,
         confirm=False,
     ):
+        woken = await self.wait_stopping_jobs(name, directory)
         async with self.create_lock:
             retry = (
                 f" 请重新发送 “/mcaiswitch {name} {action}” 获取确认单。"
@@ -872,6 +991,12 @@ class Tasks:
                 )
             for job in self.jobs.values():
                 if job.get("directory") == directory and occupies_instance(job):
+                    if job.get("stop_requested") and job.get("cancel_pending"):
+                        if job["id"] not in self.workers and job["id"] not in woken:
+                            self.wake(job)
+                        raise ValueError(
+                            f"实例原任务「{job['name']}」正在收尾清理后台工作，请稍候完成后重试。{retry}"
+                        )
                     raise ValueError(
                         f"实例已有活动群任务「{job['name']}」，请先处理该任务。{retry}"
                     )
@@ -941,6 +1066,7 @@ class Tasks:
                 steps = [step]
                 if action == "forcerestart":
                     steps.append({"action": "start"})
+            await self.sync_activity(force=True)
             key = uuid.uuid4().hex
             control = {
                 "id": key,
@@ -1020,6 +1146,7 @@ class Tasks:
                     "sent": False,
                 },
             )
+            self.wake_outbox()
 
     def observe_control_later(self, control):
         key = control["id"]
@@ -1405,7 +1532,7 @@ class Tasks:
         job["release_checkpoint"] = checkpoint
         self.save(job)
 
-    def approve(self, job, sender, code):
+    def check_approve(self, job, code):
         if job["state"] == "paused":
             raise ValueError(
                 f"任务已暂停，管理员请先使用 “/mcairesume {job['name']}” 续接。"
@@ -1424,6 +1551,10 @@ class Tasks:
                 f"「{job['name']}」：{reason}。请核对当前方案：\n"
                 f"{plan_text(plan)}\n\n管理员批准：“{approval_command(job)}”"
             )
+        return plan, current
+
+    def approve(self, job, sender, code):
+        plan, current = self.check_approve(job, code)
         if job["id"] in self.workers:
             raise ValueError("正在整理排查结果，请稍后再批准")
         approved_at = time.time()
@@ -1477,6 +1608,7 @@ class Tasks:
             raise ValueError(
                 f"修复正在执行，请完成后验收，或使用 “/mcaistop {job['name']}” 中止。"
             )
+        was_applying = job["state"] == "applying" or bool(job.get("operation"))
         job["stop_requested"] = True
         job["cancel_pending"] = True
         job["finish_as"] = "done" if done else "stopped"
@@ -1495,12 +1627,11 @@ class Tasks:
         if job["id"] not in self.workers:
             job["state"] = "done" if done else "stopped"
         self.save(job)
-        self.message(
-            job,
-            "已验收，任务结束。"
-            if done
-            else "已停止接收反馈，当前操作会在安全步骤结束后停止。",
-        )
+        if not done and was_applying:
+            self.message(
+                job,
+                "已停止接收反馈，当前操作会在安全步骤结束后停止。",
+            )
         self.wake(job)
 
     def pause_requested(self, job):
@@ -1945,6 +2076,7 @@ class Tasks:
                             operation_id=request["operation_id"],
                             task_id=job["id"],
                         )
+                    was_cancel_pending = bool(job.get("cancel_pending"))
                     job["background"] = {}
                     job["cancel_pending"] = False
                     job.pop("cancel_error", None)
@@ -1955,17 +2087,47 @@ class Tasks:
                         and hasattr(self.agent, "summarize")
                     ):
                         job.setdefault("archive_state", "pending")
+                    self.save(job)
+                    if was_cancel_pending and job.get("directory"):
+                        self.bump_activity()
+                    if (
+                        job["state"] == "done"
+                        and job.get("archive_state") in ("pending", "ready")
+                        and hasattr(self.agent, "summarize")
+                    ):
                         self.archive_later(job)
                     if job.get("cleanup", {}).get("pending"):
-                        self.save(job)
                         try:
                             await self.cleanup_trial(job)
                         except (OSError, ValueError, RemoteError) as exc:
                             job["cleanup"]["error"] = str(exc)
                             self.log(job, "trial_cleanup_pending", error=str(exc))
+                            self.save(job)
+                    if was_cancel_pending:
+                        if job.get("directory"):
+                            await self.sync_activity()
+                        if job["state"] == "done":
+                            finish_text = "已验收，任务结束。"
+                        elif job.get("directory") or job.get("instance"):
+                            finish_text = "任务已中止，实例已释放。"
+                        else:
+                            finish_text = "任务已中止。"
+                        self.message(
+                            job,
+                            finish_text,
+                            identity=f"finish-{job['id']}",
+                        )
             except RemoteError as exc:
                 job["cancel_error"] = f"{type(exc).__name__}: {exc}"
                 self.log(job, "task_cancel_failed", error=job["cancel_error"])
+                if job.get("cancel_pending"):
+                    label = "验收" if job.get("finish_as") == "done" else "中止"
+                    self.message(
+                        job,
+                        f"{label}收尾清理失败，实例暂未释放：{exc}",
+                        job["admin"],
+                        identity=f"cancel-error-{job['id']}-{digest({'error': str(exc)})[:8]}",
+                    )
             finally:
                 self.save(job)
                 self.workers.pop(job["id"], None)

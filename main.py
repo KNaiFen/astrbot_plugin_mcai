@@ -33,7 +33,6 @@ from .mcai.tasks import (
     FORCE_ACTIONS,
     SERVER_ACTIONS,
     Tasks,
-    occupies_instance,
     space_commands,
 )
 from .mcai.tracing import trace_event
@@ -59,6 +58,8 @@ COMMANDS = {
 }
 GROUP_MESSAGE_PART_LIMIT = 1800
 DEFAULT_GROUP_FORWARD_THRESHOLD = 400
+ASK_ACK_EMOJI_ID = "124"
+COMMAND_ACK_EMOJI_ID = "476"
 HELP_TEXT = (
     "MCAI 群命令指南\n"
     "说明：任务名不含空格、最多 40 字；命令与参数间留空格；有唤醒前缀限制时请带前缀（默认 / ）或 @Bot。\n"
@@ -273,6 +274,7 @@ class MCAI(Star):
         self.incident_worker = asyncio.create_task(self.deliver_incidents())
         self.ask_workers = {}
         self.ask_recent = {}
+        self.ack_workers = set()
 
         # Providers are loaded after plugins during a cold start, but already
         # exist when a running AstrBot installs or reloads this plugin.
@@ -283,7 +285,14 @@ class MCAI(Star):
     async def on_astrbot_loaded(self):
         await self.tasks.start()
 
-    async def acknowledge_ask(self, event, identity):
+    async def acknowledge_message(
+        self,
+        event,
+        identity,
+        *,
+        emoji_id=ASK_ACK_EMOJI_ID,
+        trace_kind="ask_ack_failed",
+    ):
         platform = event.get_platform_name()
         try:
             async with asyncio.timeout(3):
@@ -311,7 +320,7 @@ class MCAI(Star):
                         await bot.call_action(
                             "set_msg_emoji_like",
                             message_id=api_message_id,
-                            emoji_id="124",
+                            emoji_id=emoji_id,
                             set=True,
                             **routing,
                         )
@@ -328,7 +337,7 @@ class MCAI(Star):
                             "set_group_reaction",
                             group_id=api_group_id,
                             message_id=api_message_id,
-                            code="124",
+                            code=emoji_id,
                             is_add=True,
                             **routing,
                         )
@@ -339,13 +348,36 @@ class MCAI(Star):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            task = identity() if callable(identity) else identity
             trace_event(
                 self.store,
-                "ask_ack_failed",
-                task=identity,
+                trace_kind,
+                task=task,
                 platform=platform,
+                emoji_id=emoji_id,
                 error=f"{type(exc).__name__}: {exc}",
             )
+
+    async def acknowledge_ask(self, event, identity):
+        await self.acknowledge_message(
+            event,
+            identity,
+            emoji_id=ASK_ACK_EMOJI_ID,
+            trace_kind="ask_ack_failed",
+        )
+
+    def acknowledge_command(self, event, trace, *, task_id=None):
+        identity = task_id if task_id is not None else (lambda: trace.get("task"))
+        worker = asyncio.create_task(
+            self.acknowledge_message(
+                event,
+                identity,
+                emoji_id=COMMAND_ACK_EMOJI_ID,
+                trace_kind="command_ack_failed",
+            )
+        )
+        self.ack_workers.add(worker)
+        worker.add_done_callback(self.ack_workers.discard)
 
     async def ask(self, event, identity, question, *, is_admin=False):
         sender = event.get_sender_id()
@@ -378,6 +410,7 @@ class MCAI(Star):
                     "sent": False,
                 },
             )
+            self.tasks.wake_outbox()
         except asyncio.CancelledError:
             cancelled = True
             raise
@@ -439,11 +472,14 @@ class MCAI(Star):
                 )
             )
         self.store.save_many(*records)
+        if origins:
+            self.tasks.wake_outbox()
 
     async def poll_incidents(self, routes, *, now=None):
         client = self.tasks.client
         cursor = self.store.get("incident_cursor", client.url) or {"seq": 0}
         state = self.store.get("incident_connection", client.url) or {}
+        revision = self.tasks.activity_revision
         try:
             async with asyncio.timeout(15):
                 feed = await client.request(
@@ -453,11 +489,7 @@ class MCAI(Star):
                     params={
                         "after": cursor["seq"],
                         "active": json.dumps(
-                            [
-                                [job["directory"], job["id"]]
-                                for job in self.tasks.jobs.values()
-                                if job.get("directory") and occupies_instance(job)
-                            ],
+                            self.tasks.active_instances(),
                             ensure_ascii=False,
                         ),
                         **(
@@ -498,6 +530,8 @@ class MCAI(Star):
                     client.url, routes, now, state, type(exc).__name__
                 )
             return
+        if self.tasks.activity_revision != revision:
+            await self.tasks.sync_activity(force=True)
         if not routes:
             return
         if state:
@@ -546,6 +580,8 @@ class MCAI(Star):
             }
         if feed["items"] or feed["reset"]:
             self.store.save_many(*records, ("incident_cursor", client.url, cursor))
+            if records:
+                self.tasks.wake_outbox()
 
     async def deliver_incidents(self):
         while True:
@@ -971,11 +1007,13 @@ class MCAI(Star):
                     raise ValueError(
                         f"请填写问题描述或附上文件/图片。\n用法：“/mcainew {name} 问题描述”，或先回复/引用一条包含问题的消息再发 “/mcainew {name}” 。"
                     )
+                self.tasks.check_create(group, name)
                 task = uuid.uuid4().hex if attachments else None
                 workspace = self.tasks.workspace
                 options, notices = {}, []
                 try:
                     if task:
+                        self.acknowledge_command(event, trace, task_id=task)
                         records, notices, saved = await self.collect_attachments(
                             workspace, task, event, attachments
                         )
@@ -1005,6 +1043,8 @@ class MCAI(Star):
                             shutil.rmtree(path)
                             path.parent.rmdir()
                 trace["task"] = job["id"]
+                if not task:
+                    self.acknowledge_command(event, trace)
                 if notices:
                     yield reply("\n".join(notices))
                 return
@@ -1027,17 +1067,18 @@ class MCAI(Star):
                     raise ValueError(
                         f"用法：“/mcaisay {name} 内容”，请填写要补充的信息（也可直接附上或引用群文件、图片）。"
                     )
+                self.tasks.check_feedback(job, is_admin)
                 records, notices = [], []
                 folders, received = [], False
                 try:
                     if attachments:
-                        self.tasks.check_feedback(job, is_admin)
                         workspace = self.tasks.workspace
                         root = str(workspace.root)
                         if job.get("workspace_root", root) != root:
                             raise ValueError(
                                 "任务工作区位置已变化，请恢复本任务原工作区配置"
                             )
+                        self.acknowledge_command(event, trace)
                         records, notices, saved = await self.collect_attachments(
                             workspace, job["id"], event, attachments, folders=folders
                         )
@@ -1067,6 +1108,8 @@ class MCAI(Star):
                     yield reply(
                         f"「{name}」：补充已保存；任务仍暂停，管理员使用 “/mcairesume {name}” 后会一起读取。"
                     )
+                elif accepted and not attachments:
+                    self.acknowledge_command(event, trace)
             elif command == "mcaisaymode":
                 mode = content.strip().lower()
                 if mode not in ("true", "false"):
@@ -1083,15 +1126,25 @@ class MCAI(Star):
                     )
                 )
             elif command == "mcaiapply":
-                self.tasks.approve(job, sender, content.strip())
+                code = content.strip()
+                self.tasks.check_approve(job, code)
+                await self.tasks.wait_worker_idle(job)
+                self.tasks.approve(job, sender, code)
+                self.acknowledge_command(event, trace)
             elif command == "mcaistop":
                 self.tasks.stop(job)
+                self.acknowledge_command(event, trace)
             elif command == "mcaidone":
                 self.tasks.stop(job, done=True)
+                self.acknowledge_command(event, trace)
             elif command == "mcairesume":
+                if job["state"] == "paused" and not job["stop_requested"]:
+                    await self.tasks.wait_worker_idle(job)
                 self.tasks.resume(job)
+                self.acknowledge_command(event, trace)
             elif command == "mcaipause":
                 self.tasks.pause_requested(job)
+                self.acknowledge_command(event, trace)
             elif command == "mcaiplan":
                 approved = job.get("approved_plan")
                 if job["plan"]:
@@ -1260,9 +1313,10 @@ class MCAI(Star):
         await asyncio.gather(self.incident_worker, return_exceptions=True)
         await self.settings.close()
         questions = tuple(self.ask_workers.values())
-        for question in questions:
-            question.cancel()
-        await asyncio.gather(*questions, return_exceptions=True)
+        acks = tuple(self.ack_workers)
+        for worker in (*questions, *acks):
+            worker.cancel()
+        await asyncio.gather(*questions, *acks, return_exceptions=True)
         await self.tasks.close()
         self.workspace_memory.close()
         self.store.close()
