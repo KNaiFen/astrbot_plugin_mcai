@@ -559,7 +559,11 @@ class MCAI(Star):
             cursor = {"stream_id": feed["stream_id"], "seq": 0}
         records = []
         for row in feed["items"]:
-            origin = routes.get(row["instance"]) if row.get("notify", True) else None
+            origin = (
+                routes.get(row["instance"], routes.get("*"))
+                if row.get("notify", True)
+                else None
+            )
             if origin:
                 key = "incident-" + row["id"]
                 if not self.store.get("outbox", key):

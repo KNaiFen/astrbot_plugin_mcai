@@ -24,6 +24,7 @@ from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.platform_metadata import PlatformMetadata
 from astrbot.core.provider.entities import ProviderRequest
 from jsonschema import Draft202012Validator, ValidationError
+from pydantic import Field, model_validator
 from pydantic.dataclasses import dataclass
 
 from .agent_runtime import (
@@ -246,15 +247,41 @@ def clean_history(messages, *, copy_messages=True):
     return result
 
 
+_STATIC_TOOL_SCHEMAS = {id(schema): schema for _, _, schema in TOOLS}
+_VALIDATED_STATIC_SCHEMAS: dict[int, dict] = {}
+_VALIDATED_DYNAMIC_SCHEMA_KEYS: set[str] = set()
+_TOOL_VALIDATORS: dict[int, Draft202012Validator] = {}
+
+
 @dataclass
 class McTool(FunctionTool):
     callback: object = None
+
+    @model_validator(mode="after")
+    def validate_parameters(self):
+        schema = self.parameters
+        key = id(schema)
+        if _VALIDATED_STATIC_SCHEMAS.get(key) is schema:
+            return self
+        if _STATIC_TOOL_SCHEMAS.get(key) is schema:
+            super().validate_parameters()
+            _VALIDATED_STATIC_SCHEMAS[key] = schema
+            return self
+        serialized = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+        if serialized not in _VALIDATED_DYNAMIC_SCHEMA_KEYS:
+            super().validate_parameters()
+            if len(_VALIDATED_DYNAMIC_SCHEMA_KEYS) < 256:
+                _VALIDATED_DYNAMIC_SCHEMA_KEYS.add(serialized)
+        return self
 
     async def call(self, context, **kwargs):
         return await self.callback(self.name, kwargs)
 
 
+@dataclass
 class McToolSet(ToolSet):
+    tools: list[McTool] = Field(default_factory=list)
+
     def get_tool(self, name):
         return super().get_tool(name) or McTool(
             name=name, description="", parameters={}, callback=self.tools[0].callback
@@ -770,7 +797,14 @@ class AstrBotAgent:
                 }
             else:
                 try:
-                    Draft202012Validator(schema).validate(arguments)
+                    validator = (
+                        _TOOL_VALIDATORS.setdefault(
+                            id(schema), Draft202012Validator(schema)
+                        )
+                        if _STATIC_TOOL_SCHEMAS.get(id(schema)) is schema
+                        else Draft202012Validator(schema)
+                    )
+                    validator.validate(arguments)
                     result = await invoke(
                         record,
                         arguments_for(name, clean_arguments(arguments), internal=True),

@@ -164,8 +164,8 @@
             </div>
             <h3 class="group-title">故障通知与告警</h3>
             <div class="setting-group">
-              <label>故障通知群<textarea name="incident_routes" rows="2" placeholder="示例：survival=onebot:GroupMessage:123456"></textarea></label>
-              <p class="hint">每行指定一个实例及通知群；留空只在 B 主机保存故障现场。</p>
+              <label>故障通知群<textarea name="incident_routes" rows="2" placeholder="默认通配示例：*=onebot:GroupMessage:123456（精确实例优先）"></textarea></label>
+              <p class="hint">每行指定一个实例及通知群。具体实例优先，未单独绑定的实例使用 * 默认通配；留空不发通知。</p>
               <label>B 失联告警分钟数<input type="number" name="host_offline_alert_minutes" min="1" step="1" value="3" required></label>
             </div>
             <div class="panel-footer">

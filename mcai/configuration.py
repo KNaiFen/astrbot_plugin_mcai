@@ -150,11 +150,11 @@ def incident_routes(values, allowed):
     groups = allowed_group_ids(allowed)
     for value in values:
         match = re.fullmatch(
-            r"([A-Za-z0-9_-]+)=([^:\s=]+:GroupMessage:(\d+))", str(value)
+            r"(\*|[A-Za-z0-9_-]+)=([^:\s=]+:GroupMessage:(\d+))", str(value)
         )
         if not match or match[1] in routes:
             raise ValueError(
-                "故障通知须按 实例=平台ID:GroupMessage:群号 配置，实例不能重复"
+                "故障通知须按 实例=平台ID:GroupMessage:群号 配置（实例可填 * 作为默认通配），实例不能重复"
             )
         if groups and match[3] not in groups:
             raise ValueError("故障通知目标必须在允许群号中")

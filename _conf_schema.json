@@ -31,7 +31,7 @@
   "member_ask_cooldown_seconds": {"description": "群成员 /mcaiask 冷却秒数（0 不冷却）", "type": "int", "default": 300},
   "ask_max_steps": {"description": "只读问答 /mcaiask 最多模型步骤", "type": "int", "default": 10},
   "ask_timeout_seconds": {"description": "只读问答 /mcaiask 超时秒数", "type": "int", "default": 180},
-  "incident_routes": {"description": "故障通知：实例=平台ID:GroupMessage:群号（默认不发）", "type": "list", "default": []},
+  "incident_routes": {"description": "故障通知：实例=平台ID:GroupMessage:群号（* 为默认通配，精确实例优先；留空不发）", "type": "list", "default": []},
   "host_offline_alert_minutes": {"description": "连不上 B 持续多久后告警（分钟，至少 1）", "type": "int", "default": 3},
   "auto_cleanup_days": {"description": "自动清理已结算任务数据的天数（0 关闭；不清理备份）", "type": "int", "default": 0},
   "group_forward_threshold": {"description": "QQ 长回复合集门槛（字符数）；超过该值时合并转发，填写正整数", "type": "int", "default": 400},

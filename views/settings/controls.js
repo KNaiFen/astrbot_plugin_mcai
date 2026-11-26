@@ -96,7 +96,8 @@ function rowEditor(field, type, data, fetchServers, priceCatalog) {
   header.append(node('span'));
   table.append(header);
   const group = node('datalist'); group.id = 'allowed-groups';
-  let servers = [];
+  const defaultRoute = ['*', '*（默认通配）'];
+  let servers = [defaultRoute];
   const rows = [];
   const rowBody = node('div', null, 'editor-rows');
   function update() {
@@ -199,7 +200,8 @@ function rowEditor(field, type, data, fetchServers, priceCatalog) {
     const refresh = button('读取实例', async () => {
       refresh.disabled = true;
       try {
-        servers = (await fetchServers()).items.filter(item => item.selectable).map(item => [item.instance, item.instance]);
+        const items = (await fetchServers()).items.filter(item => item.selectable);
+        servers = [defaultRoute, ...items.map(item => [item.instance, item.instance])];
         for (const { controls: [control] } of rows) options(control, [['', '实例'], ...withCurrent(servers, control.value)]);
         refresh.textContent = '刷新实例';
       } catch (error) { refresh.textContent = `读取实例失败：${error.message}`; }

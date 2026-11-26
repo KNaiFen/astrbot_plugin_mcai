@@ -26,9 +26,9 @@
 .\.venv\Scripts\python.exe scripts/verify.py --mode release
 ```
 
-`static` 检查 Ruff、Git 空白、Node 语法、配置和版本、Markdown 相对链接与 Probe CoreChecks；`quick` 在静态检查后运行冒烟套件，排除 `real_host`；`full` 在静态检查后收集全部核心用例。`compat` 只核对配置与版本并运行两个兼容套件。`package` 运行静态检查并用已有 Java／Probe 产物打包，校验 ZIP、解包文档链接及 A/B 隔离导入安装与 CLI 帮助；`release` 在此基础上串行执行核心与兼容全量回归。
+`static` 检查 Ruff、Git 空白、Node 语法、配置和版本、Markdown 相对链接与 Probe CoreChecks；`quick` 在静态检查后运行精简后的 A/B 代表性冒烟集合（`QUICK_TESTS`，排除 `real_host`）；`full` 在静态检查后收集全部核心用例。`compat` 只核对配置与版本并运行两个兼容套件。`package` 运行静态检查并用已有 Java／Probe 产物打包，校验 ZIP、解包文档链接及 A/B 隔离导入安装与 CLI 帮助；`release` 在此基础上串行执行核心与兼容全量回归。传入 `--skip-static` 可跳过静态检查，传入 `--reuse-dist`（如 `scripts/release.py` 已前置构建时）可复用现有 `dist/` 产物。
 
-Windows CI（`.github/workflows/ci.yml`）将静态检查和核心／兼容矩阵分开。静态作业用 Node 20、JDK 21 和固定 Gson 运行 CoreChecks；测试作业安装锁定依赖、校验固定 AstrBot 源码并准备 WorldTools，运行 `full`／`compat` 时传 `--skip-java --skip-node`，由独立静态作业覆盖这两项。锁定依赖作业的 pip 缓存路径为 `~\AppData\Local\pip\Cache`。
+Windows CI（`.github/workflows/ci.yml`）将静态检查和核心／兼容矩阵分开。静态作业用 Node 20、JDK 21 和固定 Gson 运行 CoreChecks；测试作业安装锁定依赖、校验固定 AstrBot 源码并准备 WorldTools，运行 `full`／`compat` 时传 `--skip-static --skip-java --skip-node`，由独立静态作业统一覆盖。锁定依赖作业的 pip 缓存路径为 `~\AppData\Local\pip\Cache`。
 
 若手动调用 `pytest` 跑全量核心回归：
 
@@ -78,10 +78,10 @@ tests/test_plan_continuation.py::test_one_approval_runs_three_observed_batches_w
 ## 编写与维护测试
 
 - **先找已有场景。** 优先补现有测试的必要断言，按故障留证、主机维护、存档、查询 CLI、修复或终端隔离等职责合并小用例。不要复制启动和清理流程，也不为一两个用例另建零散文件。移动测试或共用夹具时，同步检查兼容矩阵的导入，尤其是 `tests/world_compatibility.py`，并更新下方场景清单。
-- **复用夹具。** `tests/conftest.py` 的 `host` 默认使用 `SimConsole`／`SimTerminal` 和进程内 `local_execution`。只有确实依赖 ConPTY、窗口标题、共享 Job Object 内存额度、进程树隔离或 BAT 自动重启的测试才标为 `@pytest.mark.real_host`。保留 `cache_powershell_version` 对默认 `pwsh.exe` 的版本探测缓存（其他路径仍执行真实校验），以及 `fast_test_polling` 的模块级轮询替换；`plugin_session` 复用 `_load_plugin_module()` 的模块缓存和通过 `host` 使用的会话级 `test_tls_bundle`。
+- **复用夹具。** `tests/conftest.py` 的 `host` 默认使用 `SimConsole`／`SimTerminal` 和进程内 `local_execution`。只有确实依赖 ConPTY、窗口标题、共享 Job Object 内存额度、进程树隔离或 BAT 自动重启的测试才标为 `@pytest.mark.real_host`。会话级夹具缓存默认 `pwsh.exe` 的版本探测（`cache_powershell_version`，其他路径仍真实校验）、复用的解析常驻进程（`cache_powershell_parser`，持久化 `review_parser.ps1`）及 Java／`WorldTool` 子进程（`cache_java_tools`），并通过 `fast_test_polling` 统一收缩模块级轮询与 `operation_context` 的 `cpu_percent` 采样；`plugin_session` 复用 `_load_plugin_module()` 的模块缓存和通过 `host` 使用的会话级 `test_tls_bundle`。
 - **控制参数化规模。** 使用 `host` 或 `plugin_session` 时，各参数组合都会重建对应的函数级夹具。纯数据校验在同一测试内循环；多维协议、流式错误或分隔符取代表组合覆盖边界，避免笛卡尔积。需要穷举的存档编解码、模型接口兼容矩阵放入 `world_compatibility.py` 或 `api_compatibility.py`。
 - **分清工具结算和重试。** 假 `Provider` 的回调先显式判断 `provider.last.get("next_call")`，工具同步返回或后台工作已结算时可能没有该字段。直接索引的 `KeyError` 可能被模型失败路径捕获并消耗下一条模拟动作；`mcai/agent_runtime.py` 的有限重试间隔为 `RETRY_DELAYS = (2, 5)`，持续 API 失败用 `API_RETRY_DELAYS`。失败重试测试使用 `fast_model_retries`；专测退避中取消时可局部设置 `API_RETRY_DELAYS`，用事件提前中止。
-- **保留后台首等窗口。** `mcai/jobs.py` 的 `Jobs.start` 等待至多 2 秒后返回当前状态，不终止后台工作。不要统一压短，避免将正常的 PowerShell 启动或短结果误测成仍在执行。专门验证 `running` 后再 `mc_job_wait` 的脚本需超过 2 秒，例如 2.4 秒；测取消时及时提交取消，不等自然超时。
+- **保留后台首等窗口。** `mcai/jobs.py` 的 `Jobs.start` 等待至多 2 秒后返回当前状态，不终止后台工作。不要全局压短，避免将正常的 PowerShell 启动或短结果误测成仍在执行，也避免与客户端重试退避发生时序竞态。专门验证 `running` 后再 `mc_job_wait` 的脚本需超过 2 秒，例如 2.4 秒；测取消时及时提交取消，不等自然超时；不专门验证 2 秒边界、也不涉及请求重试与取消时序竞态、仅需故意保持运行态的用例可局部使用 `tests/conftest.py` 的 `short_job_start`，同时保持 `mcai/jobs.py` 生产 2 秒窗口与 `test_job_wait_and_unicode_artifact_search` 不变。
 - **及时确认取消并控制载荷。** Probe 取消测试的假终端监听 `cancel/<key>.json`，以匹配原编号和会话的结果回写 `status="cancelled"`；除专测未确认外，不空等协议的 1 秒或部分扫描的 3 秒，监听任务在 `finally` 取消并回收。文件分块、gzip 和上下文超限取刚超过各自阈值的输入；例如覆盖 256 KiB 文件分块时用约 270 KB 的有效载荷。
 - **同步入口。** 不新增一次性的 `scripts/test_*.py` 或基准脚本，通用验证维护在 `scripts/verify.py` 与 CI。增删或改名测试文件且需验证发行包时，先按[构建与发行](README.md#构建与发行)更新 Git 索引，再跑静态检查和受影响套件，或用 `--mode release` 完成全检；完整回归须零跳过。
 

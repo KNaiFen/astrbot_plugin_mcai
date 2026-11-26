@@ -17,6 +17,7 @@ from .paths import resolve_file
 
 REVIEW_VERSION = 7
 REVIEW_FRAME_BYTES = 5 * 1024**2
+REVIEW_DIFF_LIMIT = 4 * 1024**2
 FULLTEXT_THRESHOLD = 4096
 SCRIPT_SUFFIXES = (".ps1", ".bat", ".cmd", ".py")
 CONTENT_NOTE = "非脚本文件内容过大，已保留摘要、前后预览、精确 diff 与校验哈希；请优先核对 diff、effective_steps 与字节/哈希校验。"
@@ -375,7 +376,7 @@ def bound_review_material(material):
             return {**material, "files": files}
 
     for i, row in non_script_files({**material, "files": files}):
-        if "diff" in row and json_size(diff := row["diff"]) >= 4 * 1024**2:
+        if "diff" in row and json_size(diff := row["diff"]) >= REVIEW_DIFF_LIMIT:
             limited = {key: value for key, value in row.items() if key != "diff"}
             limited.update(
                 diff_preview={"head": diff[:800], "tail": diff[-800:]},

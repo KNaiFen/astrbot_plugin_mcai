@@ -28,7 +28,7 @@ MCAI 由三部分组成，可以装在同一台 Windows 电脑上，也可以分
 
 ## 下载与环境要求
 
-当前版本为 **0.21.1**，A、B 和托管窗口请保持同一版本（协议 `mcai-9`）。见 [0.21.1 下载与校验和](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.21.1)及[更新日志](docs/usage/releases.md)。
+当前版本为 **0.21.2**，A、B 和托管窗口请保持同一版本（协议 `mcai-9`）。见 [0.21.2 下载与校验和](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.21.2)及[更新日志](docs/usage/releases.md)。
 
 - **A 插件包**：`astrbot_plugin_mcai.zip`（也可以直接在 AstrBot 插件页填仓库地址安装）
 - **B 主机包**：`mcai_windows_host.zip`（里面自带可选的服内诊断探针 Probe 0.5.0）
