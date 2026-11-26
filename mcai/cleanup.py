@@ -13,7 +13,7 @@ from .paths import resolve_file
 from .storage_usage import SCAN_SECONDS, database_usage
 
 A_CATEGORIES = {"traces", "web_page", "workspace", "outbox", "downloads"}
-B_CATEGORIES = {"jobs", "downloads", "backups"}
+B_CATEGORIES = {"jobs", "downloads", "backups", "test_servers"}
 REPREVIEW = "清理范围或任务状态已变化，请重新预览"
 REFERENCE_FIELDS = {
     "backup",
@@ -297,7 +297,37 @@ def a_plan(store, workspace, task, server_dirs, categories):
     return items, state
 
 
-def b_plan(store, key, categories, uploading, preserved_paths, settled_ids):
+def test_cleanup_paths(store, key, workspace_dir, *, whole_workspace=False):
+    artifact_id(key)
+    folder = checked_path(workspace_dir, key)
+    if whole_workspace:
+        yield Path(workspace_dir), key
+    else:
+        for path in sorted(folder.glob("server*")):
+            yield Path(workspace_dir), f"{key}/{path.name}"
+    for category in ("test-terminals", "test-server"):
+        yield store.directory, f"{category}/{key}"
+
+
+def check_preserved_path(path, preserved_paths):
+    if any(
+        path.is_relative_to(server) or server.is_relative_to(path)
+        for server in preserved_paths
+    ):
+        raise ValueError(f"清理路径与服务端或保留数据重叠：{path}")
+
+
+def b_plan(
+    store,
+    key,
+    categories,
+    uploading,
+    preserved_paths,
+    settled_ids,
+    *,
+    workspace_dir=None,
+    live_test_tasks=None,
+):
     active = store.active("operation") + store.active("background_job")
     if any(row["task_id"] == key for row in active):
         raise ValueError("B 端任务仍有未结算操作或后台结果，不能清理")
@@ -332,6 +362,20 @@ def b_plan(store, key, categories, uploading, preserved_paths, settled_ids):
     deadline = time.monotonic() + SCAN_SECONDS
     items = []
     for kind in categories:
+        if kind == "test_servers":
+            if key in (live_test_tasks or ()):
+                raise ValueError("试服窗口仍在线或尚未退出，请先停止并关闭")
+            root = Path(workspace_dir or store.directory / "workspaces").absolute()
+            trial = store.get("test_server", key)
+            trial_root = Path((trial or {}).get("workspace_dir", root)).absolute()
+            preserved = [path for path in preserved_paths if path != root]
+            for base, relative in test_cleanup_paths(
+                store, key, trial_root, whole_workspace=True
+            ):
+                if item := path_item(kind, key, base, relative, deadline):
+                    check_preserved_path(Path(item["path"]), preserved)
+                    items.append(item)
+            continue
         for (body,) in store.db.execute(
             """SELECT body FROM records WHERE kind=? AND json_extract(body, '$.task_id')=?
                ORDER BY id""",
@@ -355,11 +399,7 @@ def b_plan(store, key, categories, uploading, preserved_paths, settled_ids):
             )
             if item:
                 path = Path(item["path"])
-                if any(
-                    path.is_relative_to(server) or server.is_relative_to(path)
-                    for server in preserved_paths
-                ):
-                    raise ValueError(f"清理路径与服务端或保留数据重叠：{path}")
+                check_preserved_path(path, preserved_paths)
             if not item and kind == "backups":
                 continue
             if item_id in protected or kind == "downloads" and item_id in uploading:
@@ -436,6 +476,10 @@ def clean(store, key, sender, items, *, archive=None):
             path = checked_path(root, relative)
             (shutil.rmtree if directory else Path.unlink)(path)
         with store.db:
+            if any(item["kind"] == "test_servers" for item in items):
+                if trial := store.get("test_server", key):
+                    trial.update(status="cleaned", window_closed=True)
+                    store.save("test_server", key, trial)
             for item in items:
                 identity = item["id"]
                 if "record" in item:

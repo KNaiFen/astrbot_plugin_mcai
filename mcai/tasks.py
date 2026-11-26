@@ -37,12 +37,68 @@ SERVER_ACTIONS = {
     "forcerestart": "强制重启",
 }
 FORCE_ACTIONS = ("forcestop", "forcerestart")
+FORCE_ESCALATE_CANCEL_TIMEOUT = 10
+UNPUBLISHED_TRIAL_CLEANUP_TIMEOUT = 90
 CONTROL_OBSERVE_SECONDS = 180
 logger = logging.getLogger(__name__)
 
 
 def occupies_instance(job):
     return job["state"] not in ("done", "stopped") or job.get("cancel_pending", False)
+
+
+def can_escalate_force(control, result):
+    return bool(
+        result
+        and control["action"] in ("stop", "restart")
+        and result["status"] in ("pending", "running")
+        and result.get("id") == control["id"]
+        and result.get("instance") == control["instance"]
+        and result.get("action") == "apply_plan"
+        and result["arguments"].get("expected_directory") == control["directory"]
+        and {"web_operator", "group_operator"}.intersection(result["arguments"])
+        and result["arguments"].get("steps") == [{"action": control["action"]}]
+    )
+
+
+def require_control_window(row, retry):
+    if (
+        not row["selectable"]
+        or not row["window_online"]
+        or row["state_unknown"]
+        or row.get("target_mismatch")
+    ):
+        raise ValueError(
+            "实例不可选或托管窗口离线、运行目标不明确，请检查 mcai tm 窗口。" + retry
+        )
+    if row.get("maintenance_active"):
+        raise ValueError(
+            "实例已被占用或正在维护，请前往任务看板或定时维护查看。" + retry
+        )
+
+
+def force_control_step(row, retry):
+    java = row.get("java_processes", [])
+    launchers = row.get("launcher_processes", [])
+    if len(java) > 1 or (row.get("java_running") and not java):
+        raise ValueError("无法确定唯一 Java 进程，未执行强制操作。" + retry)
+    if not java and not launchers:
+        raise ValueError(
+            (
+                "B 未提供启动链进程身份，请配套更新 B 和托管窗口。"
+                if row["running"]
+                else "实例未运行，无需强制停止；如需启动请使用 start。"
+            )
+            + retry
+        )
+    process = (java or launchers)[0]
+    return {
+        "action": "force_stop",
+        "target": "java" if java else "launcher",
+        "pid": process["pid"],
+        "process_created": process["created"],
+        "session_id": row["session_id"],
+    }
 
 
 def space_commands(text):
@@ -104,6 +160,7 @@ def task_violations(job) -> list[str]:
         isinstance(cleanup, dict)
         and cleanup.get("pending")
         and not job.get("trial_published")
+        and cleanup.get("reason") not in ("aborted", "release_waived")
     ):
         violations.append("cleanup.pending 缺少 trial_published")
     archive = job.get("archive_state")
@@ -231,7 +288,7 @@ class Tasks:
         while True:
             workers = []
             for job in list(self.jobs.values()):
-                if not job.get("stop_requested"):
+                if not job.get("cancel_pending"):
                     continue
                 matches = (
                     job.get("directory") == directory
@@ -240,11 +297,7 @@ class Tasks:
                 )
                 if not matches:
                     continue
-                if (
-                    job.get("cancel_pending")
-                    and job["id"] not in self.workers
-                    and job["id"] not in woken
-                ):
+                if job["id"] not in self.workers and job["id"] not in woken:
                     woken.add(job["id"])
                     self.wake(job)
                 if worker := self.workers.get(job["id"]):
@@ -254,7 +307,7 @@ class Tasks:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return woken
-            await asyncio.wait(workers, timeout=remaining)
+            await asyncio.wait(workers, timeout=min(0.1, remaining))
 
     def save(self, job):
         key, messages = job["id"], job["messages"]
@@ -337,9 +390,7 @@ class Tasks:
         for job in self.jobs.values():
             if job.get("archive_state") in ("pending", "ready"):
                 self.archive_later(job)
-            if job.get("cancel_pending") or (
-                job.get("trial_published") and job.get("cleanup", {}).get("pending")
-            ):
+            if job.get("cancel_pending") or job.get("cleanup", {}).get("pending"):
                 self.wake(job)
             elif job["state"] == "running":
                 if not job.get("model_retry"):
@@ -832,10 +883,8 @@ class Tasks:
         if not entry.get("selectable", True):
             raise ValueError("实例已待移除，不能绑定新任务")
         for job in self.jobs.values():
-            if (
-                job.get("directory") == entry["canonical_directory"]
-                and job["stop_requested"]
-                and job.get("cancel_pending")
+            if job.get("directory") == entry["canonical_directory"] and (
+                job.get("cancel_pending") or job.get("cleanup", {}).get("pending")
             ):
                 self.wake(job)
         return entry
@@ -918,8 +967,6 @@ class Tasks:
             ):
                 if previous.get("archive_state") in ("pending", "ready"):
                     self.archive_later(previous)
-                if previous.get("cleanup", {}).get("pending"):
-                    self.wake(previous)
         try:
             history = self.knowledge.context(
                 directory,
@@ -985,16 +1032,7 @@ class Tasks:
                     + retry
                 )
             directory = row["canonical_directory"]
-            if (
-                not row["selectable"]
-                or not row["window_online"]
-                or row["state_unknown"]
-                or row.get("target_mismatch")
-            ):
-                raise ValueError(
-                    "实例不可选或托管窗口离线、运行目标不明确，请检查 mcai tm 窗口。"
-                    + retry
-                )
+            require_control_window(row, retry)
             for job in self.jobs.values():
                 if job.get("directory") == directory and occupies_instance(job):
                     if job.get("stop_requested") and job.get("cancel_pending"):
@@ -1006,10 +1044,11 @@ class Tasks:
                     raise ValueError(
                         f"实例已有活动群任务「{job['name']}」，请先处理该任务。{retry}"
                     )
+            escalation = None
             if previous := self.store.get("web_control", directory):
                 hint = f"存在待核对的启停操作（{previous['id']}），请在设置页核对原编号"
                 try:
-                    result = await self.web_control_status(previous)
+                    result = await self.web_control_status(previous, seal=False)
                 except (
                     aiohttp.ClientError,
                     TimeoutError,
@@ -1020,35 +1059,24 @@ class Tasks:
                         f"{hint}：{str(exc) or type(exc).__name__}。{retry}"
                     ) from exc
                 if result is None or result["status"] in ("pending", "running"):
-                    raise ValueError(hint + "。" + retry)
+                    if action not in FORCE_ACTIONS or not can_escalate_force(
+                        previous, result
+                    ):
+                        raise ValueError(hint + "。" + retry)
+                    escalation = previous
             backend = await self.client.request(
                 "GET", "/instances?operation_store=1", once=True, timeout=4
             )
             operation_store = backend["operation_store"]
             steps = [{"action": action}]
             if action in FORCE_ACTIONS:
-                java = row.get("java_processes", [])
-                launchers = row.get("launcher_processes", [])
-                if len(java) > 1 or (row.get("java_running") and not java):
-                    reason = "无法确定唯一 Java 进程，未执行强制操作。"
-                elif not java and not launchers:
-                    reason = (
-                        "B 未提供启动链进程身份，请配套更新 B 和托管窗口。"
-                        if row["running"]
-                        else "实例未运行，无需强制停止；如需启动请使用 start。"
-                    )
-                else:
-                    reason = None
-                if reason:
-                    raise ValueError(reason + retry)
-                process = (java or launchers)[0]
-                step = {
-                    "action": "force_stop",
-                    "target": "java" if java else "launcher",
-                    "pid": process["pid"],
-                    "process_created": process["created"],
-                    "session_id": row["session_id"],
-                }
+                previous_id = escalation["id"] if escalation else None
+                stopped = not row["running"] and not row.get("java_running")
+                step = (
+                    None
+                    if escalation and stopped and (not origin or confirm)
+                    else force_control_step(row, retry)
+                )
                 if origin:
                     if not confirm:
                         self.store.save(
@@ -1060,16 +1088,44 @@ class Tasks:
                                 "expires": time.time() + 120,
                                 "step": step,
                                 "store": operation_store,
+                                "previous": previous_id,
                             },
                         )
-                        return step, None
+                        return {**step, "previous": previous_id}, None
                     if (
-                        saved["step"] != step
+                        (step is not None and saved["step"] != step)
                         or saved["store"] != operation_store
                         or saved["directory"] != directory
+                        or escalation
+                        and saved.get("previous") != previous_id
                     ):
                         raise ValueError(f"托管会话或进程身份已变化，未执行。{retry}")
-                steps = [step]
+                if escalation:
+                    await self.sync_activity(force=True)
+                    await self.cancel_control_wait(escalation)
+                    rows = await self.client.request(
+                        "GET", "/instances", once=True, timeout=4
+                    )
+                    row = next((row for row in rows if row["instance"] == name), None)
+                    if row is None or row["canonical_directory"] != directory:
+                        raise ValueError("实例目录已变化，请刷新后重试。" + retry)
+                    require_control_window(row, retry)
+                    if not row["running"] and not row.get("java_running"):
+                        if action == "forcestop":
+                            return {
+                                "id": previous_id,
+                                "status": "completed",
+                                "already_stopped": True,
+                                "message": "原停止操作已结束，服务端现已停止，无需强制停止。",
+                            }, None
+                        step = None
+                    else:
+                        step = force_control_step(row, retry)
+                        if origin and saved["step"] != step:
+                            raise ValueError(
+                                f"托管会话或进程身份已变化，未执行。{retry}"
+                            )
+                steps = [step] if step is not None else []
                 if action == "forcerestart":
                     steps.append({"action": "start"})
             await self.sync_activity(force=True)
@@ -1127,6 +1183,28 @@ class Tasks:
                 ):
                     self.observe_control_later(control)
             return result, control
+
+    async def cancel_control_wait(self, control):
+        try:
+            async with asyncio.timeout(FORCE_ESCALATE_CANCEL_TIMEOUT):
+                await self.client.request(
+                    "POST",
+                    f"/operations/{control['id']}/cancel",
+                    once=True,
+                    params={
+                        "operation_store": control["store"],
+                        "force_escalation": "1",
+                    },
+                )
+                while True:
+                    result = await self.web_control_status(control, seal=False)
+                    if result and result["status"] not in ("pending", "running"):
+                        return
+                    await asyncio.sleep(0.2)
+        except TimeoutError as exc:
+            raise ValueError(
+                f"已请求取消停服等待（{control['id']}），尚未确认释放，请稍后重试或检查托管窗口"
+            ) from exc
 
     def clear_web_control(self, control):
         with self.store.db:
@@ -1211,6 +1289,11 @@ class Tasks:
             if control.get("origin"):
                 if result["status"] == "not_accepted":
                     text = "B 未受理。"
+                elif result.get("cancel_requested") and control["action"] in (
+                    "stop",
+                    "restart",
+                ):
+                    text = "停服等待已取消。"
                 elif result["status"] == "failed":
                     text = f"执行失败：{result['error']}"
                 elif result["result"].get("cancelled"):
@@ -1770,39 +1853,54 @@ class Tasks:
     async def cleanup_trial(self, job):
         progress = job["cleanup"]
         if not progress.get("host_done"):
-            await self.client.call(
-                job["instance"],
-                "cleanup_trial",
-                {
-                    "expected_directory": job["directory"],
-                    "publication": job["trial_published"],
-                },
-                task_id=job["id"],
-                operation_id=progress["operation"],
-            )
+            reason = progress.get("reason", "published")
+            async with asyncio.timeout(
+                None if reason == "published" else UNPUBLISHED_TRIAL_CLEANUP_TIMEOUT
+            ):
+                await self.client.call(
+                    job["instance"],
+                    "cleanup_trial",
+                    {
+                        "expected_directory": job["directory"],
+                        **(
+                            {"publication": job["trial_published"]}
+                            if reason == "published"
+                            else {"reason": reason}
+                        ),
+                    },
+                    task_id=job["id"],
+                    operation_id=progress["operation"],
+                )
             progress["host_done"] = True
             self.save(job)
-        root = Path(job.get("workspace_root", self.workspace.root))
-        workspace = resolve_file(root, job["id"])
-        if workspace != root / job["id"]:
-            raise ValueError("A 任务工作区已被重定向")
-        if workspace.exists():
-            await asyncio.to_thread(shutil.rmtree, workspace)
-        for download in self.store.all("download"):
-            if (
-                download["task_id"] != job["id"]
-                or download.get("source") != "workspace"
-            ):
-                continue
-            relative = f"downloads/{download['id']}"
-            target = resolve_file(self.store.directory, relative)
-            if target != self.store.directory.resolve() / relative:
-                raise ValueError("A 任务暂存路径已被重定向")
-            if target.exists():
-                await asyncio.to_thread(shutil.rmtree, target)
-        progress["pending"] = False
-        progress.pop("error", None)
-        self.save(job)
+        await self.cleanup_local_trial(job)
+
+    async def cleanup_local_trial(self, job):
+        async with self.reference_lock:
+            progress = job["cleanup"]
+            if not progress["pending"]:
+                return
+            root = Path(job.get("workspace_root", self.workspace.root))
+            workspace = resolve_file(root, job["id"])
+            if workspace != root / job["id"]:
+                raise ValueError("A 任务工作区已被重定向")
+            if workspace.exists():
+                await asyncio.to_thread(shutil.rmtree, workspace)
+            for download in self.store.all("download"):
+                if (
+                    download["task_id"] != job["id"]
+                    or download.get("source") != "workspace"
+                ):
+                    continue
+                relative = f"downloads/{download['id']}"
+                target = resolve_file(self.store.directory, relative)
+                if target != self.store.directory.resolve() / relative:
+                    raise ValueError("A 任务暂存路径已被重定向")
+                if target.exists():
+                    await asyncio.to_thread(shutil.rmtree, target)
+            progress["pending"] = False
+            progress.pop("error", None)
+            self.save(job)
 
     async def settle_background(self, job, *, wait_seconds=0):
         background = job.get("background", {})
@@ -1855,6 +1953,11 @@ class Tasks:
                     ) or await self.agent.prepare_apply(self, job):
                         key = job["operation"]
                         job["repair_submitted"] = True
+                        if job["applied_plan"].get("environment") == "test" or any(
+                            step["action"] == "prepare_test"
+                            for step in job["applied_plan"]["steps"]
+                        ):
+                            job["has_test_server"] = True
                         self.save(job)
                         release = job["applied_plan"].get("trial_release")
                         approved_by = job.get("approval", {}).get("by")
@@ -2124,7 +2227,9 @@ class Tasks:
             self.pause(job, str(exc))
         finally:
             try:
-                if job["stop_requested"] and not self.closing:
+                finish = job.get("cancel_pending") and not self.closing
+                if finish:
+                    cancel_result = {}
                     if job["instance"] is not None:
                         if self.local_jobs:
                             await self.local_jobs.cancel_task(
@@ -2146,14 +2251,13 @@ class Tasks:
                             },
                         )
                         self.save(job)
-                        await self.client.call(
+                        cancel_result = await self.client.call(
                             request["instance"],
                             "job",
                             request["arguments"],
                             operation_id=request["operation_id"],
                             task_id=job["id"],
                         )
-                    was_cancel_pending = bool(job.get("cancel_pending"))
                     job["background"] = {}
                     job["cancel_pending"] = False
                     job.pop("cancel_error", None)
@@ -2164,36 +2268,66 @@ class Tasks:
                         and hasattr(self.agent, "summarize")
                     ):
                         job.setdefault("archive_state", "pending")
-                    self.save(job)
-                    if was_cancel_pending and job.get("directory"):
+                    if job.get("directory"):
                         self.bump_activity()
+                    if (
+                        not job.get("cleanup")
+                        and job.get("directory")
+                        and (
+                            cancel_result.get("has_test_server")
+                            or job.get("has_test_server")
+                        )
+                        and (
+                            job["state"] == "stopped"
+                            or job.get("trial_release_waived")
+                            and not job.get("trial_published")
+                        )
+                    ):
+                        job["cleanup"] = {
+                            "operation": uuid.uuid4().hex,
+                            "pending": True,
+                            "reason": "release_waived"
+                            if job["state"] == "done"
+                            else "aborted",
+                        }
+                    self.save(job)
+                    if job.get("directory"):
+                        await self.sync_activity()
                     if (
                         job["state"] == "done"
                         and job.get("archive_state") in ("pending", "ready")
                         and hasattr(self.agent, "summarize")
                     ):
                         self.archive_later(job)
-                    if job.get("cleanup", {}).get("pending"):
-                        try:
-                            await self.cleanup_trial(job)
-                        except (OSError, ValueError, RemoteError) as exc:
-                            job["cleanup"]["error"] = str(exc)
-                            self.log(job, "trial_cleanup_pending", error=str(exc))
+                if not self.closing and job.get("cleanup", {}).get("pending"):
+                    try:
+                        await self.cleanup_trial(job)
+                    except (
+                        OSError,
+                        ValueError,
+                        RemoteError,
+                        aiohttp.ClientError,
+                        TimeoutError,
+                    ) as exc:
+                        if job["cleanup"]["pending"]:
+                            error = str(exc) or "未能在时限内确认 B 端试服清理结果"
+                            job["cleanup"]["error"] = error
+                            self.log(job, "trial_cleanup_pending", error=error)
                             self.save(job)
-                    if was_cancel_pending:
-                        if job.get("directory"):
-                            await self.sync_activity()
-                        if job["state"] == "done":
-                            finish_text = "已验收，任务结束。"
-                        elif job.get("directory") or job.get("instance"):
-                            finish_text = "任务已中止，实例已释放。"
+                if finish:
+                    if job["state"] == "done":
+                        finish_text = "已验收，任务结束。"
+                    elif job.get("directory") or job.get("instance"):
+                        finish_text = "任务已中止，实例已释放。"
+                    else:
+                        finish_text = "任务已中止。"
+                    cleanup = job.get("cleanup", {})
+                    if cleanup.get("reason") in ("aborted", "release_waived"):
+                        if cleanup.get("pending"):
+                            finish_text += f"试服清理失败：{cleanup['error']}。请到设置页「运行概览」强制停止或删除试服。"
                         else:
-                            finish_text = "任务已中止。"
-                        self.message(
-                            job,
-                            finish_text,
-                            identity=f"finish-{job['id']}",
-                        )
+                            finish_text += "测试服已一并清理。"
+                    self.message(job, finish_text, identity=f"finish-{job['id']}")
             except RemoteError as exc:
                 job["cancel_error"] = f"{type(exc).__name__}: {exc}"
                 self.log(job, "task_cancel_failed", error=job["cancel_error"])

@@ -56,7 +56,7 @@ from .plans import plan_identity, plan_text
 from .review import digest
 from .runtime_rules import change_rule, rules_status
 from .storage_usage import STORAGE_TIMEOUT, a_storage
-from .tasks import SERVER_ACTIONS, occupies_instance
+from .tasks import SERVER_ACTIONS, can_escalate_force, occupies_instance
 from .tracing import export_cleanup, export_diagnostics
 
 
@@ -648,7 +648,8 @@ class Settings:
                     for job in tasks.jobs.values()
                     if occupies_instance(job)
                 }
-                for row in result["items"]:
+
+                async def decorate(row):
                     directory = row["canonical_directory"]
                     job = occupancy.get(directory)
                     row["occupant"] = (
@@ -656,12 +657,58 @@ class Settings:
                         if job
                         else None
                     )
-                    row["web_control"] = store.get("web_control", directory)
+                    control = store.get("web_control", directory)
+                    row["web_control"] = control
+                    if control:
+                        operation = None
+                        try:
+                            async with asyncio.timeout(3):
+                                operation = await tasks.web_control_status(
+                                    control, seal=False
+                                )
+                        except (
+                            aiohttp.ClientError,
+                            OSError,
+                            TimeoutError,
+                            ValueError,
+                            RemoteError,
+                        ) as exc:
+                            store.log(
+                                "web_control_status_pending",
+                                operation=control["id"],
+                                error=str(exc),
+                            )
+                        if operation and operation["status"] not in (
+                            "pending",
+                            "running",
+                        ):
+                            row["web_control"] = None
+                        else:
+                            row["web_control"] = {
+                                **control,
+                                "status": operation["status"]
+                                if operation
+                                else "unknown",
+                                "can_escalate_force": not job
+                                and not row.get("maintenance_active")
+                                and can_escalate_force(control, operation),
+                            }
                     for trial in row.get("tests", []):
-                        archived = store.get("task", trial["task_id"])
+                        archived = tasks.jobs.get(trial["task_id"]) or store.get(
+                            "task", trial["task_id"]
+                        )
                         trial["task_name"] = (
                             archived["name"] if archived else trial["task_id"]
                         )
+                        trial["task_state"] = archived["state"] if archived else None
+                        trial["task_active"] = bool(
+                            archived and occupies_instance(archived)
+                        )
+                        if trial["task_active"]:
+                            for field in ("can_stop", "can_force_stop", "can_delete"):
+                                trial[field] = False
+
+                await asyncio.gather(*(decorate(row) for row in result["items"]))
             return result
 
         body = await request.json()
@@ -673,19 +720,35 @@ class Settings:
             key = web_identity(body["id"])
             store.log("web_job_cancel", sender=sender, job=key)
             return await self.maintenance_request("POST", f"/jobs/{key}/cancel")
-        if action == "close_test":
+        if action in ("close_test", "stop_test", "force_stop_test", "delete_test"):
             key, task_id = uuid.uuid4().hex, web_identity(body["task_id"])
+            mode = action.removesuffix("_test")
+            job = tasks.jobs.get(task_id) or store.get("task", task_id)
+            if mode != "close" and job and occupies_instance(job):
+                raise ValueError("试服所属任务仍在进行，请先中止或结束该任务")
+            arguments = {"mode": mode, "expected_directory": body["directory"]}
+            if mode == "delete":
+                arguments["force"] = body.get("force", False)
             store.log(
-                "web_close_test_window", sender=sender, operation=key, task_id=task_id
+                "web_close_test_window" if mode == "close" else f"web_{action}",
+                sender=sender,
+                operation=key,
+                task_id=task_id,
             )
-            async with asyncio.timeout(25):
-                return await tasks.client.call(
+            async with asyncio.timeout(25 if mode == "close" else None):
+                result = await tasks.client.call(
                     body["instance"],
                     "test_server",
-                    {"mode": "close", "expected_directory": body["directory"]},
+                    arguments,
                     operation_id=key,
                     task_id=task_id,
                 )
+            if mode == "delete" and job and job.get("cleanup", {}).get("pending"):
+                job["cleanup"]["host_done"] = True
+                tasks.save(job)
+                await tasks.cleanup_local_trial(job)
+                tasks.forget_settled(job)
+            return result
         if action == "schedule":
             command = body["command"]
             if command not in ("create", "edit", "pause", "resume", "delete"):

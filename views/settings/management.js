@@ -62,6 +62,9 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
   const dialog = $('#management-dialog');
   const dialogBody = $('#management-dialog-body');
   const dialogActions = $('#management-dialog-actions');
+  let serverTimer, serverPending = false, trialOperations = 0;
+  let serverRequest = 0;
+  const probes = new Map();
   const post = (name, data) => api('POST', `management/${name}`, data);
   const run = (label, handle, cls) => {
     const control = button(label, () => action(control, handle), cls);
@@ -83,6 +86,7 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
     $('#management-dialog-error').hidden = true;
     dialogActions.querySelectorAll(':scope > button').forEach(control => control.remove());
     if (!dialog.open) dialog.showModal();
+    clearTimeout(serverTimer);
   }
   function confirm(title, description, callback) {
     modal(title, node('p', description));
@@ -128,9 +132,24 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
       await servers();
     }
   }
-  function servers() {
-    return load('#server-runtime', async area => {
+  function scheduleServerRefresh() {
+    clearTimeout(serverTimer);
+    if (!$('#servers').hidden && !document.hidden && !dialog.open && (serverPending || trialOperations)) {
+      serverTimer = setTimeout(() => servers(true), 2000);
+    }
+  }
+  dialog.addEventListener('close', scheduleServerRefresh);
+  document.addEventListener('visibilitychange', scheduleServerRefresh);
+  async function servers(background = false) {
+    clearTimeout(serverTimer);
+    if (background && ($('#servers').hidden || document.hidden || dialog.open)) return;
+    const area = $('#server-runtime');
+    const request = ++serverRequest;
+    try {
       const currentServers = (await hostApi('servers')).items;
+      if (request !== serverRequest || background && ($('#servers').hidden || document.hidden || dialog.open)) return;
+      serverPending = currentServers.some(row => row.web_control || row.tests?.some(trial => trial.has_stopping || trial.has_deleting));
+      if (!background) probes.clear();
       area.replaceChildren();
       if (!currentServers.length) area.textContent = 'B 尚未登记正式服。';
       for (const row of currentServers) {
@@ -143,19 +162,40 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
           const link = node('a', '打开任务看板'); link.href = '#tasks'; owner.append(link); card.append(owner);
         }
         for (const trial of row.tests || []) {
-          card.append(node('p', `隔离试服：${trial.task_name}（${trial.task_id}） · ${trial.address}:${trial.port} · 窗口${trial.window_online ? '在线' : '离线'}\n${trial.directory}`));
-          if (trial.can_close) {
-            const closeActions = node('div', null, 'data-actions');
-            closeActions.append(run('关闭试服窗口', async () => {
-              await post('host', { action: 'close_test', task_id: trial.task_id, instance: row.instance, directory: row.canonical_directory });
+          const trialState = trial.has_deleting ? '正在清理' : trial.has_stopping ? '正在停服' : trial.state_unknown ? '状态待确认' : trial.running || trial.java_running ? '运行中' : '已停服';
+          const windowState = trial.window_online ? '在线' : trial.window_exists ? '离线，尚未退出' : '已退出';
+          const trialPids = (trial.java_pids || []).join('、');
+          const active = trial.task_active ? ` · 所属任务仍在进行（${labels[trial.task_state] || trial.task_state}）` : '';
+          card.append(node('p', `隔离试服：${trial.task_name}（${trial.task_id}） · ${trial.address}:${trial.port} · ${trialState}${active}\n窗口：${windowState} · Java PID ${trialPids || '—'} · 目录${trial.directory_exists ? '存在' : '已缺失'}\n${trial.directory}`));
+          const trialActions = node('div', null, 'data-actions');
+          const command = async (action, success, extra) => {
+            trialOperations++;
+            scheduleServerRefresh();
+            try {
+              await post('host', { action, task_id: trial.task_id, instance: row.instance, directory: row.canonical_directory, ...extra });
+              show(success);
+            } finally {
+              trialOperations--;
               await servers();
-              show('试服窗口已关闭，可打开其他任务的试服。');
-            }));
-            card.append(closeActions);
+            }
+          };
+          if (trial.can_stop) trialActions.append(run('停止试服', () => command('stop_test', '试服已停止。')));
+          if (trial.can_force_stop) trialActions.append(button('强制停止试服', () => confirm('强制停止试服', '如有停服等待，将先取消等待再强制结束试服进程。', () => command('force_stop_test', '试服已强制停止。')), 'quiet'));
+          if (trial.can_close) trialActions.append(run('关闭试服窗口', () => command('close_test', '试服窗口已关闭，可打开其他任务的试服。')));
+          if (trial.can_delete) {
+            const force = trial.running || trial.java_running || trial.window_online || trial.window_exists;
+            const warning = force ? '试服仍在运行或窗口在线，确认将强制停止、关闭窗口并永久删除副本。' : '确认永久删除试服副本。';
+            trialActions.append(button('删除试服', () => confirm('删除试服', warning, () => command('delete_test', '试服副本已删除。', { force })), 'quiet'));
           }
+          if (trialActions.childElementCount) card.append(trialActions);
         }
-        const probe = node('p', '正在读取 Probe 状态…');
-        const tracking = node('p', row.web_control ? `待核对：${row.web_control.id}` : '');
+        let probe = probes.get(row.instance);
+        if (!probe) {
+          probe = node('p', '正在读取 Probe 状态…');
+          probes.set(row.instance, probe);
+          hostApi('probe', { instance: row.instance }).then(result => renderProbe(probe, result), error => { probe.textContent = `Probe 状态读取失败：${error.message}`; });
+        }
+        const tracking = node('p', row.web_control ? `待核对：${row.web_control.id} · ${labels[row.web_control.status] || '状态待确认'}` : '');
         const actions = node('div', null, 'data-actions');
         actions.append(run('刷新在线玩家与 TPS', async () => {
           probe.textContent = '正在读取实时指标…';
@@ -167,24 +207,26 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
         for (const command of ['start', 'stop', 'restart', 'forcestop', 'forcerestart']) {
           const force = command.startsWith('force');
           const target = pids ? `当前 Java PID：${pids}` : `当前启动链 PID：${(row.launcher_processes || []).map(process => process.pid).join('、') || '—'}`;
-          const warning = force ? `${target}。强制结束可能丢失未保存的数据。` : '';
+          const escalate = row.web_control?.can_escalate_force;
+          const warning = force ? `${target}。强制结束可能丢失未保存的数据。${escalate ? '会先取消当前停止/重启等待，再强制结束进程。' : ''}` : '';
           const control = button(labels[command], () => confirm(`${labels[command]} ${row.instance}`, `${warning}操作会在 B 的托管窗口执行，提交后可按原编号核对。`, async () => {
             try {
               const result = await post('host', { action: command, instance: row.instance, directory: row.canonical_directory });
-              tracking.textContent = `已提交 ${result.id} · ${labels[result.status] || result.status}`;
-              controlStatus.hidden = false;
-              actions.querySelectorAll('[data-control]').forEach(control => { control.disabled = true; });
+              show(result.message || `操作 ${result.id} · ${labels[result.status] || result.status}`);
+              await servers();
             } catch (error) { await servers(); throw error; }
           }), force ? 'quiet' : 'secondary');
-          control.dataset.control = command;
-          control.disabled = !row.selectable || !row.window_online || row.state_unknown || row.target_mismatch || !!row.occupant || !!row.web_control || (force && ((!row.running && !row.java_running) || (row.java_processes || []).length > 1));
+          control.disabled = !row.selectable || !row.window_online || row.state_unknown || row.target_mismatch || !!row.occupant || row.maintenance_active || (!!row.web_control && !(force && escalate)) || (force && ((!row.running && !row.java_running) || (row.java_processes || []).length > 1));
           actions.append(control);
         }
         actions.append(controlStatus);
         card.append(probe, actions, tracking); area.append(card);
-        hostApi('probe', { instance: row.instance }).then(result => renderProbe(probe, result), error => { probe.textContent = `Probe 状态读取失败：${error.message}`; });
       }
-    });
+    } catch (error) {
+      if (request === serverRequest && !background) area.textContent = `读取失败：${error.message}`;
+    } finally {
+      if (request === serverRequest) scheduleServerRefresh();
+    }
   }
   listen('#refresh-servers', servers);
   listen('#reload-host', async () => { await post('host', { action: 'reload' }); await Promise.all([loadHost(), servers()]); show('B 实例配置已重载。'); });
@@ -653,6 +695,7 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
 
   const opened = new Set();
   return { modal, usageDetails, open(hash) {
+    if (hash !== '#servers') clearTimeout(serverTimer);
     if (hash === '#knowledge') {
       if (!dirty(documentEditor, documentVersion)) refreshKnowledge().catch(error => show(error.message, true));
       return;

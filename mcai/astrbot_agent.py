@@ -1039,6 +1039,9 @@ class AstrBotAgent:
                         "尚未确定服务端，请 mc_instances 查看并 mc_select_instance 绑定；不确定时向群里追问"
                     )
             if name == "mc_test_server":
+                if arguments["mode"] == "open":
+                    job["has_test_server"] = True
+                    tasks.save(job)
                 return await remote(record, "test_server", arguments)
             if name == "mc_query":
                 if not heap_dump:

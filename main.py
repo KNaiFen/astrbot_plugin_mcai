@@ -920,11 +920,20 @@ class MCAI(Star):
                         f"无法读取 B 的启停状态：{str(exc) or type(exc).__name__}"
                     ) from exc
                 if control is None:
+                    if result.get("already_stopped"):
+                        yield reply(result["message"])
+                        return
                     target = (
                         "Java" if result["target"] == "java" else "start.bat 启动链"
                     )
+                    previous = result.get("previous")
+                    description = (
+                        f"当前有正在执行的停止/重启操作（{previous}），确认后将先取消停服等待，再{SERVER_ACTIONS[action]}"
+                        if previous
+                        else f"{name} 将{SERVER_ACTIONS[action]}"
+                    )
                     yield reply(
-                        f"{name} 将{SERVER_ACTIONS[action]}：{target} PID {result['pid']}。"
+                        f"{description}：{target} PID {result['pid']}。"
                         "强制结束可能丢失未保存的数据。"
                         f"确认后请在 120 秒内发送 “/mcaiswitch {name} {action} confirm” 。"
                     )
