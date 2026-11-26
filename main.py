@@ -1,11 +1,14 @@
 import asyncio
 import difflib
+import hashlib
 import json
+import math
 import re
 import shutil
 import sqlite3
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import aiohttp
@@ -58,6 +61,8 @@ COMMANDS = {
 }
 GROUP_MESSAGE_PART_LIMIT = 1800
 DEFAULT_GROUP_FORWARD_THRESHOLD = 400
+MAX_INCIDENT_NOTIFY_AGE = 1800
+MAX_INCIDENT_BATCH_LINES = 8
 ACK_EMOJI_ID = "476"
 HELP_TEXT = (
     "MCAI 群命令指南\n"
@@ -202,6 +207,35 @@ def forwarded_text(text, bot_id):
             for subpart in message_parts(item)
         ]
     )
+
+
+def incident_clock(stamp, poll_now):
+    if type(stamp) not in (int, float):
+        return ""
+    try:
+        if not math.isfinite(stamp):
+            return ""
+        local = datetime.fromtimestamp(stamp)
+    except (OverflowError, OSError, ValueError):
+        return ""
+    return local.strftime(
+        "%H:%M:%S"
+        if local.date() == datetime.fromtimestamp(poll_now).date()
+        else "%m-%d %H:%M:%S"
+    )
+
+
+def incident_line(row, poll_now):
+    clock = incident_clock(row.get("time"), poll_now)
+    suffix = f"（{clock}）" if clock else ""
+    status = ""
+    if row.get("type") not in ("alert", "schedule"):
+        status = (
+            "，已保留现场。"
+            if row["console_status"] == "complete"
+            else "，已记录事件，控制台证据不完整。"
+        )
+    return f"「{row['instance']}」：{row['summary']}{status}{suffix}"
 
 
 class MCAI(Star):
@@ -489,35 +523,25 @@ class MCAI(Star):
 
     async def poll_incidents(self, routes, *, now=None):
         client = self.tasks.client
-        cursor = self.store.get("incident_cursor", client.url) or {"seq": 0}
+        existing_cursor = self.store.get("incident_cursor", client.url)
+        cursor = existing_cursor or {"seq": 0}
         state = self.store.get("incident_connection", client.url) or {}
         revision = self.tasks.activity_revision
+        poll_now = time.time() if now is None else now
+        params = {
+            "active": json.dumps(self.tasks.active_instances(), ensure_ascii=False),
+            "stream": "1",
+        }
+        if routes:
+            params.update(after=cursor["seq"], stream_id=cursor.get("stream_id", ""))
+            if "event_id" in cursor:
+                params["event_id"] = cursor["event_id"]
+        else:
+            params["active_only"] = "1"
         try:
             async with asyncio.timeout(15):
                 feed = await client.request(
-                    "GET",
-                    "/incidents",
-                    once=True,
-                    params={
-                        "after": cursor["seq"],
-                        "active": json.dumps(
-                            self.tasks.active_instances(),
-                            ensure_ascii=False,
-                        ),
-                        **(
-                            {
-                                "stream": "1",
-                                "stream_id": cursor.get("stream_id", ""),
-                                **(
-                                    {"event_id": cursor["event_id"]}
-                                    if "event_id" in cursor
-                                    else {}
-                                ),
-                            }
-                            if routes
-                            else {"active_only": "1"}
-                        ),
-                    },
+                    "GET", "/incidents", once=True, params=params
                 )
         except (
             aiohttp.ClientError,
@@ -528,76 +552,131 @@ class MCAI(Star):
         ) as exc:
             if not routes:
                 return
-            now = time.time() if now is None else now
             if not state:
-                state = {"since": now, "alerted": False}
+                state = {"since": poll_now, "alerted": False}
                 self.store.save("incident_connection", client.url, state)
                 self.store.log("incident_delivery_pending", error=str(exc))
             if (
                 not state["alerted"]
-                and now - state["since"]
+                and poll_now - state["since"]
                 >= self.config.get("host_offline_alert_minutes", 3) * 60
             ):
                 self.queue_connection_alert(
-                    client.url, routes, now, state, type(exc).__name__
+                    client.url, routes, poll_now, state, type(exc).__name__
                 )
             return
         if self.tasks.activity_revision != revision:
             await self.tasks.sync_activity(force=True)
-        if not routes:
+        if not routes and (
+            not isinstance(feed, dict) or not {"stream_id", "high_water"} <= feed.keys()
+        ):
             return
-        if state:
+        if routes and state:
             if state["alerted"]:
-                self.queue_connection_alert(
-                    client.url, routes, time.time() if now is None else now, state, None
-                )
+                self.queue_connection_alert(client.url, routes, poll_now, state, None)
             else:
                 self.store.save("incident_connection", client.url, {})
         if not isinstance(feed, dict):
             raise ValueError("B 未返回留证流标识，请配套更新 A、B")
-        if feed["reset"]:
-            cursor = {"stream_id": feed["stream_id"], "seq": 0}
-        records = []
-        for row in feed["items"]:
-            origin = (
-                routes.get(row["instance"], routes.get("*"))
-                if row.get("notify", True)
-                else None
-            )
-            if origin:
-                key = "incident-" + row["id"]
-                if not self.store.get("outbox", key):
-                    if row.get("type") in ("alert", "schedule"):
-                        body = f"{row['summary']}\n可用 “/mcainew 任务名 处理事件 {row['id']}” 发起排查"
-                    else:
-                        body = row["summary"] + (
-                            "，已保留现场。"
-                            if row["console_status"] == "complete"
-                            else "，已记录事件，控制台证据不完整。"
-                        )
-                    records.append(
-                        (
-                            "outbox",
-                            key,
-                            {
-                                "id": key,
-                                "task": None,
-                                "origin": origin,
-                                "mention": None,
-                                "text": f"「{row['instance']}」：{body}",
-                                "sent": False,
-                            },
-                        ),
-                    )
+        items = feed["items"] if routes else []
+        last = items[-1] if items else None
+        initialize = existing_cursor is None and not state
+        if not routes or existing_cursor is None or feed["reset"]:
+            high_water = feed["high_water"]
+            cursor = {"stream_id": feed["stream_id"], "seq": high_water}
+            event_id = feed.get("high_water_id")
+            if not event_id and last and last["seq"] == high_water:
+                event_id = last["id"]
+            if event_id:
+                cursor["event_id"] = event_id
+        elif last:
             cursor = {
                 "stream_id": feed["stream_id"],
-                "seq": row["seq"],
-                "event_id": row["id"],
+                "seq": last["seq"],
+                "event_id": last["id"],
             }
-        if feed["items"] or feed["reset"]:
+        if not routes or initialize:
+            if cursor != existing_cursor:
+                self.store.save("incident_cursor", client.url, cursor)
+            if routes:
+                self.store.log(
+                    "incident_cursor_initialized",
+                    high_water=cursor["seq"],
+                    skipped=len(items),
+                )
+            return
+
+        groups = {}
+        stale = []
+        for row in items:
+            origin = routes.get(row["instance"], routes.get("*"))
+            if not origin or not row.get("notify", True):
+                continue
+            stamp = row.get("time")
+            if type(stamp) in (int, float):
+                if stamp < poll_now - MAX_INCIDENT_NOTIFY_AGE:
+                    stale.append(row["seq"])
+                    continue
+                if existing_cursor is None and stamp < state["since"]:
+                    continue
+            identity = row["id"]
+            if self.store.get("outbox", "incident-" + identity) or self.store.get(
+                "incident_notified", identity
+            ):
+                continue
+            groups.setdefault(origin, []).append(row)
+
+        records = []
+        for origin, batch in groups.items():
+            if len(batch) == 1:
+                row = batch[0]
+                key = "incident-" + row["id"]
+                body = incident_line(row, poll_now)
+                if row.get("type") in ("alert", "schedule"):
+                    body += f"\n可用 “/mcainew 任务名 处理事件 {row['id']}” 发起排查"
+            else:
+                digest = hashlib.sha256(",".join(row["id"] for row in batch).encode())
+                key = "incident-batch-" + digest.hexdigest()[:16]
+                lines = [f"收到 {len(batch)} 条服务端事件通知："]
+                for row in batch[:MAX_INCIDENT_BATCH_LINES]:
+                    line = incident_line(row, poll_now)
+                    if row.get("type") in ("alert", "schedule"):
+                        line += f"（事件 {row['id']}）"
+                    lines.append("- " + line)
+                if len(batch) > MAX_INCIDENT_BATCH_LINES:
+                    lines.append(
+                        f"… 另有 {len(batch) - MAX_INCIDENT_BATCH_LINES} 条事件，请前往 MCAI 设置页「故障与告警」查看完整记录。"
+                    )
+                if any(row.get("type") in ("alert", "schedule") for row in batch):
+                    lines.append(
+                        "\n如需排查，可用 “/mcainew 任务名 处理事件 <事件编号>” 发起任务。"
+                    )
+                body = "\n".join(lines)
+            records.append(
+                (
+                    "outbox",
+                    key,
+                    {
+                        "id": key,
+                        "task": None,
+                        "origin": origin,
+                        "mention": None,
+                        "text": body,
+                        "sent": False,
+                    },
+                )
+            )
+            records.extend(
+                ("incident_notified", row["id"], {"time": poll_now}) for row in batch
+            )
+        if records or cursor != existing_cursor:
             self.store.save_many(*records, ("incident_cursor", client.url, cursor))
-            if records:
-                self.tasks.wake_outbox()
+        if records:
+            self.tasks.wake_outbox()
+        if stale:
+            self.store.log(
+                "incident_stale_skipped", count=len(stale), max_seq=max(stale)
+            )
 
     async def deliver_incidents(self):
         while True:
