@@ -21,9 +21,11 @@ from astrbot.api.web import (
 
 from .astrbot_agent import AstrBotAgent
 from .capabilities import (
+    BACKUP_CAPABILITY_ITEMS,
     CAPABILITY_ITEMS,
     detected_settings,
     provider_identity,
+    test_backup_capabilities,
     test_capabilities,
 )
 from .cleanup import (
@@ -65,8 +67,10 @@ class Settings:
         self.review_rules_path = review_rules_path
         self.summary_rules_path = summary_rules_path
         self.worker = None
+        self.running_target = None
         self.retention_worker = asyncio.create_task(self.retention_loop())
         self.result = plugin.store.get("capability_test", "latest")
+        self.backup_result = plugin.store.get("capability_test", "backup_latest")
         for route, handler, methods in (
             ("settings", self.settings, ["GET", "POST"]),
             ("connection/test", self.connection_test, ["POST"]),
@@ -758,6 +762,8 @@ class Settings:
                                 "pause_reason",
                                 "cancel_pending",
                                 "model_retry",
+                                "active_provider_id",
+                                "active_provider_slot",
                                 "archive_error",
                                 "archive_state",
                                 "pause_after_operation",
@@ -986,11 +992,12 @@ class Settings:
                 for key in (
                     "task_token_limit",
                     "model_failure_pause_minutes",
+                    "backup_cooldown_minutes",
                     "member_ask_cooldown_seconds",
                 )
             ):
                 raise ValueError(
-                    "单任务 token 上限、自动暂停分钟数及问答冷却秒数不能小于 0"
+                    "单任务 token 上限、自动暂停分钟数、备用冷却分钟数及问答冷却秒数不能小于 0"
                 )
             if "model_prices" in fields:
                 parse_prices(fields["model_prices"])
@@ -1028,7 +1035,12 @@ class Settings:
                 < 1
             ):
                 raise ValueError("只读问答超时秒数须为正整数")
-            for key in ("provider_id", "review_provider_id"):
+            for key in (
+                "provider_id",
+                "review_provider_id",
+                "backup_provider_id",
+                "backup_review_provider_id",
+            ):
                 if fields.get(key):
                     provider = await self.provider(fields[key])
                     if provider.provider_config.get("type") not in (
@@ -1036,8 +1048,17 @@ class Settings:
                         "openai_responses",
                     ):
                         raise ValueError(
-                            "排障与审核模型仅支持 OpenAI 兼容 Chat／Responses 提供商"
+                            "排障与审核模型（含备用）仅支持 OpenAI 兼容 Chat／Responses 提供商"
                         )
+            merged_models = {**plugin.config, **fields}
+            if merged_models.get("backup_provider_id") and merged_models.get(
+                "backup_provider_id"
+            ) == merged_models.get("provider_id"):
+                raise ValueError("备用排障模型不能与主排障模型相同")
+            if merged_models.get("backup_review_provider_id") and merged_models.get(
+                "backup_review_provider_id"
+            ) == merged_models.get("review_provider_id"):
+                raise ValueError("备用审核模型不能与主审核模型相同")
             async with plugin.tasks.create_lock:
                 if (
                     not 1
@@ -1065,13 +1086,30 @@ class Settings:
                     summary_rules_path=self.summary_rules_path,
                     review_provider_id=config.get("review_provider_id", ""),
                     review_reasoning_effort=config.get("review_reasoning_effort", ""),
+                    backup_provider_id=config.get("backup_provider_id", ""),
+                    backup_reasoning_effort=config.get("backup_reasoning_effort", ""),
+                    backup_review_provider_id=config.get(
+                        "backup_review_provider_id", ""
+                    ),
+                    backup_review_reasoning_effort=config.get(
+                        "backup_review_reasoning_effort", ""
+                    ),
+                    backup_cooldown_minutes=config.get("backup_cooldown_minutes", 10),
                     reasoning_effort=config.get("reasoning_effort", ""),
                     forward_progress=config.get("forward_progress", False),
                     enable_web_search=config.get("enable_web_search", True),
                     web_search_tool_type=config.get(
                         "web_search_tool_type", "web_search"
                     ),
+                    web_search_mode=config.get("web_search_mode", "cached"),
+                    workspace_java_path=config.get("workspace_java_path", ""),
                     enable_alpha_search=config.get("enable_alpha_search", False),
+                    enable_remote_compaction=config.get(
+                        "enable_remote_compaction", False
+                    ),
+                    remote_compaction_mode=config.get(
+                        "remote_compaction_mode", "compaction_trigger"
+                    ),
                 )
                 workspace = workspace_root(config, plugin.store.directory)
                 shell = config.get("workspace_powershell_path", "")
@@ -1101,9 +1139,18 @@ class Settings:
         providers = plugin.context.get_all_providers()
         return {
             "config": {
-                key: value
-                for key, value in plugin.config.items()
-                if key not in ("host_token", "curseforge_api_key")
+                "web_search_mode": "cached",
+                "workspace_java_path": "",
+                "backup_provider_id": "",
+                "backup_reasoning_effort": "",
+                "backup_review_provider_id": "",
+                "backup_review_reasoning_effort": "",
+                "backup_cooldown_minutes": 10,
+                **{
+                    key: value
+                    for key, value in plugin.config.items()
+                    if key not in ("host_token", "curseforge_api_key")
+                },
             },
             "host_token_configured": bool(plugin.config.get("host_token")),
             "curseforge_configured": bool(plugin.config.get("curseforge_api_key")),
@@ -1204,27 +1251,172 @@ class Settings:
                         "review_reasoning_effort",
                     )
                 }
+                settings["web_search_mode"] = self.plugin.config.get(
+                    "web_search_mode", "cached"
+                )
                 stale = (
                     main is None
                     or provider_identity(main, settings) != self.result.get("identity")
                     or (provider_identity(review, {}) if review is not None else None)
                     != self.result.get("review_identity")
                 )
+            backup_stale = False
+            if self.backup_result:
+                b_main_id = self.plugin.config.get("backup_provider_id", "")
+                b_review_id = self.plugin.config.get("backup_review_provider_id", "")
+                b_main = (
+                    await self.plugin.context.provider_manager.get_provider_by_id(
+                        b_main_id
+                    )
+                    if b_main_id
+                    else None
+                )
+                b_review = (
+                    await self.plugin.context.provider_manager.get_provider_by_id(
+                        b_review_id
+                    )
+                    if b_review_id
+                    else None
+                )
+                b_settings = {
+                    key: self.plugin.config.get(key, "")
+                    for key in (
+                        "backup_provider_id",
+                        "backup_review_provider_id",
+                        "backup_reasoning_effort",
+                        "backup_review_reasoning_effort",
+                    )
+                }
+                b_review_settings = {
+                    "backup_review_reasoning_effort": b_settings[
+                        "backup_review_reasoning_effort"
+                    ]
+                }
+                backup_stale = (
+                    provider_identity(b_main, b_settings)
+                    if b_main is not None
+                    else None
+                ) != self.backup_result.get("identity") or (
+                    provider_identity(b_review, b_review_settings)
+                    if b_review is not None
+                    else None
+                ) != self.backup_result.get("review_identity")
+            running = bool(self.worker and not self.worker.done())
             return {
-                "running": bool(self.worker and not self.worker.done()),
+                "running": running,
+                "running_target": self.running_target if running else None,
                 "result": self.result,
                 "stale": stale,
+                "backup_result": self.backup_result,
+                "backup_stale": backup_stale,
             }
         body = await request.json() if request.method == "POST" else {}
+        target = body.get("target", "primary") if isinstance(body, dict) else "primary"
+        if target not in ("primary", "backup"):
+            raise ValueError("未知的能力测试目标")
         only = body.get("only") if isinstance(body, dict) else None
+        allowed_items = (
+            BACKUP_CAPABILITY_ITEMS if target == "backup" else CAPABILITY_ITEMS
+        )
         if only is not None and (
-            not isinstance(only, str) or only not in CAPABILITY_ITEMS
+            not isinstance(only, str) or only not in allowed_items
         ):
             raise ValueError("未知的单项能力测试")
         if self.worker and not self.worker.done():
             raise ValueError("能力测试已在运行")
         if self.plugin.tasks.workers:
             raise ValueError("请先暂停排障任务，再测试模型能力")
+        if target == "backup":
+            b_settings = {
+                key: self.plugin.config.get(key, "")
+                for key in (
+                    "backup_provider_id",
+                    "backup_review_provider_id",
+                    "backup_reasoning_effort",
+                    "backup_review_reasoning_effort",
+                )
+            }
+            if (
+                not b_settings["backup_provider_id"]
+                and not b_settings["backup_review_provider_id"]
+            ):
+                raise ValueError("请先选择备用排障模型或备用审核模型")
+            backup_main = (
+                await self.provider(b_settings["backup_provider_id"])
+                if b_settings["backup_provider_id"]
+                else None
+            )
+            if backup_main is not None and backup_main.provider_config.get(
+                "type"
+            ) not in (
+                "openai_chat_completion",
+                "openai_responses",
+            ):
+                raise ValueError(
+                    "备用排障模型仅支持 OpenAI 兼容 Chat／Responses 提供商"
+                )
+            backup_review = (
+                await self.provider(b_settings["backup_review_provider_id"])
+                if b_settings["backup_review_provider_id"]
+                else None
+            )
+            if backup_review is not None and backup_review.provider_config.get(
+                "type"
+            ) not in (
+                "openai_chat_completion",
+                "openai_responses",
+            ):
+                raise ValueError(
+                    "备用审核模型仅支持 OpenAI 兼容 Chat／Responses 提供商"
+                )
+            previous = self.backup_result
+
+            def backup_progress(result):
+                if (
+                    only
+                    and previous
+                    and (result.get("identity"), result.get("review_identity"))
+                    == (previous.get("identity"), previous.get("review_identity"))
+                    and "items" in result
+                ):
+                    items = (
+                        {only: result["items"][only]} if only in result["items"] else {}
+                    )
+                    result = {**result, "items": {**previous["items"], **items}}
+                self.backup_result = result
+                self.plugin.store.save("capability_test", "backup_latest", result)
+
+            async def run_backup():
+                try:
+                    result = await test_backup_capabilities(
+                        backup_main,
+                        backup_review,
+                        b_settings,
+                        backup_progress,
+                        store=self.plugin.store,
+                        only=only,
+                    )
+                    backup_progress(result)
+                except asyncio.CancelledError:
+                    if self.backup_result:
+                        self.backup_result["cancelled"] = True
+                        backup_progress(self.backup_result)
+                    raise
+                except Exception as exc:
+                    self.plugin.store.log("capability_test_error", error=str(exc))
+                    self.backup_result = {
+                        **(self.backup_result or {}),
+                        "error": str(exc),
+                        "complete": True,
+                    }
+                    backup_progress(self.backup_result)
+                finally:
+                    self.running_target = None
+
+            self.backup_result = None
+            self.running_target = "backup"
+            self.worker = asyncio.create_task(run_backup())
+            return {"started": True, "target": "backup"}
         settings = {
             key: self.plugin.config.get(key, "")
             for key in (
@@ -1234,6 +1426,9 @@ class Settings:
                 "review_reasoning_effort",
             )
         }
+        settings["web_search_mode"] = self.plugin.config.get(
+            "web_search_mode", "cached"
+        )
         main = await self.provider(settings["provider_id"])
         if main.provider_config.get("type") not in (
             "openai_chat_completion",
@@ -1289,6 +1484,12 @@ class Settings:
                 agent.forward_progress = self.plugin.config.get(
                     "forward_progress", False
                 )
+                agent.enable_remote_compaction = self.plugin.config.get(
+                    "enable_remote_compaction", False
+                )
+                agent.remote_compaction_mode = self.plugin.config.get(
+                    "remote_compaction_mode", "compaction_trigger"
+                )
                 result["applied"] = changes
                 progress(result)
             except asyncio.CancelledError:
@@ -1304,8 +1505,11 @@ class Settings:
                     "complete": True,
                 }
                 progress(self.result)
+            finally:
+                self.running_target = None
 
         self.result = None
+        self.running_target = "primary"
         self.worker = asyncio.create_task(run())
         return {"started": True}
 

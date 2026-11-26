@@ -210,6 +210,9 @@ def evidence_view(value, limit=6000, *, edges=0):
     if len(original) <= limit:
         return value
 
+    def size(item):
+        return len(json.dumps(item, ensure_ascii=False))
+
     def index(item, budget, path=()):
         encoded = json.dumps(item, ensure_ascii=False)
         if len(encoded) <= budget:
@@ -246,13 +249,15 @@ def evidence_view(value, limit=6000, *, edges=0):
                         "parse_error": str(error),
                     }
                 return index(describe_tag(tag, "children", limit=20), budget, path)
-            return {
+            leaf = {
                 "result_path": list(path),
                 "type": type(item).__name__,
                 "characters": len(encoded),
-                "preview": str(item)[: max(0, min(160, budget - 160))],
+                "preview": "",
                 "omitted": True,
             }
+            leaf["preview"] = _clip_archive_text(str(item), budget - size(leaf) + 2)
+            return leaf
         if budget < 240:
             return {
                 "result_path": list(path),
@@ -291,18 +296,22 @@ def evidence_view(value, limit=6000, *, edges=0):
         "content": None,
         "complete": False,
         "message": "有界结构视图；缺省项不能当作不存在。按result_path或原工具的目标筛选读取必要原值，勿连续分页搬运全文。",
-        **({"head": original[:edges], "tail": original[-edges:]} if edges else {}),
     }
-    overhead = len(json.dumps(envelope, ensure_ascii=False)) - 4
-    inner_limit = max(256, limit - overhead)
-    target = min(max(256, limit // 2), inner_limit) if limit >= 1200 else inner_limit
+    edges = min(edges, max(0, (limit - size(envelope) - 80) // 4))
+    if edges:
+        envelope.update(head=original[:edges], tail=original[-edges:])
+    inner_limit = limit - size(envelope) + 4
+    target = min(limit // 2, inner_limit) if limit >= 1200 else inner_limit
     content = index(value, target)
-    if len(json.dumps(content, ensure_ascii=False)) > inner_limit:
+    if size(content) > inner_limit:
         content = {
             "type": type(value).__name__,
             "message": "结构索引仍过大；按原工具筛选、find或result_path收窄。",
         }
-    envelope["content"] = content
+    if size(content) <= inner_limit:
+        envelope["content"] = content
+    elif inner_limit < 4:
+        return {"omitted": True} if limit >= 17 else {}
     return envelope
 
 
@@ -378,7 +387,7 @@ def _compact_archive_value(value):
 def _clip_archive_text(text, budget):
     if len(json.dumps(text, ensure_ascii=False)) <= budget:
         return text
-    if budget < 16:
+    if budget < 5:
         return ""
     raw_limit = max(4, budget - 2)
     while raw_limit > 0:
@@ -386,8 +395,12 @@ def _clip_archive_text(text, budget):
         if raw_limit >= 48 and probe >= 12 and len(text) > probe * 2 + 12:
             omitted = len(text) - probe * 2
             candidate = f"{text[:probe]}\n…[省略{omitted}字符]…\n{text[-probe:]}"
+        elif raw_limit >= 3:
+            head = raw_limit // 2
+            tail = raw_limit - head - 1
+            candidate = f"{text[:head]}…{text[-tail:]}"
         else:
-            candidate = text[: max(1, raw_limit - 1)] + "…"
+            break
         c_len = len(json.dumps(candidate, ensure_ascii=False))
         if c_len <= budget:
             return candidate

@@ -87,6 +87,11 @@ def model_result(name, arguments, result, operation_id=None):
         {"environment": "test"} if arguments.get("environment") == "test" else {}
     )
     if {"id", "status", "items"} <= data.keys():
+        if data["status"] == "failed":
+            data["warning"] = (
+                "后台任务执行失败（status=failed），输出可能不完整。请先核实 error 与退出码，"
+                "勿将失败输出作为有效结论或送审依据。"
+            )
         data["job_id"] = data.pop("id")
         probe = (
             data.get("progress", {}).get("kind")

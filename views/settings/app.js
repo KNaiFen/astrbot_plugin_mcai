@@ -49,6 +49,7 @@ function values() {
   }
   if (!result.host_token) delete result.host_token;
   if (!result.curseforge_api_key) delete result.curseforge_api_key;
+  result.workspace_java_path = result.workspace_java_path.trim();
   if (readPriceBindings) result.model_price_meta = readPriceBindings();
   return result;
 }
@@ -88,9 +89,15 @@ function pickPrice(model, apply) {
 }
 async function loadA() {
   const [data, prices] = await Promise.all([api('GET', 'settings'), api('GET', 'model/catalog')]);
-  for (const name of ['provider_id', 'review_provider_id']) {
+  const emptyLabels = {
+    provider_id: '使用当前群模型',
+    review_provider_id: '请选择审核模型',
+    backup_provider_id: '不启用备用排障模型',
+    backup_review_provider_id: '不启用备用审核模型',
+  };
+  for (const name of ['provider_id', 'review_provider_id', 'backup_provider_id', 'backup_review_provider_id']) {
     const select = form.elements[name];
-    select.replaceChildren(new Option(name === 'provider_id' ? '使用当前群模型' : '请选择审核模型', ''));
+    select.replaceChildren(new Option(emptyLabels[name], ''));
     for (const item of data.providers) select.add(new Option(`${item.name} · ${item.model} · ${item.type} (${item.id})`, item.id));
   }
   for (const [key, value] of Object.entries(data.config)) {
@@ -324,25 +331,36 @@ document.querySelector('#refresh-incident-usage').onclick = function () {
     showIncidentSettings(host, loadValues);
   });
 };
-const names = { conversation: '普通对话', image: '图片识别', stream: '流式响应', function_call: '工具调用与续接', reasoning_effort: '排障思考强度', web_search: 'API 托管搜索', web_search_preview: '兼容托管搜索', alpha_search: '独立搜索', alpha_open: '独立搜索打开网页', alpha_find: '独立搜索页内查找', progress: '执行进度汇报', review_json: '审核模型与 JSON' };
+const names = { conversation: '普通对话', image: '图片识别', stream: '流式响应', function_call: '工具调用与续接', reasoning_effort: '排障思考强度', web_search: 'API 托管搜索', web_search_preview: '兼容托管搜索', alpha_search: '独立搜索', alpha_open: '独立搜索打开网页', alpha_find: '独立搜索页内查找', progress: '执行进度汇报', remote_compaction: '远程压缩（流式触发）', remote_compaction_compact: '远程压缩（独立接口）', review_json: '审核模型与 JSON' };
 const statuses = { testing: '测试中', passed: '验证通过', unsupported: '明确不支持', unobserved: '本次未观察到', failed: '请求失败' };
-async function readTest() {
-  const data = await api('GET', 'capabilities'), container = document.querySelector('#capabilities'); container.replaceChildren();
-  if (data.stale) { const p = document.createElement('p'); p.textContent = '模型配置已变化，需要重新测试。'; container.append(p); }
-  for (const [name, item] of Object.entries(data.result?.items ?? {})) {
+const backupNames = { conversation: '备用普通对话', image: '备用图片识别', stream: '备用流式响应', function_call: '备用工具调用与续接', reasoning_effort: '备用排障思考强度', review_json: '备用审核模型与 JSON' };
+function renderCapabilities(container, result, stale, running, { target, labels, heading }) {
+  container.replaceChildren();
+  const entries = Object.entries(result?.items ?? {});
+  if (heading && (stale || entries.length || result?.error)) container.append(node('h4', heading, 'group-title'));
+  if (stale) { const p = document.createElement('p'); p.textContent = target === 'backup' ? '备用模型配置已变化，需要重新测试。' : '模型配置已变化，需要重新测试。'; container.append(p); }
+  for (const [name, item] of entries) {
     const row = document.createElement('details'); row.className = 'capability';
-    const summary = document.createElement('summary'); summary.textContent = `${names[name] ?? name}：${statuses[item.status] ?? item.status}`;
+    const summary = document.createElement('summary'); summary.textContent = `${labels[name] ?? name}：${statuses[item.status] ?? item.status}`;
     const detail = document.createElement('p'); detail.textContent = item.error || '本项由保存的模型配置发起。';
-    const retry = button('单项重测', () => action(retry, async () => { await api('POST', 'capabilities', { only: name }); show(`正在重测${names[name] ?? name}。`); startPolling(); }));
-    retry.disabled = data.running;
+    const payload = target === 'backup' ? { target: 'backup', only: name } : { only: name };
+    const retry = button('单项重测', () => action(retry, async () => { await api('POST', 'capabilities', payload); show(`正在重测${labels[name] ?? name}。`); startPolling(); }));
+    retry.disabled = running;
     row.append(summary, detail, retry); container.append(row);
   }
+}
+async function readTest() {
+  const data = await api('GET', 'capabilities');
+  renderCapabilities(document.querySelector('#capabilities'), data.result, data.stale, data.running, { target: 'primary', labels: names });
+  renderCapabilities(document.querySelector('#backup-capabilities'), data.backup_result, data.backup_stale, data.running, { target: 'backup', labels: backupNames, heading: '备用模型能力测试' });
   if (data.result?.error) show(data.result.error, true);
+  else if (data.backup_result?.error) show(data.backup_result.error, true);
   if (!data.running && poll) { clearInterval(poll); poll = null; if (data.result?.complete && Object.keys(data.result.applied ?? {}).length) await loadA(); }
   return data;
 }
 function startPolling() { if (!poll) poll = setInterval(() => readTest().catch(error => { clearInterval(poll); poll = null; show(error.message, true); }), 1000); }
 document.querySelector('#test-model').onclick = function () { action(this, async () => { await saveA(); await api('POST', 'capabilities'); show('正在测试模型能力，结果将逐项显示。'); startPolling(); }); };
+document.querySelector('#test-backup-model').onclick = function () { action(this, async () => { await saveA(); await api('POST', 'capabilities', { target: 'backup' }); show('正在测试备用模型能力（不改动主模型开关），结果将逐项显示。'); startPolling(); }); };
 document.querySelector('#cancel-test').onclick = function () { action(this, async () => { await api('POST', 'capabilities/cancel'); await readTest(); show('能力测试已取消。'); }); };
 const ruleLabels = { latest: '已是最新', unmodified: '有新模板（用户未修改）', modified: '有新模板（用户已修改）', unknown: '基线未知' };
 const adoptRuleDialog = document.querySelector('#adopt-rule-dialog');

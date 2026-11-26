@@ -663,7 +663,12 @@ def resolve_world_root(directory, excluded=None, *, world_path=None, dimension=N
         target = (
             directory if str(relative) == "." else resolve_file(directory, relative)
         )
-        worlds = [item for item in worlds if directory / item["path"] == target]
+        worlds = [
+            item
+            for item in worlds
+            if directory / item["path"] == target
+            or (dimension is not None and directory / item["world"] == target)
+        ]
     if dimension is not None:
         value = str(dimension)
         if re.fullmatch(r"-?\d+", value):

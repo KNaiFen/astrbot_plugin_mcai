@@ -147,19 +147,18 @@ async def download_file(reference, target):
         return size
 
 
-async def recognize_image(context, store, task, origin, provider_id, path):
-    identity = provider_id or await context.get_current_chat_provider_id(origin)
-    provider = await context.provider_manager.get_provider_by_id(identity)
+async def _recognize_with_provider(store, task, provider, path, *, slot="primary"):
     if provider is None or provider.provider_config.get("type") not in (
         "openai_chat_completion",
         "openai_responses",
     ):
         return None
-    result = store.get("capability_test", "latest") or {}
+    cache_key = "backup_latest" if slot == "backup" else "latest"
+    result = store.get("capability_test", cache_key) or {}
     if result.get("items", {}).get("image", {}).get(
         "status"
-    ) == "unsupported" and result["identity"] == provider_identity(
-        provider, result["settings"]
+    ) == "unsupported" and result.get("identity") == provider_identity(
+        provider, result.get("settings", {})
     ):
         return None
     selected = request_provider(traced_provider(provider, store, task, "图片识别"))
@@ -184,6 +183,32 @@ async def recognize_image(context, store, task, origin, provider_id, path):
     if not text or response.role == "err":
         raise ValueError("模型未返回可用的图片识别结果")
     return text
+
+
+async def recognize_image(
+    context, store, task, origin, provider_id, path, *, failover=None
+):
+    if failover is not None:
+        primary_id, _, backup_id, _ = await failover.pair_ids(
+            origin=origin, preferred_primary_id=provider_id or None
+        )
+        if not backup_id:
+            provider = await context.provider_manager.get_provider_by_id(primary_id)
+            return await _recognize_with_provider(
+                store, task, provider, path, slot="primary"
+            )
+        text, _ = await failover.call_bounded(
+            lambda active: _recognize_with_provider(
+                store, task, active.provider, path, slot=active.slot
+            ),
+            origin=origin,
+            preferred_primary_id=provider_id or None,
+            require_valid=False,
+        )
+        return text
+    identity = provider_id or await context.get_current_chat_provider_id(origin)
+    provider = await context.provider_manager.get_provider_by_id(identity)
+    return await _recognize_with_provider(store, task, provider, path, slot="primary")
 
 
 async def receive_attachments(workspace, task, sources, recognize, *, folders=None):

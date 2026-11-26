@@ -11,11 +11,14 @@ class Store:
         self.directory = Path(directory)
         if read_only:
             path = (self.directory / "state.sqlite3").resolve()
-            self.db = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=2)
+            self.db = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+            self.db.execute("PRAGMA busy_timeout=5000")
             return
         self.directory.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.directory / "state.sqlite3")
+        self.db = sqlite3.connect(self.directory / "state.sqlite3", timeout=5)
         self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA synchronous=NORMAL")
+        self.db.execute("PRAGMA busy_timeout=5000")
         index = self.db.execute(
             "SELECT sql FROM sqlite_master WHERE type='index' AND name='live_tasks'"
         ).fetchone()

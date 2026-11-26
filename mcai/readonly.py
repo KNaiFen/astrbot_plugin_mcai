@@ -6,19 +6,39 @@ import ipaddress
 import json
 import re
 import uuid
+from collections import deque
 from contextlib import aclosing
 from pathlib import PurePosixPath, PureWindowsPath
+from types import SimpleNamespace
 
 import aiohttp
 from astrbot.core.agent.hooks import BaseAgentRunHooks
-from astrbot.core.agent.message import Message
+from astrbot.core.agent.message import Message, dump_messages_with_checkpoints
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
 from astrbot.core.astr_agent_context import AgentContextWrapper, AstrAgentContext
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
 from astrbot.core.provider.entities import ProviderRequest
 from jsonschema import ValidationError, validate
 
-from .agent_runtime import check_response, effort_provider, request_provider
+from .agent_runtime import (
+    STREAM_IDLE_TIMEOUT,
+    ModelFailover,
+    ResolvedProvider,
+    cap_reasoning_effort,
+    check_response,
+    collect_stream,
+    effort_provider,
+    extract_final_text,
+    malformed_tool_calls,
+    model_retry_delay,
+    plain_group_text,
+    prompt_cache_provider,
+    provider_identity_key,
+    request_option_rejected,
+    response_messages,
+    responses_include_provider,
+    stream_timeout_provider,
+)
 from .astrbot_agent import McTool, McToolSet
 from .client import RemoteError
 from .queries import PRIVATE_KEY_RE, is_sensitive_path
@@ -31,6 +51,9 @@ from .tracing import trace_event, traced_provider
 
 ASK_STEPS = 10
 ASK_TIMEOUT = 180
+ASK_RETRY_ATTEMPTS = 3
+ASK_RETRY_MAX_DELAY = 10.0
+ASK_RESULT_CHAR_LIMIT = 12_000
 ACTIVE = ("pending", "running")
 BACKEND_ERRORS = (aiohttp.ClientError, TimeoutError, RemoteError, OSError)
 PROBE_TOOLS = {
@@ -106,7 +129,7 @@ KV_SECRET_RE = re.compile(
     + _SECRET_KEY_BODY
     + r"|"
     + _SECRET_KEY_BODY
-    + r"|(?:[A-Za-z0-9_.-]*[._-])token))"
+    + r"|token|(?:[A-Za-z0-9_.-]*[._-])token))"
     r"\s*[:=]\s*)"
     r"(?:\"([^\r\n\"]*)\"|'([^\r\n']*)'|([^\s,;#\r\n}\]]+))"
 )
@@ -237,9 +260,12 @@ def sanitize_ask_data(value, *, key=None, hide_status_paths=False):
         for item_key, item_value in value.items():
             if hide_status_paths and item_key in STATUS_HIDDEN_KEYS:
                 continue
+            safe_key = (
+                redact_ask_text(item_key) if isinstance(item_key, str) else item_key
+            )
             if is_sensitive_key(item_key):
                 if isinstance(item_value, str):
-                    cleaned[item_key] = (
+                    cleaned[safe_key] = (
                         "[已脱敏]"
                         if item_value.strip()
                         and item_value.strip().lower() not in {"null", "none"}
@@ -249,15 +275,57 @@ def sanitize_ask_data(value, *, key=None, hide_status_paths=False):
                 if isinstance(item_value, (int, float)) and not isinstance(
                     item_value, bool
                 ):
-                    cleaned[item_key] = "[已脱敏]"
+                    cleaned[safe_key] = "[已脱敏]"
                     continue
-            cleaned[item_key] = sanitize_ask_data(
+            cleaned[safe_key] = sanitize_ask_data(
                 item_value,
                 key=item_key if isinstance(item_key, str) else None,
                 hide_status_paths=hide_status_paths,
             )
         return cleaned
     return value
+
+
+def bounded_ask_result(result):
+    encoded = json.dumps(result, ensure_ascii=False)
+    original = len(encoded)
+    if original <= ASK_RESULT_CHAR_LIMIT:
+        return result
+
+    def clip(value):
+        half = ASK_RESULT_CHAR_LIMIT // 4
+        if isinstance(value, str) and len(value) > 2 * half:
+            return f"{value[:half]}\n…（省略 {len(value) - 2 * half} 字符）…\n{value[-half:]}"
+        if isinstance(value, list):
+            if len(value) > 10:
+                value = [*value[:5], f"…（省略 {len(value) - 10} 项）…", *value[-5:]]
+            return [clip(item) for item in value]
+        if isinstance(value, dict):
+            return {key: clip(item) for key, item in value.items()}
+        return value
+
+    clipped = {
+        key: value if key == "next_call" else clip(value)
+        for key, value in result.items()
+    }
+    clipped.update(truncated=True, original_characters=original)
+    if len(json.dumps(clipped, ensure_ascii=False)) <= ASK_RESULT_CHAR_LIMIT:
+        return clipped
+
+    encoded = redact_ask_text(encoded)
+    half = ASK_RESULT_CHAR_LIMIT // 2
+    while True:
+        clipped = {
+            "ok": result.get("ok", True),
+            "truncated": True,
+            "original_characters": original,
+            "head": encoded[:half],
+            "tail": encoded[-half:],
+            "message": "结果过长已做头尾截断，请缩小查询范围或分页读取。",
+        }
+        if len(json.dumps(clipped, ensure_ascii=False)) <= ASK_RESULT_CHAR_LIMIT:
+            return clipped
+        half //= 2
 
 
 def state_text(row):
@@ -481,10 +549,9 @@ async def answer_question(
         answer = "只读问答未完成，请检查 B 连接和模型配置。"
     finally:
         await reads.stop()
-    answer = redact_ask_text(answer)
     if reads.cleanup_failed:
         answer += "\n未能确认 B 的查询已取消，详情见本地诊断。"
-    return answer
+    return redact_ask_text(plain_group_text(answer))
 
 
 async def run_question(
@@ -497,22 +564,92 @@ async def run_question(
     selected = None
     question = text.strip()
     context = tasks.agent.context
+
+    async def _fallback_primary(*, origin=None, preferred_id=None):
+        pid = preferred_id or tasks.agent.provider_id
+        if not pid and origin is not None:
+            pid = await context.get_current_chat_provider_id(origin)
+        return pid or "", getattr(tasks.agent, "reasoning_effort", "")
+
+    failover = getattr(tasks.agent, "main_failover", None) or ModelFailover(
+        context,
+        role="main",
+        label="只读问答",
+        get_primary=_fallback_primary,
+        get_backup=lambda: (
+            getattr(tasks.agent, "backup_provider_id", ""),
+            getattr(tasks.agent, "backup_reasoning_effort", ""),
+        ),
+        get_cooldown_minutes=lambda: getattr(
+            tasks.agent, "backup_cooldown_minutes", 10
+        ),
+    )
     provider_id = tasks.agent.provider_id or await context.get_current_chat_provider_id(
         event.unified_msg_origin
     )
-    provider = await context.provider_manager.get_provider_by_id(provider_id)
-    if provider is None or provider.provider_config.get("type") not in (
+    primary_raw = await context.provider_manager.get_provider_by_id(provider_id)
+    if primary_raw is None or primary_raw.provider_config.get("type") not in (
         "openai_chat_completion",
         "openai_responses",
     ):
         return "请先配置支持工具调用的 OpenAI 兼容模型。"
-    provider = traced_provider(
-        request_provider(effort_provider(provider, tasks.agent.reasoning_effort)),
-        tasks.store,
-        identity,
-        "只读问答",
-        count_for_task=False,
+    slot_providers = {}
+
+    def get_ask_provider(active):
+        key = (active.slot, active.provider_id, active.effort)
+        if key in slot_providers:
+            return slot_providers[key]
+        raw = active.provider
+        # A text_chat-only instance override must take precedence over a class stream.
+        stream_enabled = callable(getattr(raw, "text_chat_stream", None)) and (
+            "text_chat" not in vars(raw) or "text_chat_stream" in vars(raw)
+        )
+        wrapped = effort_provider(raw, cap_reasoning_effort(active.effort, "high"))
+        wrapped = traced_provider(
+            stream_timeout_provider(wrapped, STREAM_IDLE_TIMEOUT),
+            tasks.store,
+            identity,
+            "只读问答",
+            count_for_task=False,
+        )
+        if wrapped.provider_config.get("type") == "openai_responses" and hasattr(
+            wrapped, "client"
+        ):
+            wrapped = responses_include_provider(
+                wrapped,
+                lambda error: trace_event(
+                    tasks.store, "ask_include_unavailable", task=identity, error=error
+                ),
+            )
+            wrapped = prompt_cache_provider(
+                wrapped,
+                f"mcai:{identity}",
+                lambda error: trace_event(
+                    tasks.store,
+                    "ask_prompt_cache_key_unavailable",
+                    task=identity,
+                    error=error,
+                ),
+            )
+        wrapped.provider_config["max_context_tokens"] = 0
+        runtime = SimpleNamespace(
+            provider=wrapped,
+            stream_enabled=stream_enabled,
+            identity=provider_identity_key(raw),
+            slot=active.slot,
+        )
+        slot_providers[key] = runtime
+        return runtime
+
+    primary_runtime = get_ask_provider(
+        ResolvedProvider(
+            slot="primary",
+            provider_id=provider_id,
+            provider=primary_raw,
+            effort=getattr(tasks.agent, "reasoning_effort", ""),
+        )
     )
+    provider = primary_runtime.provider
     contracts = {
         name: (description, schema)
         for name, description, schema in TOOLS
@@ -557,7 +694,24 @@ async def run_question(
                     "实例不存在；请核对可用实例，若无法确认是哪个服务端请停止查询并回复不知道是哪个服务端。"
                 )
             selected = instances[public["instance"]]
-            return {"instance": selected["instance"], "status": state_text(selected)}
+            try:
+                history = tasks.knowledge.context(
+                    selected["canonical_directory"], question
+                )
+            except (OSError, ValueError) as exc:
+                history = {"error": str(exc)}
+                trace_event(
+                    tasks.store,
+                    "knowledge_context_error",
+                    task=identity,
+                    directory=selected["canonical_directory"],
+                    error=str(exc),
+                )
+            return {
+                "instance": selected["instance"],
+                "status": state_text(selected),
+                "history": history,
+            }
         if name == "mc_tools":
             return {"help": [tool_help(tool) for tool in public["names"]]}
         if public.get("environment", "production") != "production":
@@ -569,6 +723,8 @@ async def run_question(
         arguments = arguments_for(name, public, internal=True)
         if name in ("mc_history", "mc_knowledge"):
             directory = selected["canonical_directory"]
+            if arguments.get("all_servers") or arguments.get("mode") == "index":
+                raise ValueError("只读取本次所选实例的经验；不允许跨服索引或检索。")
             if arguments.get("directory", directory) != directory:
                 raise ValueError("只读取本次所选实例的经验。")
             if name == "mc_knowledge":
@@ -631,8 +787,15 @@ async def run_question(
             action = "console_query"
         return await reads.call(selected, action, arguments)
 
+    tool_ids = deque()
+    malformed = {}
+
     async def dispatch(name, arguments):
         try:
+            if info := malformed.get(tool_ids.popleft()):
+                raise ValueError(
+                    f"工具参数不是合法 JSON 对象（{info['error']}），未执行，请修正 JSON 语法后重试。"
+                )
             raw_result = await invoke(name, arguments)
             result_name, result_arguments = name, arguments
             if name == "mc_query" and "help" not in raw_result:
@@ -664,6 +827,7 @@ async def run_question(
                     )
                 },
             }
+        result = bounded_ask_result(result)
         trace_event(
             tasks.store,
             "ask_tool",
@@ -697,45 +861,158 @@ async def run_question(
     )
     runner = ToolLoopAgentRunner()
     runner.EMPTY_OUTPUT_RETRY_ATTEMPTS = 1
+    # Keep native repeated-call guidance from appending text to the bounded JSON.
+    runner.REPEATED_TOOL_NOTICE_L1_THRESHOLD = float("inf")
     wrapper = AgentContextWrapper(
         context=AstrAgentContext(context=context, event=event)
     )
     last_text = ""
     attempts = 0
-    chat = provider.text_chat
+    last_identity = None
 
-    async def bounded_chat(**kwargs):
-        nonlocal attempts, last_text
+    def sanitize_foreign_reasoning(contexts):
+        if not contexts:
+            return contexts
+        cleaned = []
+        changed = False
+        for item in contexts:
+            if isinstance(item, dict) and isinstance(item.get("content"), list):
+                new_parts = []
+                item_changed = False
+                for part in item["content"]:
+                    if (
+                        isinstance(part, dict)
+                        and part.get("type") == "think"
+                        and "encrypted" in part
+                    ):
+                        new_parts.append(
+                            {k: v for k, v in part.items() if k != "encrypted"}
+                        )
+                        item_changed = True
+                    else:
+                        new_parts.append(part)
+                if item_changed:
+                    cleaned.append({**item, "content": new_parts})
+                    changed = True
+                    continue
+            elif hasattr(item, "content") and isinstance(item.content, list):
+                new_parts = []
+                item_changed = False
+                for part in item.content:
+                    if getattr(part, "type", None) == "think" and getattr(
+                        part, "encrypted", None
+                    ):
+                        cloned_part = copy.copy(part)
+                        cloned_part.encrypted = None
+                        new_parts.append(cloned_part)
+                        item_changed = True
+                    else:
+                        new_parts.append(part)
+                if item_changed:
+                    cloned_item = copy.copy(item)
+                    cloned_item.content = new_parts
+                    cleaned.append(cloned_item)
+                    changed = True
+                    continue
+            cleaned.append(item)
+        return cleaned if changed else contexts
+
+    async def bounded_chat(*, streaming=False, **kwargs):
+        nonlocal attempts, last_text, malformed, last_identity
         attempts += 1
         if attempts > max_steps:
             raise ValueError("已达到问答步数上限")
-        response = await chat(**kwargs)
-        check_response(response)
-        if response.role == "err":
-            raise ValueError(response.completion_text)
-        if response.completion_text:
-            last_text = response.completion_text
+
+        async def send_slot(active):
+            rt = get_ask_provider(active)
+            call_kwargs = dict(kwargs)
+            if last_identity is not None and rt.identity != last_identity:
+                call_kwargs["contexts"] = sanitize_foreign_reasoning(
+                    call_kwargs.get("contexts")
+                )
+            response = None
+            if streaming and rt.stream_enabled:
+                try:
+                    response = await collect_stream(
+                        rt.provider, idle_timeout=STREAM_IDLE_TIMEOUT, **call_kwargs
+                    )
+                except Exception as exc:
+                    if not request_option_rejected(exc, "stream(?:ing)?"):
+                        raise
+                    rt.stream_enabled = False
+                    trace_event(
+                        tasks.store,
+                        "ask_stream_unavailable",
+                        task=identity,
+                        error=redact_ask_text(str(exc)),
+                    )
+            if response is None:
+                response = await rt.provider.text_chat(**call_kwargs)
+            check_response(response)
+            return response
+
+        response, active = await failover.call_bounded(
+            send_slot,
+            origin=event.unified_msg_origin,
+            attempts_per_slot=ASK_RETRY_ATTEMPTS,
+            delay_fn=lambda exc, retry: min(
+                ASK_RETRY_MAX_DELAY, model_retry_delay(exc, retry)
+            ),
+            on_retry=lambda _slot, slot_failures, exc, delay: trace_event(
+                tasks.store,
+                "ask_model_retry",
+                task=identity,
+                attempt=slot_failures,
+                error=redact_ask_text(str(exc) or type(exc).__name__),
+                delay=delay,
+            ),
+            on_switch=lambda from_slot, to_slot, exc: trace_event(
+                tasks.store,
+                "ask_model_failover",
+                task=identity,
+                from_slot=from_slot,
+                to_slot=to_slot,
+                error=redact_ask_text(str(exc) or type(exc).__name__),
+            ),
+        )
+        last_identity = get_ask_provider(active).identity
+        if final_text := extract_final_text(response).strip():
+            last_text = final_text
+        malformed = malformed_tool_calls(response)
+        for index, call_id in enumerate(response.tools_call_ids):
+            if call_id in malformed:
+                response.tools_call_args[index] = {}
         if attempts == max_steps:
             response.tools_call_name = response.tools_call_args = (
                 response.tools_call_ids
             ) = []
         return response
 
-    provider.text_chat = bounded_chat
-    await runner.reset(
-        provider=provider,
-        request=ProviderRequest(
+    async def bounded_stream(**kwargs):
+        yield await bounded_chat(streaming=True, **kwargs)
+
+    runner_provider = copy.copy(provider)
+    runner_provider.text_chat = bounded_chat
+    runner_provider.text_chat_stream = bounded_stream
+
+    async def reset_runner(request):
+        await runner.reset(
+            provider=runner_provider,
+            request=request,
+            run_context=wrapper,
+            tool_executor=FunctionToolExecutor(),
+            agent_hooks=BaseAgentRunHooks(),
+            streaming=True,
+            request_max_retries=1,
+        )
+
+    await reset_runner(
+        ProviderRequest(
             prompt=question, contexts=[], system_prompt=prompt, func_tool=tools
-        ),
-        run_context=wrapper,
-        tool_executor=FunctionToolExecutor(),
-        agent_hooks=BaseAgentRunHooks(),
-        streaming=False,
-        request_max_retries=1,
+        )
     )
+    final = None
     for index in range(max_steps):
-        if runner.done():
-            break
         if index == max_steps - 1:
             runner.req.func_tool = None
             if index > 0:
@@ -746,14 +1023,28 @@ async def run_question(
                     )
                 )
         async with aclosing(runner.step()) as step:
-            async for _ in step:
-                pass
-    final = runner.get_final_llm_resp()
-    if final and final.role == "err" and not last_text:
+            async for update in step:
+                if update.type == "tool_call":
+                    # AstrBot emits the ID immediately before dispatching each call.
+                    tool_ids.append(update.data["chain"].chain[0].data["id"])
+        if not runner.done():
+            continue
+        final = runner.get_final_llm_resp()
+        if index < max_steps - 1 and final and final.role != "err":
+            if not extract_final_text(final).strip() and any(
+                item["type"] == "message" and item.get("phase") == "commentary"
+                for item in response_messages(final)
+            ):
+                await reset_runner(
+                    ProviderRequest(
+                        contexts=dump_messages_with_checkpoints(wrapper.messages),
+                        func_tool=tools,
+                    )
+                )
+                continue
+        break
+    if final and final.role == "err":
         raise ValueError(final.completion_text)
     if selected is None:
         return "不知道要查询哪个服务端，所以这个问题不回答。请在问题中说明对应服务端后再问。"
-    return redact_ask_text(
-        last_text.strip()
-        or f"在 {max_steps} 步内未得到可确认的结论，请缩小问题范围后重试。"
-    )
+    return last_text or f"在 {max_steps} 步内未得到可确认的结论，请缩小问题范围后重试。"

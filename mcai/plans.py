@@ -350,7 +350,11 @@ def plan_sections(plan):
         step["action"] == "command" and not step.get("backup_paths")
         for step in plan["steps"]
     ):
-        step_lines.append("在线命令无恢复备份。")
+        step_lines.append(
+            "在线命令无单独撤回（必要时可停服恢复本批备份）。"
+            if any(step["action"] == "snapshot" for step in plan["steps"])
+            else "在线命令无恢复备份。"
+        )
     sections = []
     if meta:
         sections.append("\n".join(meta))

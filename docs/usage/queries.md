@@ -16,6 +16,8 @@ AI 通过 `mc_query` 查询当前绑定实例的文件、日志、存档和进�
 
 顶层帮助列出类别，类别及子命令帮助说明用途、必填参数、单位和示例。布尔开关采用 `--regex`／`--no-regex` 等形式；数组和对象作为 JSON 字符串传入。输入错误时沿返回的具体用法修正，不重新收集已有效证据。
 
+检索词以负号开头时，也可独立传入，例如 `["files","search","--glob","*.log","--query","-241,-318"]`。检索词若与当前子命令的选项同名，用等号传入，例如 `--query=--help`。
+
 ## 常见查询
 
 | 目标 | 类别与用法 |
@@ -65,7 +67,7 @@ NBT 节点太大时，查询返回原路径、字节数及可展开的子节点�
 
 ## 维度与坐标自动定位
 
-先用 `mc_status` 查看实际世界路径。区域查询可提供明确的 `--path`，也可省略文件名，用 `--dimension` 和坐标解析已存在区域；多世界时加 `--world-path` 限定实例内实际维度目录。自动定位的查询仍须提供 `--dimension`，不能仅凭 `--world-path`。单点方块用 `--block-x/y/z`，区域NBT用全局区块 `--x/--z`；点检查／导出可用区块坐标或 `--block-x/--block-z` 二选一。负坐标向下取整，例如方块 `(-1,64,-1)` 位于区块 `(-1,-1)`、区域 `r.-1.-1`。
+先用 `mc_status` 查看实际世界路径。区域查询可提供明确的 `--path`，也可省略文件名，用 `--dimension` 和坐标解析已存在区域；多世界时用 `--world-path` 指定世界根目录或实际维度目录。自动定位的查询仍须提供 `--dimension`，不能仅凭 `--world-path`。单点方块用 `--block-x/y/z`，区域NBT用全局区块 `--x/--z`；点检查／导出可用区块坐标或 `--block-x/--block-z` 二选一。负坐标向下取整，例如方块 `(-1,64,-1)` 位于区块 `(-1,-1)`、区域 `r.-1.-1`。
 
 ```json
 {"argv":["region-blocks","read","--dimension","minecraft:overworld","--block-x","-1","--block-y","64","--block-z","-1"]}
@@ -76,7 +78,7 @@ NBT 节点太大时，查询返回原路径、字节数及可展开的子节点�
 
 标准维度为 `minecraft:overworld`、`minecraft:the_nether`、`minecraft:the_end`；旧版（含1.7.10）支持数字 `0/-1/1/其他整数` 或 `DIM<number>`，模组维度 `mod:dimension` 对应 `dimensions/mod/dimension`。发现范围包括Bukkit分离世界，例如下界实际目录可为 `world_nether/DIM-1`。世界与维度条件须唯一匹配；返回多个候选时，用返回的实际目录补充 `--world-path`，或以明确 `--path` 查询单文件。自动定位不创建未保存的区块或区域；物理 `--dataset` 为 `region/entities/poi`，默认 `region`，其中仅 `region` 在 `.mca` 不存在时回退 `.mcr`。`region-blocks`固定读取方块区域，不接受这个物理 `--dataset`。
 
-区域扫描用 `--world-path` 指定实例内的实际维度目录，例如下界是 `world/DIM-1`，并可配合 `--dimension` 核对唯一目标。扫描的 `--dataset` 表示逻辑数据类型，和单文件查询的物理目录选项不同：
+区域扫描只传 `--world-path` 时，填写实际维度目录，例如下界是 `world/DIM-1`；也可用 `--world-path world --dimension minecraft:the_nether` 从世界根目录定位。扫描的 `--dataset` 表示逻辑数据类型，和单文件查询的物理目录选项不同：
 
 ```json
 {"argv":["region-scan","--world-path","world/DIM-1","--dimension","minecraft:the_nether","--dataset","blocks","--name","minecraft:chest","--bounds","[-32,0,-32,31,255,31]","--result","by_chunk"]}
@@ -126,7 +128,7 @@ NBT 节点太大时，查询返回原路径、字节数及可展开的子节点�
 
 返回沿用 `ok/data`、证据引用及 `next_call`。后台状态由 `data.status` 表示，`complete` 说明读取范围；发起查询后沿原 `job_id` 等待和续读，`mc_job_wait` 在有新增输出事件或任务结束时立即返回。长字段先看概览，用路径或文本定位取回必要部分。未知执行状态沿原 `operation_id` 查询，不换编号重跑。
 
-控制台、Probe、验证、网页、下载和提案工具通过 `mc_tools` 按名称加载，详细说明与示例同时返回；暂停和重启保留当前任务已加载集合。安装更新保留用户编辑的运行时规则文件。
+控制台常用操作、Probe 常用诊断、提案、独立验证和多轮收尾可直接调用。网页、下载等专项工具通过 `mc_tools` 按名称加载，详细说明与示例同时返回；暂停和重启保留当前任务已加载集合。`mc_tools` 也可以查询默认工具的帮助。安装更新保留用户编辑的运行时规则文件。
 
 ## 在 B 的虚拟环境中运行
 

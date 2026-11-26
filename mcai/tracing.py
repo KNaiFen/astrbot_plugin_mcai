@@ -11,6 +11,7 @@ import sqlite3
 import time
 import uuid
 import zipfile
+from collections import OrderedDict
 from contextlib import ExitStack, closing
 from dataclasses import fields, is_dataclass
 from heapq import merge
@@ -28,6 +29,8 @@ from .runtime_rules import rules_status
 from .storage import Store
 
 logger = logging.getLogger("astrbot")
+CACHE_PREFIX_LIMIT = 64
+_cache_prefixes = OrderedDict()
 SECRET_FIELDS = {
     "authorization",
     "proxy-authorization",
@@ -65,6 +68,84 @@ def json_value(value):
     raise TypeError(f"不能记录 API 数据类型：{type(value).__name__}")
 
 
+def cache_prefix_signature(kwargs):
+    parameters = {
+        **{
+            key: value
+            for key, value in kwargs.items()
+            if type(value).__name__ not in ("NotGiven", "Omit")
+        },
+        **(kwargs.get("body") or {}),
+        **(kwargs.get("extra_body") or {}),
+    }
+    messages = parameters.get("input", parameters.get("messages"))
+    system = parameters.get("instructions", parameters.get("system_prompt"))
+    if messages is None:
+        messages = parameters.get("contexts") or []
+        if parameters.get("prompt") is not None:
+            messages = [*messages, {"role": "user", "content": parameters["prompt"]}]
+    elif not isinstance(messages, (list, tuple)):
+        messages = [messages]
+    elif "messages" in parameters:
+        end = 0
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") != "system":
+                break
+            end += 1
+        if end:
+            system, messages = messages[:end], messages[end:]
+
+    def fingerprint(value):
+        return hashlib.sha256(
+            json.dumps(
+                value, ensure_ascii=False, sort_keys=True, default=json_value
+            ).encode()
+        ).digest()
+
+    return {
+        "model": fingerprint(parameters.get("model")),
+        "tools": fingerprint(parameters.get("tools", parameters.get("func_tool"))),
+        "system": fingerprint(system),
+        "reasoning": fingerprint(
+            parameters.get("reasoning", parameters.get("reasoning_effort"))
+        ),
+        "include": fingerprint(parameters.get("include")),
+        "prompt_cache_key": fingerprint(parameters.get("prompt_cache_key")),
+    }, tuple(map(fingerprint, messages))
+
+
+def cache_trace_fields(key, signature, status, usage):
+    fields = {}
+    if signature is not None:
+        attributes, messages = signature
+        if key in _cache_prefixes:
+            previous, prefix = _cache_prefixes[key]
+            fields["cache_prefix_status"] = next(
+                (
+                    f"{field}_changed"
+                    for field in attributes
+                    if attributes[field] != previous[field]
+                ),
+                "extended" if messages[: len(prefix)] == prefix else "prefix_mutated",
+            )
+        else:
+            fields["cache_prefix_status"] = "first"
+        if status == "completed":
+            _cache_prefixes[key] = signature
+            _cache_prefixes.move_to_end(key)
+            if len(_cache_prefixes) > CACHE_PREFIX_LIMIT:
+                _cache_prefixes.popitem(last=False)
+    if isinstance(usage, dict):
+        for field in ("input_tokens", "prompt_tokens"):
+            total = usage.get(field)
+            details = usage.get(f"{field}_details")
+            cached = details.get("cached_tokens") if isinstance(details, dict) else None
+            if type(total) is int and total > 0 and type(cached) is int and cached >= 0:
+                fields["cached_input_ratio"] = round(cached / total, 4)
+                break
+    return fields
+
+
 def trace_event(store, kind, *, task=None, **fields):
     directory = store.directory / "traces"
     directory.mkdir(exist_ok=True)
@@ -90,7 +171,11 @@ class TraceStream:
         try:
             async for event in self.stream:
                 self.record("api_chunk", data=event)
-                kind = getattr(event, "type", "")
+                kind = (
+                    event.get("type", "")
+                    if isinstance(event, dict)
+                    else getattr(event, "type", "")
+                )
                 if kind in (
                     "response.completed",
                     "response.incomplete",
@@ -123,6 +208,12 @@ class TraceStream:
             raise
         finally:
             await self.close()
+        if finish_reasons:
+            # AstrBot's Chat accumulator suppresses SDK finish-reason exceptions.
+            # Surface the raw terminal reason only after recording the usage trailer.
+            from .agent_runtime import _raise_output_reason
+
+            _raise_output_reason(finish_reasons.values())
 
     async def close(self):
         if not self.closed:
@@ -153,6 +244,15 @@ def trace_calls(provider, store, task, stage, *, count_for_task=True):
             )
             summary_requested = bool(reasoning.get("summary"))
             summary_returned = False
+            cache_key = (store.directory, task, stage)
+            cache_signature = None
+            if task is not None:
+                try:
+                    cache_signature = cache_prefix_signature(kwargs)
+                except Exception:
+                    logger.exception(
+                        "MCAI cache signature failed task=%s request=%s", task, identity
+                    )
             # Provider keys can also appear in an exception from a remote gateway.
             keys = provider.provider_config.get("key", [])
             keys = [keys] if isinstance(keys, str) else keys
@@ -165,7 +265,11 @@ def trace_calls(provider, store, task, stage, *, count_for_task=True):
                             fields["error"] = fields["error"].replace(key, "[redacted]")
                 try:
                     if kind in ("api_chunk", "api_response"):
-                        data = fields["data"] = json_value(fields["data"])
+                        data = fields["data"]
+                        if transport == "responses/compact" and kind == "api_response":
+                            # CompactedResponse can return user messages in an assistant-only SDK union.
+                            data = data.model_dump(mode="json", warnings=False)
+                        data = fields["data"] = json_value(data)
                         response = data.get("response") or data
                         if response.get("usage") is not None:
                             usage = response["usage"]
@@ -213,12 +317,22 @@ def trace_calls(provider, store, task, stage, *, count_for_task=True):
                     if status == "completed"
                     else "interrupted"
                 )
+                try:
+                    cache_fields = cache_trace_fields(
+                        cache_key, cache_signature, status, usage
+                    )
+                except Exception:
+                    logger.exception(
+                        "MCAI cache trace failed task=%s request=%s", task, identity
+                    )
+                    cache_fields = {}
                 record(
                     "api_end",
                     status=status,
                     summary_status=summary_status,
                     elapsed_seconds=time.monotonic() - started,
                     **({"usage": usage} if usage is not None else {}),
+                    **cache_fields,
                 )
                 try:
                     record_request(
@@ -305,8 +419,10 @@ def traced_provider(provider, store, task, stage, *, count_for_task=True):
     ):
         client = provider.client.with_options(max_retries=0)
         if kind == "openai_responses":
-            create = client.responses.create
-            client.responses = SimpleNamespace(create=wrap(create, "responses"))
+            client.responses.create = wrap(client.responses.create, "responses")
+            client.responses.compact = wrap(
+                client.responses.compact, "responses/compact"
+            )
         else:
             create = client.chat.completions.create
             client.chat = SimpleNamespace(

@@ -343,7 +343,37 @@ def parser():
 
 
 def parse_query(argv):
-    arguments = vars(parser().parse_args(argv))
+    root = target = parser()
+    argv = list(argv)
+    index = 0
+    while index < len(argv):
+        branches = next(
+            (
+                action
+                for action in target._actions
+                if isinstance(action, argparse._SubParsersAction)
+            ),
+            None,
+        )
+        if branches is None or argv[index] not in branches.choices:
+            break
+        target = branches.choices[argv[index]]
+        index += 1
+
+    options = target._option_string_actions
+    while index + 1 < len(argv) and argv[index] != "--":
+        option, value = argv[index : index + 2]
+        action = options.get(option)
+        if (
+            action is not None
+            and action.nargs is None
+            and value.startswith("-")
+            and value.partition("=")[0] not in options
+        ):
+            argv[index : index + 2] = [f"{option}={value}"]
+        index += 1
+
+    arguments = vars(root.parse_args(argv))
     name = arguments.pop("_tool")
     arguments.pop("_command")
     mode = arguments.pop("_mode", None)

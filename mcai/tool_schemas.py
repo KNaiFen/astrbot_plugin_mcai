@@ -710,7 +710,8 @@ TOOLS = [
     ),
     (
         "mc_metrics",
-        "需Probe；全服和维度的墙钟、主线程CPU、阶段及GC指标，含JVM堆/池/缓冲。history查秒级历史、加载变更和慢拍，默认省略空闲维度。spark指标单列。",
+        "需Probe；全服和维度的墙钟、主线程CPU、阶段及GC指标，含JVM堆/池/缓冲。history查秒级历史、加载变更和慢拍，默认省略空闲维度。spark指标单列。"
+        "历史细选参数需 metrics_compact_history，以 mc_status 的 probe.capabilities 为准。",
         contract(
             {
                 "window_seconds": {"type": "integer", "enum": [10, 60, 300]},
@@ -722,7 +723,8 @@ TOOLS = [
     ),
     (
         "mc_chunks",
-        "需Probe；查已加载区块与直接ticket。forced_summary汇总直接强加载，scheduled_backlog按待执行计划刻数量排行。小范围用scope=chunks与区块边界。",
+        "需Probe；查已加载区块与直接ticket。forced_summary汇总直接强加载，scheduled_backlog按待执行计划刻数量排行。小范围用scope=chunks与区块边界。"
+        "可选视图需相应的 chunks_* 能力，以 mc_status 的 probe.capabilities 为准。",
         probe_range(
             {
                 "top": {"type": "integer", "minimum": 1, "maximum": 1000},
@@ -732,7 +734,8 @@ TOOLS = [
     ),
     (
         "mc_runtime",
-        "需Probe；查运行时组件和设置。section=mods可用query按ID或名称过滤，或用inventory_job_id比较本实例的磁盘清单。",
+        "需Probe；查运行时组件和设置。section=mods可用query按ID或名称过滤，或用inventory_job_id比较本实例的磁盘清单。"
+        "query 需 runtime_mod_query，以 mc_status 的 probe.capabilities 为准。",
         contract(
             {
                 "section": {
@@ -746,7 +749,8 @@ TOOLS = [
     ),
     (
         "mc_objects",
-        "需Probe；普查已加载对象。category=blocks限chunks/player且最多16区块，按block_id过滤；group_by=object查坐标、type计数。数量不代表耗时。",
+        "需Probe；普查已加载对象。category=blocks限chunks/player且最多16区块，按block_id过滤；group_by=object查坐标、type计数。数量不代表耗时。"
+        "方块普查需 loaded_blocks，以 mc_status 的 probe.capabilities 为准。",
         probe_range(
             {
                 "category": {
@@ -762,7 +766,8 @@ TOOLS = [
     ),
     (
         "mc_profile",
-        "需Probe；engine=probe实测对象和可用区块阶段的tick墙钟并标注窗口GC，group_by=object查瞬态实体细节。spark采集调用栈权重，mode=execution或allocation（依赖spark平台支持），不支持区块范围。每实例一次；取消spark只停止等待。",
+        "需Probe；engine=probe实测对象和可用区块阶段的tick墙钟并标注窗口GC，group_by=object查瞬态实体细节。spark采集调用栈权重，mode=execution或allocation（依赖spark平台支持），不支持区块范围。每实例一次；取消spark只停止等待。"
+        "区块阶段、慢拍和分配采样能力以 mc_status 的 probe.capabilities 为准。",
         {
             "type": "object",
             "oneOf": [
@@ -818,7 +823,8 @@ TOOLS = [
     ),
     (
         "mc_inspect",
-        "需Probe；按UUID查已加载实体状态和骑乘关系，或按坐标查方块状态及方块实体。UUID未找到不证明删除。nbt_path读取NBT，offset/limit分页。",
+        "需Probe；按UUID查已加载实体状态和骑乘关系，或按坐标查方块状态及方块实体。UUID未找到不证明删除。nbt_path读取NBT，offset/limit分页。"
+        "inspect 能力以 mc_status 的 probe.capabilities 为准。",
         variants(
             "target",
             {
@@ -857,14 +863,31 @@ TOOLS = [
     ),
     (
         "mc_history",
-        "读取按目录归档的已验收经验，返回text及可选next_call。绑定前可看索引，directory取索引或省略用当前目标；经验仅作线索，须核实现状。",
+        "读取已验收经验；list按最新在前列案例目录，search按相关性聚合为带case_id和行号的text，read按字符分页读取。优先list/search定位编号后用mc_knowledge读详情。directory省略用当前目标；经验仅作线索，须核实现状。",
         variants(
             "mode",
             {
                 "index": ({"offset": INTEGER}, ()),
                 "read": ({"directory": STRING, "offset": INTEGER}, ()),
+                "list": (
+                    {
+                        "directory": STRING,
+                        "offset": INTEGER,
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                        "status": {"enum": ["active", "all", "superseded"]},
+                        "category": STRING,
+                    },
+                    (),
+                ),
                 "search": (
-                    {"directory": STRING, "query": STRING, "offset": INTEGER},
+                    {
+                        "directory": STRING,
+                        "query": {"type": "string", "pattern": r"\S"},
+                        "offset": INTEGER,
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+                        "status": {"enum": ["active", "all", "superseded"]},
+                        "all_servers": {"type": "boolean"},
+                    },
                     ("query",),
                 ),
             },
@@ -872,8 +895,10 @@ TOOLS = [
     ),
     (
         "mc_knowledge",
-        "按经验索引中的编号读取当前实例的已验收案例，沿 next_call 续读。历史经验须核实当前现场。",
-        contract({"case_id": STRING, "offset": INTEGER}, ("case_id",)),
+        "按经验索引中的编号读取已验收案例（directory 省略用当前实例，跨服检索命中可传入对应 directory），沿 next_call 续读。历史经验须核实当前现场。",
+        contract(
+            {"case_id": STRING, "directory": STRING, "offset": INTEGER}, ("case_id",)
+        ),
     ),
     (
         "mc_web",
@@ -1444,7 +1469,7 @@ TOOLS = [
     ),
     (
         "mc_say",
-        "发送必要提问或试玩邀请，返回status=queued；实际送达由发件箱记录。试玩时引用已结算的test_operation_id，给出入口和测试目标。发出后转入等待并自动@管理员提示已暂停排查。进度用commentary，最终结论用final。",
+        "发送必要提问或试玩邀请，返回status=queued；实际送达由发件箱记录。试玩时引用已结算的test_operation_id，给出入口和测试目标。发出后转入等待并自动@管理员提示回复。进度用commentary，最终结论用final。",
         contract(
             {
                 "text": {"type": "string", "minLength": 1, "pattern": "\\S"},
@@ -1900,5 +1925,6 @@ BASE_TOOLS = frozenset(
     "mc_job_read mc_job_wait mc_job_cancel mc_artifact_read mc_artifact_find "
     "mc_operation_read mc_context_history mc_query mc_tools "
     "mc_players mc_metrics mc_chunks mc_objects mc_profile mc_inspect mc_runtime "
-    "mc_inventory mc_exec mc_console_send mc_console_read mc_console_line".split()
+    "mc_inventory mc_exec mc_console_send mc_console_read mc_console_line "
+    "mc_propose mc_verify mc_plan_finish".split()
 )

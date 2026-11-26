@@ -1,4 +1,16 @@
-# 0.20.10 发布说明
+# 0.21.0 发布说明
+
+0.21.0 继续使用 `mcai-9`。请按[升级步骤](operations.md#升级步骤)配套更新 A、B 与托管窗口；随 B 包提供的 Probe 0.5.0 构建与 0.20.8 相同，已安装同构建的服无需替换 Probe JAR。下载及校验见 [GitHub Release v0.21.0](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.21.0)。
+
+| 模块 | 主要更新与修复（`47af380..d5caa9c`） |
+|---|---|
+| 主备模型 API 自动故障切换 | 排障与独立审核各自新增可选备用 OpenAI 兼容提供商、备用思考强度与共享冷却驻留时长 `backup_cooldown_minutes`（默认 10 分钟）；连续失败 3 次或遇到认证／额度／模型不存在错误时静默切备并按冷却回探主 API，仅在主备同时失败时告警，`/mcaiask`、经验归档与群图片识别共享主模型备用配置；设置页新增「保存并测试备用模型」独立能力验证，不改动主模型自动配置开关 |
+| 远程上下文压缩与预算修复 | 新增 OpenAI Responses 远程上下文压缩（`enable_remote_compaction` / `remote_compaction_mode`，支持流式 `compaction_trigger` 与独立 `responses_compact`，不可用时自动回退本地五节摘要），纳入全量与单项能力测试；取消 75% 原地改写以完整保住长上下文缓存前缀，修正预算估算与 `web_search_mode`（`cached` / `live`）、`workspace_java_path` 配置支持及多处排障工具边界 |
+| Codex Harness 协议对齐与只读问答 | 统一 Responses 缓存键、`reasoning.encrypted_content`、流式容错、审核 JSON schema 降级及任务追踪回放；强化 `/mcaiask` 只读问答（含单实例经验自动参考、限流退避与进度续接）及 `mc_query`／只读工具输出概览与定向回读 |
+| 经验知识库 BM25 目录与过时替代 | 升级经验归档模板为顶部元信息与六节结构，新增本地 BM25 检索目录、分页预算与「替代案例」自动派生过时标记，设置页「经验知识库」同步展示分类与替代关系 |
+| 验证回显、默认核心工具与文档／测试整理 | 修复控制台验证命令回显匹配与空实体区块误判，默认直接开放高频核心工具并优化群内提示文案；将根 `README.md` 重构为面向最终用户的产品介绍与四步开箱指南，拆清部署文档、Harness 设计主旨与开发规范，并精简整合自动化测试套件与验证入口 |
+
+## 0.20.10 发布说明
 
 0.20.10 继续使用 `mcai-9`。本次改动仅涉及 A 端（AstrBot 插件），若 B 端、托管窗口与 Probe 0.5.0 已升级至 0.20.8，只需更新 A 端插件即可，无需重启 B 端、托管窗口或替换 Probe；从 0.20.7 或更旧版本升级仍请按[升级步骤](operations.md#升级步骤)配套更新。随 B 包提供的 Probe 0.5.0 构建与 0.20.8 相同。下载及校验见 [GitHub Release v0.20.10](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.20.10)。
 

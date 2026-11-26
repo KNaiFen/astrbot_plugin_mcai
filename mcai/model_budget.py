@@ -23,29 +23,31 @@ class DeveloperMessage(Message):
     role: Literal["developer"] = "developer"
 
 
+class CompactionMessage(DeveloperMessage):
+    compaction_items: list[dict]
+    compaction_entry: int
+    compaction_identity: dict[str, str]
+    compaction_tokens: int
+
+
 def tokens(messages):
     counter = EstimateTokenCounter()
+    exact = sum(item.get("compaction_tokens", 0) for item in messages)
     parsed = [
         (DeveloperMessage if item["role"] == "developer" else Message).model_validate(
             item
         )
         for item in messages
+        if "compaction_items" not in item
     ]
-    return counter.count_tokens(parsed) + counter.count_tokens(
-        [
-            Message(role="assistant", content=part["encrypted"])
-            for item in messages
-            if isinstance(item.get("content"), list)
-            for part in item["content"]
-            if part["type"] == "think" and part.get("encrypted")
-        ]
-    )
+    return exact + counter.count_tokens(parsed)
 
 
 def calibration_key(provider, purpose):
     config = provider.provider_config
     return digest(
         {
+            "estimator_version": 2,
             "provider": config.get("id"),
             "type": config.get("type"),
             "model": getattr(provider, "model_name", config.get("model")),
@@ -74,12 +76,15 @@ def estimated_input(store, provider, purpose, estimate):
     return math.ceil(estimate * baseline + max(0, max(overheads)) * 1.05)
 
 
-def record_usage(store, provider, purpose, estimate, response):
-    """Return whether the response can calibrate the local context estimate."""
+def context_input_usage(response):
+    """Return input usage for one local request, excluding hosted search rounds."""
     usage = response.usage
-    if usage is None or usage.input <= 0:
-        return False
-    raw = getattr(response, "raw_completion", None)
+    if usage is None:
+        return None
+    input_tokens = usage.input_tokens if hasattr(usage, "input_tokens") else usage.input
+    if input_tokens is None or input_tokens <= 0:
+        return None
+    raw = getattr(response, "raw_completion", response)
     output = (
         raw.get("output", []) if isinstance(raw, dict) else getattr(raw, "output", [])
     )
@@ -87,15 +92,25 @@ def record_usage(store, provider, purpose, estimate, response):
     if any(
         (item.get("type") if isinstance(item, dict) else getattr(item, "type", None))
         == "web_search_call"
-        for item in output
+        for item in output or []
     ):
+        return None
+    return input_tokens
+
+
+def record_usage(store, provider, purpose, estimate, response):
+    """Return whether the response can calibrate the local context estimate."""
+    input_tokens = context_input_usage(response)
+    if input_tokens is None:
         return False
     key = calibration_key(provider, purpose)
     previous = store.get("token_budget", key)
-    ratios = [*(previous or {}).get("ratios", []), usage.input / max(1, estimate)][-16:]
+    ratios = [*(previous or {}).get("ratios", []), input_tokens / max(1, estimate)][
+        -16:
+    ]
     overheads = [
         *(previous or {}).get("overheads", []),
-        max(0, usage.input - estimate * BASELINE_FACTORS[purpose]),
+        max(0, input_tokens - estimate * BASELINE_FACTORS[purpose]),
     ][-16:]
     store.save(
         "token_budget",
@@ -103,7 +118,7 @@ def record_usage(store, provider, purpose, estimate, response):
         {
             "purpose": purpose,
             "estimated_tokens": estimate,
-            "input_tokens": usage.input,
+            "input_tokens": input_tokens,
             "factor": max(
                 BASELINE_FACTORS[purpose],
                 max(ratios) * 1.05,

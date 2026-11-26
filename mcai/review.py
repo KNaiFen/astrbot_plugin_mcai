@@ -768,19 +768,31 @@ def review_material(
                     else:
                         unresolved.append(command["source"])
                 elif re.fullmatch(r"(?:python(?:\d+(?:\.\d+)*)?|py)(?:\.exe)?", name):
-                    for index, word in enumerate(words[1:], 1):
+                    options = iter(words[1:])
+                    for word in options:
                         if word is None:
                             unresolved.append(command["source"])
                             break
-                        if word in ("-c", "-m"):
-                            if (
-                                word == "-c"
-                                and index + 1 < len(words)
-                                and words[index + 1] is not None
-                            ):
+                        if word in ("-X", "-W", "-Q", "--check-hash-based-pycs"):
+                            if next(options, "") is None:
+                                unresolved.append(command["source"])
+                                break
+                            continue
+                        if word == "--":
+                            script = next(options, "-")
+                            if script is None:
+                                unresolved.append(command["source"])
+                            elif script != "-":
+                                reference = script
+                            break
+                        if word == "-c":
+                            source_arg = next(options, None)
+                            if source_arg is not None:
                                 pending.append(
-                                    (words[index + 1], ".py", None, top, context, step)
+                                    (source_arg, ".py", None, top, context, step)
                                 )
+                            break
+                        if word in ("-m", "-"):
                             break
                         if not word.startswith("-"):
                             reference = word

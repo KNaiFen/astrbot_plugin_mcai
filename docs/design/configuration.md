@@ -18,6 +18,8 @@
 
 A设置的保存、生效与任务启动共用任务调度锁。保存期间新建、续接及归档等待生效后再使用运行对象；已有worker运行时拒绝保存。并发保存顺序提交，只安装已提交快照对应的client和agent，框架报告快照未提交时明确报错。
 
+`workspace_java_path` 随 A 设置热重载，执行 `mc_workspace javap` 时解析和检查，允许指向同一 JDK 的 `java.exe` 或 `javap.exe`；留空按 `JAVA_HOME`、PATH 中的 `javap`、PATH 中的 `java` 顺序查找。`web_search_mode` 随 A 设置生效并参与能力结果的新旧判断；能力测试也会在接口拒绝该参数时改用裸搜索工具复测。
+
 ## AstrBot 视图与模型测试
 
 Web 管理视图的 GET 查询参数走桥接第二个参数；所有浏览器修改走 POST，涉及 B 时由 A 转发。运行数据和 Probe 实时采样按实例按需加载。A 代理环境只提供脱敏概况；实例热重载保留当前操作快照。告警状态及历史筛选见[故障留证](storage-and-recovery.md#故障留证)。单项模型重测只更新该项，`alpha_open` 和 `alpha_find` 先建立搜索会话。
@@ -27,5 +29,7 @@ Web 管理视图的 GET 查询参数走桥接第二个参数；所有浏览器�
 能力测试使用无生产工具的独立对话；测试结果写本地，按 provider/model/config/settings 哈希识别过期。短对话、流式、回显调用续接、原生搜索、alpha/search、commentary执行进度汇报和审核 JSON 分别记录。支持／未观察到／临时失败分开；只根据已验证事实自动配置，不因网络故障清空有效设置，不自动开启进度转发。
 
 图片能力项发送内置色块并核对实际颜色。只有接口明确拒绝图片输入时标为不支持，未识别和临时失败不作为禁用证据。单独的群截图识别请求沿用原生图片组件和提供商适配器，并计入该任务。
+
+远程压缩默认关闭，由 `enable_remote_compaction` 和 `remote_compaction_mode` 控制。全量能力测试先通过流式 `compaction_trigger` 生成密文并做无状态回放；明确不支持（包括上游特性拦截的 403）才验证独立 `/responses/compact`。通过回放才自动启用对应模式，全部明确不支持或使用 Chat 提供商时关闭；未观察到结果或临时失败保留原配置。单项重测不改变配置。
 
 原生搜索以 [OpenAI 文档](https://developers.openai.com/api/docs/guides/tools-web-search) 为准。独立搜索固定参考 [Codex 553c764 的 SearchRequest](https://github.com/openai/codex/blob/553c764e8b99fa519e9c6eb9b657875ef0f5e1c1/codex-rs/codex-api/src/search.rs)，调用 provider-relative `alpha/search`，只实现排障使用的 search/open/find。保留任务搜索会话、可读 output 和结构化来源；不把 encrypted_output 放进主模型上下文。

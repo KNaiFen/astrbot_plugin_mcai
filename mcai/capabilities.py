@@ -7,9 +7,15 @@ import time
 import uuid
 
 from .agent_runtime import (
+    compact_responses,
+    compaction_rejected,
+    compaction_unsupported,
     effort_provider,
+    hosted_tools,
+    replay_compaction,
     request_provider,
     retryable,
+    search_compatible_call,
 )
 from .review import digest
 from .search import alpha_search
@@ -59,35 +65,35 @@ CAPABILITY_ITEMS = frozenset(
         "alpha_open",
         "alpha_find",
         "progress",
+        "remote_compaction",
+        "remote_compaction_compact",
+        "review_json",
+    }
+)
+BACKUP_CAPABILITY_ITEMS = frozenset(
+    {
+        "conversation",
+        "image",
+        "stream",
+        "function_call",
+        "reasoning_effort",
         "review_json",
     }
 )
 
 
-async def test_capabilities(main, review, settings, progress, *, store=None, only=None):
-    from astrbot.core.agent.tool import FunctionTool, ToolSet
+def _prepare_selected_provider(provider, effort):
+    selected = request_provider(effort_provider(provider, effort))
+    budget_field = (
+        "max_output_tokens"
+        if provider.provider_config.get("type") == "openai_responses"
+        else "max_completion_tokens"
+    )
+    selected.provider_config.setdefault("custom_extra_body", {})[budget_field] = 512
+    return selected
 
-    main = request_provider(main)
-    if main.provider_config.get("type") in (
-        "openai_responses",
-        "openai_chat_completion",
-    ):
-        main.client = main.client.with_options(max_retries=0)
-    if store is not None:
-        main = traced_provider(main, store, None, "能力测试")
-        if review is not None:
-            review = traced_provider(review, store, None, "审核能力测试")
 
-    result = {
-        "created": time.time(),
-        "identity": provider_identity(main, settings),
-        "review_identity": provider_identity(review, {})
-        if review is not None
-        else None,
-        "items": {},
-        "settings": settings,
-    }
-
+def _make_check(result, progress, providers, *, only=None):
     async def check(name, call):
         if (
             only
@@ -105,7 +111,9 @@ async def test_capabilities(main, review, settings, progress, *, store=None, onl
         except Exception as exc:
             status = getattr(exc, "status_code", None)
             unsupported = (
-                image_unsupported(exc)
+                compaction_unsupported(exc) or compaction_rejected(exc)
+                if name.startswith("remote_compaction")
+                else image_unsupported(exc)
                 if name == "image"
                 else status in (400, 404, 405, 422)
                 and not retryable(exc)
@@ -125,7 +133,7 @@ async def test_capabilities(main, review, settings, progress, *, store=None, onl
                 )
             )
             message = str(exc)
-            for provider in (main, review):
+            for provider in providers:
                 if provider is not None:
                     keys = provider.provider_config.get("key", [])
                     for key in [keys] if isinstance(keys, str) else keys:
@@ -139,15 +147,11 @@ async def test_capabilities(main, review, settings, progress, *, store=None, onl
         finally:
             progress(result)
 
-    selected = request_provider(
-        effort_provider(main, settings.get("reasoning_effort", ""))
-    )
-    budget_field = (
-        "max_output_tokens"
-        if main.provider_config.get("type") == "openai_responses"
-        else "max_completion_tokens"
-    )
-    selected.provider_config.setdefault("custom_extra_body", {})[budget_field] = 512
+    return check
+
+
+async def _run_basic_probes(selected, check, result, *, effort="", only=None):
+    from astrbot.core.agent.tool import FunctionTool, ToolSet
 
     async def conversation():
         response = await selected.text_chat(
@@ -255,18 +259,71 @@ async def test_capabilities(main, review, settings, progress, *, store=None, onl
         )
 
     await check("function_call", function_call)
-    if not only and settings.get("reasoning_effort"):
+    if not only and effort:
         result["items"]["reasoning_effort"] = result["items"]["conversation"].copy()
+
+
+async def _run_review_probe(review, check, *, effort=""):
+    async def review_json():
+        if review is None:
+            raise ValueError("请先选择审核模型提供商")
+        if review.provider_config.get("type") not in (
+            "openai_responses",
+            "openai_chat_completion",
+        ):
+            raise ValueError("审核模型需要 OpenAI 兼容 Chat／Responses")
+        provider = _prepare_selected_provider(review, effort)
+        response = await provider.text_chat(
+            prompt='审核无副作用的测试回显，严格返回 {"decision":"allow"}。',
+            contexts=[],
+            func_tool=None,
+            request_max_retries=1,
+        )
+        return json.loads(response.completion_text) == {"decision": "allow"}
+
+    await check("review_json", review_json)
+
+
+async def test_capabilities(main, review, settings, progress, *, store=None, only=None):
+    main = request_provider(main)
+    if main.provider_config.get("type") in (
+        "openai_responses",
+        "openai_chat_completion",
+    ):
+        main.client = main.client.with_options(max_retries=0)
+    if store is not None:
+        main = traced_provider(main, store, None, "能力测试")
+        if review is not None:
+            review = traced_provider(review, store, None, "审核能力测试")
+
+    result = {
+        "created": time.time(),
+        "identity": provider_identity(main, settings),
+        "review_identity": provider_identity(review, {})
+        if review is not None
+        else None,
+        "items": {},
+        "settings": settings,
+    }
+    check = _make_check(result, progress, (main, review), only=only)
+    effort = settings.get("reasoning_effort", "")
+    selected = _prepare_selected_provider(main, effort)
+    await _run_basic_probes(selected, check, result, effort=effort, only=only)
 
     if main.provider_config.get("type") == "openai_responses":
 
         async def native_search(kind):
-            response = await main.client.responses.create(
-                model=main.get_model(),
-                input="搜索 Minecraft 官方网站，返回官网名称和一个来源链接。",
-                tools=[{"type": kind}],
-                tool_choice="required",
-                max_output_tokens=512,
+            response = await search_compatible_call(
+                main.client.responses.create,
+                {
+                    "model": main.get_model(),
+                    "input": "搜索 Minecraft 官方网站，返回官网名称和一个来源链接。",
+                    "tools": hosted_tools(
+                        [], kind, settings.get("web_search_mode", "cached")
+                    ),
+                    "tool_choice": "required",
+                    "max_output_tokens": 512,
+                },
             )
             return any(item.type == "web_search_call" for item in response.output)
 
@@ -297,6 +354,47 @@ async def test_capabilities(main, review, settings, progress, *, store=None, onl
             )
 
         await check("progress", progress_update)
+
+        async def remote_compaction(mode):
+            secret = uuid.uuid4().hex[:12]
+            instructions = (
+                "这是上下文回放测试。记住此前助手给出的测试暗号，追问时只回复该暗号。"
+            )
+            input = [
+                {"role": "user", "content": "请提供并记住一个本次测试专用的暗号。"},
+                {"role": "assistant", "content": f"本次测试暗号是 {secret}。"},
+                {"role": "user", "content": "收到，请继续记住。"},
+                {"role": "assistant", "content": "已记住。"},
+            ]
+            response = await compact_responses(
+                main.client,
+                mode,
+                model=main.get_model(),
+                instructions=instructions,
+                input=input,
+            )
+            items = replay_compaction(response)
+            if not items:
+                return False
+            answer = await main.client.responses.create(
+                model=main.get_model(),
+                instructions=instructions,
+                input=[*items, {"role": "user", "content": "此前的测试暗号是什么？"}],
+                store=False,
+                max_output_tokens=128,
+            )
+            return answer.status == "completed" and secret in answer.output_text
+
+        await check(
+            "remote_compaction", lambda: remote_compaction("compaction_trigger")
+        )
+        if only == "remote_compaction_compact" or (
+            not only and result["items"]["remote_compaction"]["status"] == "unsupported"
+        ):
+            await check(
+                "remote_compaction_compact",
+                lambda: remote_compaction("responses_compact"),
+            )
     else:
         result["items"]["web_search"] = {
             "status": "unsupported",
@@ -305,6 +403,12 @@ async def test_capabilities(main, review, settings, progress, *, store=None, onl
         result["items"]["progress"] = {
             "status": "unsupported",
             "error": "commentary 执行进度汇报需要 Responses 提供商",
+        }
+        result["items"][
+            only if only == "remote_compaction_compact" else "remote_compaction"
+        ] = {
+            "status": "unsupported",
+            "error": "远程压缩需要 Responses 提供商",
         }
 
     session_id = uuid.uuid4().hex
@@ -350,35 +454,76 @@ async def test_capabilities(main, review, settings, progress, *, store=None, onl
             "error": "前置 alpha/search 未取得搜索结果",
         }
 
-    async def review_json():
-        if review is None:
-            raise ValueError("请先选择审核模型提供商")
-        if review.provider_config.get("type") not in (
-            "openai_responses",
-            "openai_chat_completion",
-        ):
-            raise ValueError("审核模型需要 OpenAI 兼容 Chat／Responses")
-        provider = request_provider(
-            effort_provider(review, settings.get("review_reasoning_effort", ""))
-        )
-        provider.provider_config.setdefault("custom_extra_body", {})[
-            "max_output_tokens"
-            if review.provider_config.get("type") == "openai_responses"
-            else "max_completion_tokens"
-        ] = 512
-        response = await provider.text_chat(
-            prompt='审核无副作用的测试回显，严格返回 {"decision":"allow"}。',
-            contexts=[],
-            func_tool=None,
-            request_max_retries=1,
-        )
-        return json.loads(response.completion_text) == {"decision": "allow"}
-
-    await check("review_json", review_json)
+    await _run_review_probe(
+        review, check, effort=settings.get("review_reasoning_effort", "")
+    )
     if only:
         result["items"] = {
             only: result["items"].get(
                 only, {"status": "unsupported", "error": "当前提供商不支持此测试"}
+            )
+        }
+    result["complete"] = True
+    progress(result)
+    return result
+
+
+async def test_backup_capabilities(
+    backup_main, backup_review, settings, progress, *, store=None, only=None
+):
+    if backup_main is None and backup_review is None:
+        raise ValueError("请先选择备用排障模型或备用审核模型")
+    main = None
+    if backup_main is not None:
+        main = request_provider(backup_main)
+        if main.provider_config.get("type") in (
+            "openai_responses",
+            "openai_chat_completion",
+        ) and hasattr(main, "client"):
+            main.client = main.client.with_options(max_retries=0)
+        if store is not None:
+            main = traced_provider(main, store, None, "备用能力测试")
+    review = None
+    if backup_review is not None:
+        review = request_provider(backup_review)
+        if review.provider_config.get("type") in (
+            "openai_responses",
+            "openai_chat_completion",
+        ) and hasattr(review, "client"):
+            review.client = review.client.with_options(max_retries=0)
+        if store is not None:
+            review = traced_provider(review, store, None, "备用审核能力测试")
+
+    review_settings = {
+        "backup_review_reasoning_effort": settings.get(
+            "backup_review_reasoning_effort", ""
+        )
+    }
+    result = {
+        "created": time.time(),
+        "target": "backup",
+        "identity": provider_identity(main, settings) if main is not None else None,
+        "review_identity": provider_identity(review, review_settings)
+        if review is not None
+        else None,
+        "items": {},
+        "settings": settings,
+    }
+    check = _make_check(result, progress, (main, review), only=only)
+    if main is not None:
+        effort = settings.get("backup_reasoning_effort", "")
+        selected = _prepare_selected_provider(main, effort)
+        await _run_basic_probes(selected, check, result, effort=effort, only=only)
+    if review is not None:
+        await _run_review_probe(
+            review,
+            check,
+            effort=settings.get("backup_review_reasoning_effort", ""),
+        )
+    if only:
+        result["items"] = {
+            only: result["items"].get(
+                only, {"status": "unsupported", "error": "当前备用模型未配置此测试"}
             )
         }
     result["complete"] = True
@@ -400,6 +545,17 @@ def detected_settings(result):
         )
     elif native == "unsupported" and preview in (None, "unsupported"):
         changes["enable_web_search"] = False
+    trigger = items.get("remote_compaction", {}).get("status")
+    compact = items.get("remote_compaction_compact", {}).get("status")
+    if trigger == "passed" or compact == "passed":
+        changes.update(
+            enable_remote_compaction=True,
+            remote_compaction_mode="compaction_trigger"
+            if trigger == "passed"
+            else "responses_compact",
+        )
+    elif trigger == "unsupported" and compact in (None, "unsupported"):
+        changes["enable_remote_compaction"] = False
     if items.get("progress", {}).get("status") == "unsupported":
         changes["forward_progress"] = False
     status = items.get("alpha_search", {}).get("status")

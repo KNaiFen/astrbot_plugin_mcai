@@ -277,8 +277,11 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
         const tokens = row.usage.input_tokens + row.usage.output_tokens;
         const [, input, output, cached] = usageCells(row.usage);
         const usage = `模型 ${row.usage.requests.toLocaleString()} 次（审核 ${row.usage.review_requests.toLocaleString()} 次） · 输入 ${input} / 输出 ${output} / 缓存 ${cached} tokens${row.token_limit ? ` · 输入与输出共 ${tokens.toLocaleString()} / ${row.token_limit.toLocaleString()}（${Math.round(tokens * 100 / row.token_limit)}%）` : ''}${row.usage.cost.length ? ` · 估算费用 ${row.usage.cost.join('、')}` : ''}`;
-        const card = item(row.name, `任务 ${row.id} · 群 ${row.group} · 实例 ${row.instance || '待识别'}\n${usage}${row.pause_reason ? `\n暂停原因：${row.pause_reason}` : ''}${row.pause_after_operation ? '\n修复结算后暂停' : ''}`, row.state);
-        if (row.model_retry) card.append(node('p', `最近模型重试：${row.model_retry.error || row.model_retry.category || format(row.model_retry)}`));
+        const card = item(row.name, `任务 ${row.id} · 群 ${row.group} · 实例 ${row.instance || '待识别'}\n${usage}${row.active_provider_slot === 'backup' && row.active_provider_id ? `\n当前模型通道：备用 API（${row.active_provider_id}）` : ''}${row.pause_reason ? `\n暂停原因：${row.pause_reason}` : ''}${row.pause_after_operation ? '\n修复结算后暂停' : ''}`, row.state);
+        if (row.model_retry) {
+          const slotLabel = row.model_retry.slot === 'backup' ? '（备用 API）' : row.model_retry.slot === 'primary' && row.model_retry.slot_errors?.backup ? '（主备轮流重试）' : '';
+          card.append(node('p', `最近模型重试${slotLabel}：${row.model_retry.error || row.model_retry.category || format(row.model_retry)}`));
+        }
         if (row.archive_error) card.append(node('p', `归档错误：${row.archive_error}`, 'modal-error'));
         if (row.continuation) card.append(node('p', `多轮授权 ${row.continuation_status}${row.continuation.planned_stages?.length ? `\n后续规划：${row.continuation.planned_stages.join('；')}` : ''}\n范围：${row.continuation.scope}\n完成条件：${row.continuation.completion}`));
         if (row.cancel_pending) card.append(node('p', '正在结算取消；实例仍被占用。'));
@@ -429,7 +432,7 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
   const fileSelect = $('#knowledge-file');
   const normalize = text => text.replace(/\r\n?/g, '\n');
   const dirty = (editor, version) => !!version && editor.value !== normalize(version.text);
-  let documentVersion, indexVersion, loadNumber = 0;
+  let documentVersion, indexVersion, loadNumber = 0, casePage = 0;
   function saveFromModal(label, callback) {
     dialogActions.prepend(run(label, async () => { await callback(); dialog.close(); }, 'primary'));
   }
@@ -486,10 +489,21 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
     const filter = $('#knowledge-filter').value.trim().toLowerCase();
     const area = $('#knowledge-cases');
     area.replaceChildren();
-    const cases = documentVersion.cases.filter(row => `${row.title} ${row.id} ${row.body}`.toLowerCase().includes(filter));
+    const cases = [...documentVersion.cases].reverse().filter(row => `${row.title} ${row.id} ${row.category} ${row.keywords.join(' ')} ${row.body}`.toLowerCase().includes(filter));
+    const pages = Math.max(1, Math.ceil(cases.length / 20));
+    casePage = Math.min(casePage, pages - 1);
+    const paging = node('div', null, 'data-actions');
+    const previous = button('上一页', () => { casePage--; renderCases(); });
+    const next = button('下一页', () => { casePage++; renderCases(); });
+    previous.disabled = casePage === 0;
+    next.disabled = casePage + 1 >= pages;
+    paging.append(node('span', `共 ${cases.length} 条 / 全部 ${documentVersion.cases.length} 条 · 第 ${casePage + 1}/${pages} 页`), previous, next);
+    area.append(paging);
     if (!cases.length) area.append(node('p', filter ? '没有匹配的经验。' : '暂无经验，可新增人工经验。', 'hint'));
-    for (const row of cases) {
+    for (const row of cases.slice(casePage * 20, (casePage + 1) * 20)) {
       const card = item(row.title, [row.date, row.id].filter(Boolean).join(' · '));
+      if (row.category) card.append(node('span', row.category, 'badge'));
+      if (row.status === 'superseded') card.append(node('span', `已过时${row.superseded_by.length ? `（被 ${row.superseded_by.join('、')} 替代）` : ''}`, 'badge'));
       const body = node('div', null, 'knowledge-body');
       for (const [i, block] of row.body.split(/^\s*```[^\n]*$/m).entries()) {
         if (!block.trim()) continue;
@@ -527,6 +541,7 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
     if (number !== loadNumber) return;
     fileSelect.value = name;
     documentVersion = version;
+    casePage = 0;
     $('#knowledge-editor').hidden = !version;
     $('#knowledge-revision').textContent = version ? `${version.directory || '未关联'} · ${name}` : '暂无服务端文档，可从目录关联管理新建。';
     if (version) {
@@ -564,7 +579,7 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
   };
   listen('#refresh-knowledge', () => discardDocument(() => refreshKnowledge(undefined, true)));
   listen('#new-knowledge-case', () => caseEditor());
-  $('#knowledge-filter').oninput = renderCases;
+  $('#knowledge-filter').oninput = () => { casePage = 0; renderCases(); };
   listen('#toggle-knowledge-source', () => $('#knowledge-source').hidden
     ? showSource(true) : discardDocument(() => openDocument(documentVersion.name)));
   listen('#save-knowledge', async () => {

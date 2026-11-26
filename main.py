@@ -242,9 +242,22 @@ class MCAI(Star):
                 summary_rules_path=summary_rules_path,
                 review_provider_id=config.get("review_provider_id", ""),
                 review_reasoning_effort=config.get("review_reasoning_effort", ""),
+                backup_provider_id=config.get("backup_provider_id", ""),
+                backup_reasoning_effort=config.get("backup_reasoning_effort", ""),
+                backup_review_provider_id=config.get("backup_review_provider_id", ""),
+                backup_review_reasoning_effort=config.get(
+                    "backup_review_reasoning_effort", ""
+                ),
+                backup_cooldown_minutes=config.get("backup_cooldown_minutes", 10),
                 forward_progress=config.get("forward_progress", False),
                 enable_web_search=config.get("enable_web_search", True),
                 web_search_tool_type=config.get("web_search_tool_type", "web_search"),
+                web_search_mode=config.get("web_search_mode", "cached"),
+                workspace_java_path=config.get("workspace_java_path", ""),
+                enable_remote_compaction=config.get("enable_remote_compaction", False),
+                remote_compaction_mode=config.get(
+                    "remote_compaction_mode", "compaction_trigger"
+                ),
                 reasoning_effort=config.get("reasoning_effort", ""),
                 enable_alpha_search=config.get("enable_alpha_search", False),
             ),
@@ -720,6 +733,7 @@ class MCAI(Star):
                 event.unified_msg_origin,
                 self.config.get("provider_id", ""),
                 path,
+                failover=getattr(self.tasks.agent, "main_failover", None),
             )
 
         return await receive_attachments(
@@ -1245,6 +1259,12 @@ class MCAI(Star):
                 if usage["cost"]:
                     usage_line += (
                         " 已配置单价的估算费用：" + "、".join(usage["cost"]) + "。"
+                    )
+                if job.get("active_provider_slot") == "backup" and job.get(
+                    "active_provider_id"
+                ):
+                    usage_line += (
+                        f"\n当前模型通道：备用 API（{job['active_provider_id']}）。"
                     )
                 yield reply(
                     f"「{name}」：{state.get(job['state'], job['state'])}"

@@ -69,6 +69,15 @@
               <label>排障思考强度<input name="reasoning_effort" list="efforts" placeholder="留空继承"></label>
               <label>审核思考强度<input name="review_reasoning_effort" list="efforts" placeholder="留空继承"></label>
             </div>
+            <h3 class="group-title">备用模型（故障自动切换）</h3>
+            <div class="setting-group">
+              <label>备用排障模型<select name="backup_provider_id"></select></label>
+              <label>备用审核模型<select name="backup_review_provider_id"></select></label>
+              <label>备用排障思考强度<input name="backup_reasoning_effort" list="efforts" placeholder="留空继承"></label>
+              <label>备用审核思考强度<input name="backup_review_reasoning_effort" list="efforts" placeholder="留空继承"></label>
+              <label>切备冷却驻留（分钟，0 每次先试主）<input type="number" name="backup_cooldown_minutes" min="0" step="1" value="10"></label>
+            </div>
+            <p class="hint">主 API 连续失败 3 次（或认证／额度错误）时自动切到备用 API 且不打扰群内；主备均失败时才发群提醒并主备轮流重试。</p>
             <datalist id="efforts"><option value="none"><option value="minimal"><option value="low"><option value="medium"><option value="high"><option value="xhigh"></datalist>
             <h3 class="group-title">搜索与进度汇报</h3>
             <div class="setting-group">
@@ -76,6 +85,9 @@
               <label class="toggle"><input type="checkbox" name="enable_alpha_search">alpha/search 独立搜索</label>
               <label class="toggle"><input type="checkbox" name="forward_progress">转发执行进度汇报</label>
               <label>托管搜索格式<select name="web_search_tool_type"><option>web_search</option><option>web_search_preview</option></select></label>
+              <label>托管搜索模式<select name="web_search_mode"><option value="cached">缓存（默认）</option><option value="live">实时联网</option></select><small>仅适用于 web_search 格式。</small></label>
+              <label class="toggle"><input type="checkbox" name="enable_remote_compaction">Responses 远程上下文压缩</label>
+              <label>远程压缩模式<select name="remote_compaction_mode"><option value="compaction_trigger">流式触发</option><option value="responses_compact">独立接口</option></select></label>
             </div>
             <details class="instance-advanced">
               <summary>A 端高级设置</summary>
@@ -85,6 +97,7 @@
                   <label>每轮模型步数<input type="number" name="max_steps" min="1" max="200"></label>
                   <label>A 端 Agent 工作区<input name="workspace_dir" placeholder="留空使用插件数据目录/workspaces"></label>
                   <label>A 端 PowerShell 7.3+ 路径<input name="workspace_powershell_path" placeholder="留空自动查找 pwsh.exe"></label>
+                  <label>A 端 javap 的 JDK 路径<input name="workspace_java_path" placeholder="java.exe 或 javap.exe，留空自动查找"></label>
                 </div>
                 <h4 class="group-title">外部凭据与网络检测</h4>
                 <div class="setting-group">
@@ -102,11 +115,13 @@
               <div class="actions">
                 <button type="submit">保存 A 设置</button>
                 <button type="button" id="test-model" class="secondary">保存并测试、自动配置</button>
+                <button type="button" id="test-backup-model" class="secondary">保存并测试备用模型</button>
                 <button type="button" id="cancel-test" class="secondary">取消测试</button>
               </div>
-              <p class="hint">测试会发送少量模型与搜索请求，不执行 MC 操作或发群消息。执行进度汇报需 Responses commentary，默认关闭；未观察到汇报不等于不支持。</p>
+              <p class="hint">测试会发送少量模型与搜索请求，不执行 MC 操作或发群消息。备用模型测试不改动主模型开关。执行进度汇报需 Responses commentary，默认关闭；未观察到汇报不等于不支持。</p>
             </div>
             <div id="capabilities" aria-live="polite"></div>
+            <div id="backup-capabilities" aria-live="polite"></div>
           </div>
           <div class="panel" aria-labelledby="model-usage-title">
             <h3 id="model-usage-title">模型用量与费用保护</h3>
@@ -266,7 +281,7 @@
           <div id="knowledge-editor" hidden>
             <div class="actions"><button id="toggle-knowledge-source" type="button" class="secondary">切换 Markdown 源码</button></div>
             <div id="knowledge-structured">
-              <div class="toolbar"><input id="knowledge-filter" type="search" aria-label="筛选经验" placeholder="筛选标题、编号或正文"><button id="new-knowledge-case" type="button">新增人工经验</button></div>
+              <div class="toolbar"><input id="knowledge-filter" type="search" aria-label="筛选经验" placeholder="筛选标题、编号、类型、关键词或正文"><button id="new-knowledge-case" type="button">新增人工经验</button></div>
               <div id="knowledge-cases" class="data-list"></div>
             </div>
             <div id="knowledge-source" hidden>

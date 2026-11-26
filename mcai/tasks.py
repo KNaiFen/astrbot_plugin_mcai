@@ -2,6 +2,7 @@ import asyncio
 import copy
 import difflib
 import hashlib
+import inspect
 import json
 import logging
 import re
@@ -498,8 +499,13 @@ class Tasks:
         job["state"] = "applying" if job.get("operation") else "running"
         retry = job.get("model_retry", {})
         if retry.pop("auto_paused", False):
-            retry.pop("first_failed_at")
-            retry.pop("next_retry_at")
+            retry.pop("first_failed_at", None)
+            retry.pop("next_retry_at", None)
+            if "slot" in retry:
+                retry["slot"] = "primary"
+                retry["probing"] = False
+                retry["slot_failures"] = 0
+                retry["slot_exhausted"] = []
         else:
             job.pop("model_retry", None)
             job["pending"].append(
@@ -1224,27 +1230,79 @@ class Tasks:
             async with self.create_lock:
                 pass  # Wait for an in-flight settings save before using its runtime.
             if job.get("archive_state") != "ready":
-                for attempt in range(getattr(self.agent, "attempts", 3)):
-                    job["archive_attempt"] = attempt + 1
-                    self.save(job)
-                    try:
-                        text = await self.agent.summarize(self, job)
-                        if not text.strip():
-                            raise ValueError("验收总结返回空内容")
-                        job.update(archive_state="ready", archive_text=text)
+                attempts = getattr(self.agent, "attempts", 3)
+                if hasattr(self.agent, "main_failover"):
+
+                    def on_attempt(_slot, total_attempt, _active):
+                        job["archive_attempt"] = total_attempt
                         self.save(job)
-                        break
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
+
+                    def on_failure(_slot, _total_attempt, exc, _active):
                         job["archive_error"] = f"{type(exc).__name__}: {exc}"
                         self.log(job, "archive_failed", error=job["archive_error"])
                         self.save(job)
-                        if not retryable(exc) or attempt + 1 == getattr(
-                            self.agent, "attempts", 3
-                        ):
-                            return
-                        await asyncio.sleep(RETRY_DELAYS[min(attempt, 1)])
+
+                    def on_switch(from_slot, to_slot, exc):
+                        self.log(
+                            job,
+                            "archive_failover_switched",
+                            from_slot=from_slot,
+                            to_slot=to_slot,
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
+
+                    accepts_resolved = (
+                        "resolved" in inspect.signature(self.agent.summarize).parameters
+                    )
+
+                    async def run_summarize(active):
+                        text = (
+                            await self.agent.summarize(self, job, resolved=active)
+                            if accepts_resolved
+                            else await self.agent.summarize(self, job)
+                        )
+                        if not text.strip():
+                            raise ValueError("验收总结返回空内容")
+                        return text
+
+                    try:
+                        text, _ = await self.agent.main_failover.call_bounded(
+                            run_summarize,
+                            origin=job["origin"],
+                            preferred_primary_id=job.get("provider_id"),
+                            attempts_per_slot=attempts,
+                            delay_fn=lambda _exc, retry: RETRY_DELAYS[min(retry, 1)],
+                            on_attempt=on_attempt,
+                            on_failure=on_failure,
+                            on_switch=on_switch,
+                            require_valid=False,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        return
+                    job.update(archive_state="ready", archive_text=text)
+                    self.save(job)
+                else:
+                    for attempt in range(attempts):
+                        job["archive_attempt"] = attempt + 1
+                        self.save(job)
+                        try:
+                            text = await self.agent.summarize(self, job)
+                            if not text.strip():
+                                raise ValueError("验收总结返回空内容")
+                            job.update(archive_state="ready", archive_text=text)
+                            self.save(job)
+                            break
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            job["archive_error"] = f"{type(exc).__name__}: {exc}"
+                            self.log(job, "archive_failed", error=job["archive_error"])
+                            self.save(job)
+                            if not retryable(exc) or attempt + 1 == attempts:
+                                return
+                            await asyncio.sleep(RETRY_DELAYS[min(attempt, 1)])
             await self.knowledge.append(job, job["archive_text"])
             job["archive_state"] = "completed"
             job.pop("archive_error", None)
@@ -1471,13 +1529,21 @@ class Tasks:
 
     def finish_plan(self, job, plan_id, summary, *, release_waived_feedback_id=None):
         approved = job.get("approved_plan")
-        if (
-            approved
-            and approved["snapshot"]["plan"]["id"] == plan_id
-            and approved["status"] == "completed"
-            and approved["summary"] == summary
-        ):
-            return {"status": "completed", "plan_id": plan_id, "summary": summary}
+        if not self.active_plan(job):
+            detail = ""
+            if approved and approved["snapshot"]["plan"]["id"] == plan_id:
+                if approved["status"] == "completed" and approved["summary"] == summary:
+                    return {
+                        "status": "completed",
+                        "plan_id": plan_id,
+                        "summary": summary,
+                    }
+                detail = f"（{approved['status']}：{approved['summary']}）"
+            raise ValueError(
+                f"原多轮方案已结束，当前没有活跃多轮方案{detail}。"
+                "无需再调用 mc_plan_finish；可直接继续只读验证和复核，"
+                "仅在需要新修改时才重新 mc_propose。"
+            )
         self.require_plan(job, plan_id)
         if job.get("operation") or job["state"] == "applying" or job.get("background"):
             raise ValueError("当前操作或后台结果尚未结算，请先核对结果")
@@ -1869,6 +1935,8 @@ class Tasks:
                                     "ended": time.time(),
                                 }
                             )
+                            if not scheduled and not result.get("cancelled"):
+                                job.pop("failed_operation", None)
                             job["pending"].append(
                                 {
                                     "sender": "system",
@@ -1932,9 +2000,15 @@ class Tasks:
                                 task_id=job["id"],
                                 stopped=lambda: job["stop_requested"],
                             )
+                            env_args = (
+                                {"environment": "test"}
+                                if applied.get("environment") == "test"
+                                else {}
+                            )
                             status = await self.client.call(
                                 job["instance"],
                                 "status",
+                                env_args,
                                 task_id=job["id"],
                                 stopped=lambda: job["stop_requested"],
                             )
@@ -1945,13 +2019,16 @@ class Tasks:
                                     "failure": record,
                                 }
                             )
-                            console = await self.client.call(
-                                job["instance"],
-                                "console_query",
-                                {"limit": 20},
-                                task_id=job["id"],
-                                stopped=lambda: job["stop_requested"],
-                            )
+                            try:
+                                console = await self.client.call(
+                                    job["instance"],
+                                    "console_query",
+                                    {**env_args, "limit": 20, "tail": True},
+                                    task_id=job["id"],
+                                    stopped=lambda: job["stop_requested"],
+                                )
+                            except (RemoteError, ValueError) as exc:
+                                console = {"error": str(exc)}
                             job["pending"].append(
                                 {
                                     "sender": "system",

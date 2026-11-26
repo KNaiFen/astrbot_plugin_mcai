@@ -102,6 +102,7 @@ EXAMPLES = {
     },
 }
 GUIDANCE = {
+    "mc_history": "list默认status=active、limit=20（1~50），按最新在前返回目录；category按类型精确过滤。search支持中英文多词，默认limit=8（1~20）、status=active；all_servers=true跨服查已关联文档，不能同时指定directory，须核对环境差异。list/search的offset是案例下标，沿next_call续页；read/index的offset是字符偏移。优先list/search定位case_id再用mc_knowledge读详情（跨服命中可同时传directory）。只读问答仅允许所选实例的list/search/read，禁止index、all_servers=true或指定其他directory。",
     "mc_propose": "首次提交summary与具体steps；能一次性确定全部参数与路径的常规操作直接放进同一批steps，不要无故拆成多轮。summary发给群里管理员看，用一两句人话写清原因、目标与关键风险或备份状态即可（启动参数、后续规划和只读核验证据不要堆进summary）。确需按现场结果分批决策时，同时声明continuation的scope、completion与planned_stages（用管理员能直接看懂的日常中文简洁分点写出首批之后预计如何动态推进与收尾，禁止出现内部工具名、动作名、参数名或代码术语）。"
     "返回awaiting_approval后结束本轮等待程序提示批准。批准后续批仅带原plan_id、summary与steps；"
     "每批仍独立审核，原授权范围内无需再次批准。观察实际结果再续批，完成后mc_plan_finish并请求验收。"
