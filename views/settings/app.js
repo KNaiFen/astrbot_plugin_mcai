@@ -1,5 +1,6 @@
 import { createManagement, pendingConfiguration, usageColumns, usageTableCells } from './management.js';
 import { styleSettings, button, node, setupEditors } from './controls.js';
+import { setupDiagnostics } from './diagnostics.js';
 
 const bridge = window.AstrBotPluginView;
 function applyTheme(context = {}) {
@@ -407,7 +408,7 @@ async function loadRules() {
   }
 }
 async function loadDiagnostics() {
-  const data = await api('GET', 'diagnostics'), select = document.querySelector('#diagnostics-tasks');
+  const data = await api('GET', 'diagnostics');
   const { pending, latest_error, items } = data.outbox;
   document.querySelector('#outbox-status').textContent = `尚未送达：${pending} 条${latest_error ? `；最近错误：${latest_error}` : ''}`;
   const outbox = document.querySelector('#outbox-list');
@@ -447,9 +448,7 @@ async function loadDiagnostics() {
     rows[index].cells[7].append(rowActions);
   }
   outbox.replaceChildren(table);
-  select.replaceChildren();
-  for (const task of data.tasks) select.add(new Option(`${task.name} · 群 ${task.group} · ${task.state}`, task.id));
-  for (const question of data.questions) select.add(new Option(`只读问答：${question.name} · 群 ${question.group}`, question.id));
+  diagnostics.refresh(data);
 }
 const storageLabels = {
   traces: '任务留痕', audit: 'audit.jsonl', state: 'state.sqlite3（含 WAL）', knowledge: '经验',
@@ -739,11 +738,8 @@ cleanupDialog.addEventListener('close', async () => {
 document.querySelector('#refresh-diagnostics').onclick = function () { action(this, loadDiagnostics); };
 document.querySelector('#export-diagnostics').onclick = function () {
   action(this, async () => {
-    const start = document.querySelector('#diagnostics-start').value, end = document.querySelector('#diagnostics-end').value;
     const result = await api('POST', 'diagnostics', {
-      start: start ? new Date(start).getTime() / 1000 : 0,
-      end: end ? new Date(end).getTime() / 1000 : null,
-      task_ids: Array.from(document.querySelector('#diagnostics-tasks').selectedOptions, option => option.value),
+      ...diagnostics.exportPayload(),
       include_raw_api: document.querySelector('#diagnostics-raw-api').checked,
     });
     const reordered = result.reordered_files?.length ? `。以下日志时间倒序，已在临时副本中排序：${result.reordered_files.join('、')}` : '';
@@ -754,6 +750,7 @@ document.querySelector('#export-diagnostics').onclick = function () {
 const hostApi = (view, params = {}) => api('GET', 'management/host', { view, ...params });
 const management = createManagement({ api, hostApi, bridge, action, show, loadHost, ensureHost: () => hostLoaded ? Promise.resolve() : loadHost(), diskSize, storageTable });
 styleSettings(document);
+const diagnostics = setupDiagnostics(storageStates);
 management.open(location.hash || '#servers');
 window.addEventListener('hashchange', () => management.open(location.hash || '#servers'));
 const initial = await Promise.allSettled([loadA(), readTest(), loadRules(), loadDiagnostics(), loadModelUsage()]);

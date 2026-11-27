@@ -424,12 +424,58 @@
         </div>
         <div class="panel">
           <h3>导出诊断 ZIP</h3>
+          <div class="diag-tabs actions" role="tablist" aria-label="诊断导出分类">
+            <button id="diagnostics-tab-tasks" type="button" role="tab" data-scope="tasks" aria-selected="true" aria-controls="diagnostics-records"><span>排障任务</span> <span class="badge" hidden></span></button>
+            <button id="diagnostics-tab-questions" type="button" role="tab" data-scope="questions" aria-selected="false" aria-controls="diagnostics-records" tabindex="-1"><span>只读问答</span> <span class="badge" hidden></span></button>
+            <button id="diagnostics-tab-all" type="button" role="tab" data-scope="all" aria-selected="false" aria-controls="diagnostics-records" tabindex="-1">全部与全局日志</button>
+          </div>
+          <div class="diag-toolbar actions">
+            <input id="diagnostics-search" type="search" aria-label="搜索任务或只读问答" placeholder="搜索任务名、问答内容、群号、实例或编号">
+            <div class="actions">
+              <button id="diagnostics-date-toggle" type="button" class="secondary" aria-expanded="false" aria-controls="diagnostics-date-panel">日期筛选 ▾</button>
+              <button id="diagnostics-date-clear-quick" type="button" class="quiet" aria-label="清空日期筛选" hidden>清空日期</button>
+            </div>
+          </div>
+          <div id="diagnostics-date-panel" hidden>
+            <div class="actions" id="diagnostics-date-presets">
+              <button type="button" class="secondary" data-days="1">今天</button>
+              <button type="button" class="secondary" data-days="3">近 3 天</button>
+              <button type="button" class="secondary" data-days="7">近 7 天</button>
+              <button type="button" class="quiet" data-days="0">清空日期</button>
+            </div>
+            <div class="diag-dates">
+              <div><label id="diagnostics-start-label" for="diagnostics-start">开始日期</label><input id="diagnostics-start" type="date"></div>
+              <div><label id="diagnostics-end-label" for="diagnostics-end">结束日期</label><input id="diagnostics-end" type="date"></div>
+            </div>
+            <p id="diagnostics-date-error" class="modal-error" role="alert" hidden></p>
+            <div class="toolbar diag-options">
+              <label class="toggle"><input id="diagnostics-precise-time" type="checkbox">精确到时分</label>
+              <label class="toggle"><input id="diagnostics-clip-selected" type="checkbox">导出时也按此时间范围截取已选项的日志事件</label>
+            </div>
+          </div>
+          <div id="diagnostics-records" role="tabpanel" aria-labelledby="diagnostics-tab-tasks">
+            <div id="diagnostics-selection-bar" class="actions">
+              <div id="diagnostics-selection-actions" class="actions">
+                <button id="diagnostics-select-current" type="button" class="secondary">全选当前</button>
+                <button id="diagnostics-unselect-current" type="button" class="secondary">取消当前</button>
+                <button id="diagnostics-clear-selected" type="button" class="quiet" disabled>清空全部已选</button>
+              </div>
+              <p id="diagnostics-selection-summary" class="hint">未勾选具体项</p>
+            </div>
+            <div id="diagnostics-list"></div>
+            <div id="diagnostics-all" hidden>
+              <p>导出包含所设时间范围内全部排障任务、只读问答，以及未关联任务的全局命令、权限拒绝和系统审计日志。</p>
+              <p id="diagnostics-all-count" class="hint"></p>
+              <div id="diagnostics-all-warning" class="actions" hidden>
+                <p id="diagnostics-all-warning-text" class="modal-error"></p>
+                <button id="diagnostics-all-clear" type="button" class="secondary">清空全部已选</button>
+              </div>
+            </div>
+          </div>
           <div class="setting-group">
-            <label>开始时间<input id="diagnostics-start" type="datetime-local"></label>
-            <label>结束时间<input id="diagnostics-end" type="datetime-local"></label>
-            <label>任务和只读问答（可多选，留空导出全部）<select id="diagnostics-tasks" multiple size="4"></select></label>
             <label class="toggle"><input id="diagnostics-raw-api" type="checkbox">包含原始 API 请求报文与流式分片（体积较大）</label>
           </div>
+          <p id="diagnostics-export-hint" class="hint" aria-live="polite"></p>
           <div class="actions">
             <button id="refresh-diagnostics" type="button" class="secondary">刷新任务与发件箱</button>
             <button id="export-diagnostics" type="button">导出 ZIP</button>

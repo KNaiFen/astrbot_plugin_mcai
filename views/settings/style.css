@@ -325,6 +325,35 @@ details { border: 0; }
 .editor-heading > :last-child, .editor-row > button { width: 58px; }
 #knowledge-links { overflow-wrap: anywhere; }
 
+.diag-tabs { gap: 6px; padding: 4px; border-radius: 8px; background: var(--subtle); }
+.diag-tabs button { background: transparent; color: var(--muted); }
+.diag-tabs button[aria-selected="true"], #diagnostics-date-toggle.is-active {
+  border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text);
+}
+.diag-toolbar > input { flex: 1 1 220px; width: auto; }
+.diag-toolbar > .actions { gap: 4px; }
+#diagnostics-date-clear-quick { padding-inline: 8px; }
+#diagnostics-date-panel, #diagnostics-all {
+  display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--subtle);
+}
+.diag-dates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; }
+.diag-dates label { margin-bottom: 5px; }
+.diag-options .toggle { min-height: 0; padding: 0; white-space: normal; flex: 0 1 auto; }
+.diag-options input { flex: none; }
+#diagnostics-records { display: grid; gap: 10px; }
+#diagnostics-selection-bar { justify-content: space-between; }
+#diagnostics-selection-bar button:disabled { cursor: default; }
+#diagnostics-list { max-height: 320px; overflow-y: auto; }
+.diag-item {
+  grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px;
+  padding: 8px; border-bottom: 1px solid var(--border); cursor: pointer;
+}
+.diag-item:last-child { border-bottom: 0; }
+.diag-item:hover, .diag-item:focus-within { background: var(--subtle); }
+.diag-item input, .diag-options input { accent-color: var(--accent); }
+.diag-item-title { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; overflow-wrap: anywhere; }
+.diag-item-meta { display: block; font-weight: 400; }
+
 @media (max-width: 760px) {
   .settings-page { padding: 22px 16px 32px; }
   .settings-layout { display: block; }
@@ -334,7 +363,8 @@ details { border: 0; }
 @media (max-width: 520px) {
   .panel { padding: 14px; }
   .settings-section { margin-bottom: 25px; }
-  .info-grid, .check-columns { grid-template-columns: minmax(0, 1fr); }
+  .info-grid, .check-columns, .diag-dates { grid-template-columns: minmax(0, 1fr); }
+  .diag-toolbar > input { flex-basis: 100%; }
   .instance-body, .advanced-body { margin-left: 0; padding-left: 10px; }
   .setting-row { gap: 8px 10px; }
   .setting-row:not(:has(> .switch)) { grid-template-columns: minmax(0, 1fr); }

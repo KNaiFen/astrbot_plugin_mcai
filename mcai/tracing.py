@@ -464,7 +464,7 @@ def event_runs(
     staging,
     start,
     end,
-    requested,
+    allowed,
     tasks,
     selected,
     *,
@@ -477,7 +477,7 @@ def event_runs(
             staging,
             start,
             end,
-            requested,
+            allowed,
             tasks,
             selected,
             paths,
@@ -498,7 +498,7 @@ def event_runs(
             staging,
             start,
             end,
-            requested,
+            allowed,
             tasks,
             selected,
             paths,
@@ -512,7 +512,7 @@ def filter_event_runs(
     staging,
     start,
     end,
-    requested,
+    allowed,
     tasks,
     selected,
     paths,
@@ -553,10 +553,10 @@ def filter_event_runs(
                 stamp, task = row["time"], row.get("task")
                 ordered &= stamp >= previous
                 previous = stamp
-                if requested and task not in requested:
+                if allowed is not None and task not in allowed:
                     continue
                 in_range = start <= stamp <= end
-                if in_range and not requested and task in tasks:
+                if in_range and task in tasks:
                     selected.add(task)
                 if not include_raw_api:
                     kind, request_id = row.get("kind"), row.get("request_id")
@@ -719,7 +719,7 @@ def export_cleanup(directory, output, task_id, items):
             staging,
             -math.inf,
             math.inf,
-            set(),
+            None,
             selected,
             set(),
             paths=trace_paths,
@@ -766,7 +766,13 @@ def export_cleanup(directory, output, task_id, items):
 
 
 def export_diagnostics(
-    store, *, start=0, end=None, task_ids=None, include_raw_api: bool = False
+    store,
+    *,
+    start=0,
+    end=None,
+    task_ids=None,
+    scope="all",
+    include_raw_api: bool = False,
 ):
     end = time.time() if end is None else end
     if not math.isfinite(start) or not math.isfinite(end) or start > end:
@@ -776,6 +782,8 @@ def export_diagnostics(
         or any(not isinstance(key, str) for key in task_ids)
     ):
         raise ValueError("任务编号须为字符串列表")
+    if scope not in ("all", "tasks", "questions"):
+        raise ValueError("导出范围仅支持 all、tasks 或 questions")
     requested = set(task_ids or [])
     output = store.directory / "exports"
     output.mkdir(exist_ok=True)
@@ -797,6 +805,10 @@ def export_diagnostics(
         }
         if requested - tasks - questions:
             raise ValueError("所选任务或问答不存在")
+        scoped = not requested and scope != "all"
+        allowed = requested or None
+        if scoped:
+            allowed = tasks if scope == "tasks" else questions
         selected = set(requested)
         staging = Path(temporary)
         runs, entries, reordered = event_runs(
@@ -804,7 +816,7 @@ def export_diagnostics(
             staging,
             start,
             end,
-            requested,
+            allowed,
             tasks | questions,
             selected,
             include_raw_api=include_raw_api,
@@ -824,6 +836,8 @@ def export_diagnostics(
         }
         if selected & questions:
             manifest["questions"] = sorted(selected & questions)
+        if scoped:
+            manifest["scope"] = scope
         zip_path = staging / path.name
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
             write_archive(

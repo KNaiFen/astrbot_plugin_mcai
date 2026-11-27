@@ -1053,7 +1053,12 @@ class MCAI(Star):
                 self.store.save(
                     "ask",
                     identity,
-                    {"id": identity, "name": tail.splitlines()[0][:60], "group": group},
+                    {
+                        "id": identity,
+                        "name": tail.splitlines()[0][:60],
+                        "group": group,
+                        "created": time.time(),
+                    },
                 )
                 self.ask_workers[sender] = asyncio.create_task(
                     self.ask(event, identity, tail.strip(), is_admin=is_admin)

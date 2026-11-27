@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 import time
 import uuid
 from contextlib import AsyncExitStack
@@ -58,6 +59,42 @@ from .runtime_rules import change_rule, rules_status
 from .storage_usage import STORAGE_TIMEOUT, a_storage
 from .tasks import SERVER_ACTIONS, can_escalate_force, occupies_instance
 from .tracing import export_cleanup, export_diagnostics
+
+
+def _diagnostic_time(value):
+    try:
+        return type(value) in (int, float) and math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _diagnostic_questions(directory, questions):
+    for item in questions:
+        if _diagnostic_time(item.get("created")):
+            continue
+        path = directory / "traces" / f"{item['id']}.jsonl"
+        try:
+            with path.open("rb") as stream:
+                line = next((line for line in stream if line.strip()), b"")
+            try:
+                row = json.loads(line) if line else None
+            except ValueError:
+                row = None
+            stamp = row.get("time") if isinstance(row, dict) else None
+            item["created"] = stamp if _diagnostic_time(stamp) else path.stat().st_mtime
+        except FileNotFoundError:
+            item["created"] = None
+    return questions
+
+
+def _newest_diagnostics(items):
+    return sorted(
+        reversed(items),
+        key=lambda item: (
+            item["created"] if _diagnostic_time(item["created"]) else -math.inf
+        ),
+        reverse=True,
+    )
 
 
 class Settings:
@@ -486,8 +523,14 @@ class Settings:
         if request.method == "GET":
             store = self.plugin.store
             tasks = store.all("task")
-            questions = store.all("ask")
-            task_names = {item["id"]: item["name"] for item in tasks}
+            questions = await asyncio.to_thread(
+                _diagnostic_questions, store.directory, store.all("ask")
+            )
+            task_names = {
+                item["id"]: item.get("name", "故障通知")
+                for item in tasks
+                if item.get("id") is not None
+            }
             task_names.update({item["id"]: "只读问答" for item in questions})
             return {
                 "outbox": {
@@ -509,14 +552,24 @@ class Settings:
                         for item in store.pending_outbox(limit=-1, include_failed=True)
                     ],
                 },
-                "tasks": [
-                    {
-                        key: item[key]
-                        for key in ("id", "name", "group", "created", "state")
-                    }
-                    for item in tasks
-                ],
-                "questions": questions,
+                "tasks": _newest_diagnostics(
+                    [
+                        {
+                            key: item.get(key)
+                            for key in (
+                                "id",
+                                "name",
+                                "group",
+                                "created",
+                                "state",
+                                "instance",
+                                "settled_at",
+                            )
+                        }
+                        for item in tasks
+                    ]
+                ),
+                "questions": _newest_diagnostics(questions),
             }
         content_type = (request.content_type or "").split(";", 1)[0]
         if content_type in ("application/x-www-form-urlencoded", "multipart/form-data"):
@@ -537,12 +590,14 @@ class Settings:
                 include_raw_api = value in ("true", "1")
         if not isinstance(include_raw_api, bool):
             raise ValueError("include_raw_api 须为布尔值")
+        scope = body.get("scope", request.query.get("scope", "all"))
         result = await asyncio.to_thread(
             export_diagnostics,
             self.plugin.store,
             start=float(body.get("start", 0)),
             end=float(body["end"]) if body.get("end") is not None else None,
             task_ids=body.get("task_ids"),
+            scope="all" if scope in (None, "") else scope,
             include_raw_api=include_raw_api,
         )
         return result
