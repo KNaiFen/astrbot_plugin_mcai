@@ -9,6 +9,10 @@ STRING = {"type": "string"}
 INTEGER = {"type": "integer", "minimum": 0}
 NBT_PATH = {"$ref": "#/$defs/nbt_path"}
 PAGE = {"after": INTEGER, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}
+WORKSPACE_JAR = {"path": STRING, "download_id": STRING, "nested_jar": STRING}
+WORKSPACE_MAPPING = {"mapping_path": STRING, "mapping_download_id": STRING}
+WORKSPACE_CLASSES = {"type": "array", "minItems": 1, "maxItems": 10, "items": STRING}
+WORKSPACE_TEXT_LIMIT = {"type": "integer", "minimum": 1, "maximum": 24000}
 VIEW = {"type": "string", "enum": ["children", "value"]}
 SHA256 = {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"}
 WORLD_LOCATION = {"path": STRING, "dimension": STRING, "world": STRING}
@@ -123,10 +127,23 @@ CONDITION = variants(
     "op",
     {
         op: (
-            {"path": QUERY_NBT_PATH, **({"value": STRING} if op != "exists" else {})},
-            ("path", "value") if op != "exists" else ("path",),
+            {
+                "path": QUERY_NBT_PATH,
+                **({"value": STRING} if op not in ("exists", "not_exists") else {}),
+            },
+            ("path", "value") if op not in ("exists", "not_exists") else ("path",),
         )
-        for op in ("exists", "eq", "ne", "gt", "ge", "lt", "le", "contains")
+        for op in (
+            "exists",
+            "not_exists",
+            "eq",
+            "ne",
+            "gt",
+            "ge",
+            "lt",
+            "le",
+            "contains",
+        )
     },
 )
 CONTAINS_ITEM = contract(
@@ -319,7 +336,7 @@ REGION_PRUNE = variants(
                 "dimension": STRING,
                 "dataset": {"enum": ["entities", "block_entities", "blocks"]},
                 "bounds": BOUNDS,
-                "max_matches": {"type": "integer", "minimum": 1, "maximum": 100000},
+                "max_matches": {"type": "integer", "minimum": 1, "maximum": 2000000},
                 "entity_type": STRING,
                 "name": STRING,
                 "legacy_id": {"type": "integer", "minimum": 0, "maximum": 4095},
@@ -547,8 +564,16 @@ def probe_range(fields):
 TOOLS = [
     (
         "mc_inventory",
-        "核对MOD/插件/数据包版本、嵌套JAR、依赖、重复ID及哈希；从JVM/JDK/主JAR识别运行版本。baseline比较清单变化。",
-        contract({"baseline": STRING}),
+        "核对MOD/插件/数据包版本、嵌套JAR、依赖、重复ID及哈希，离线可查；在线时从JVM/JDK/主JAR识别运行版本。baseline比较清单变化。",
+        contract(
+            {
+                "baseline": STRING,
+                "query": {
+                    **STRING,
+                    "description": "可选，按组件id/name/path/source做大小写不敏感的子串过滤；与baseline互斥。",
+                },
+            }
+        ),
     ),
     (
         "mc_verify",
@@ -929,7 +954,7 @@ TOOLS = [
     ),
     (
         "mc_workspace",
-        "A 端 MOD 源码修复与构建工作区：pull 从绑定服取文件，use_download 取用任务下载文件。list 将 next_cursor 作为 after 续页，read 将 next_cursor 作为 cursor 续读（不要同时传 offset）。jar_entries、jar_diff、javap 只读检查 JAR，每份 JAR 指定工作区路径或当前任务的 download_id，二选一。exec 在已批准的多轮方案内经独立审核后台执行 PowerShell 7.3+。stage 在 A 登记构建制品并返回 download_id；提交 install_download 时才传到 B 暂存。",
+        "A 端 MOD 排查与修补工作区。pull 从绑定服取文件，use_download 取用任务下载。list 将 next_cursor 作为 after 续页，read 将 next_cursor 作为 cursor 续读。jar_entries、jar_read、jar_search、jar_diff、javap、decompile 检查 JAR；每份 JAR 指定工作区路径或任务 download_id，二选一。mapping_lookup 查询映射；jar_patch 在工作区重打包。exec 在已批准的多轮方案内经独立审核执行 PowerShell 7.3+。stage 登记工作区制品，提交 install_download 才传到 B 暂存。",
         variants(
             "mode",
             {
@@ -939,15 +964,14 @@ TOOLS = [
                         "path": STRING,
                         "offset": INTEGER,
                         "cursor": {"type": "string", "maxLength": 129},
-                        "limit": {"type": "integer", "minimum": 1, "maximum": 24000},
+                        "limit": WORKSPACE_TEXT_LIMIT,
                         "encoding": STRING,
                     },
                     ("path",),
                 ),
                 "jar_entries": (
                     {
-                        "path": STRING,
-                        "download_id": STRING,
+                        **WORKSPACE_JAR,
                         "prefix": STRING,
                         "glob": STRING,
                         "contains": STRING,
@@ -957,9 +981,33 @@ TOOLS = [
                             "type": "integer",
                             "minimum": 1,
                             "maximum": 4000,
+                            "description": "单个文本预览字符上限（1–4000，默认 2000）",
                         },
                     },
                     (),
+                ),
+                "jar_read": (
+                    {
+                        **WORKSPACE_JAR,
+                        "entry": STRING,
+                        "offset": INTEGER,
+                        "limit": WORKSPACE_TEXT_LIMIT,
+                        "encoding": STRING,
+                    },
+                    ("entry",),
+                ),
+                "jar_search": (
+                    {
+                        **WORKSPACE_JAR,
+                        "query": {"type": "string", "minLength": 1},
+                        "regex": {"type": "boolean"},
+                        "case_sensitive": {"type": "boolean"},
+                        "scope": {"enum": ["all", "classes", "resources"]},
+                        "glob": STRING,
+                        "limit": PAGE["limit"],
+                        "include_nested": {"type": "boolean"},
+                    },
+                    ("query",),
                 ),
                 "jar_diff": (
                     {
@@ -973,16 +1021,55 @@ TOOLS = [
                 ),
                 "javap": (
                     {
-                        "path": STRING,
-                        "download_id": STRING,
-                        "class_names": {
-                            "type": "array",
-                            "minItems": 1,
-                            "maxItems": 10,
-                            "items": STRING,
+                        **WORKSPACE_JAR,
+                        "class_names": WORKSPACE_CLASSES,
+                        "method": STRING,
+                        "verbose": {"type": "boolean"},
+                    },
+                    ("class_names",),
+                ),
+                "decompile": (
+                    {
+                        **WORKSPACE_JAR,
+                        **WORKSPACE_MAPPING,
+                        "class_names": WORKSPACE_CLASSES,
+                        "mapping_from": STRING,
+                        "mapping_to": STRING,
+                        "timeout_seconds": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 120,
                         },
                     },
                     ("class_names",),
+                ),
+                "mapping_lookup": (
+                    {
+                        **WORKSPACE_MAPPING,
+                        "query": {"type": "string", "minLength": 1},
+                        "kind": {"enum": ["all", "class", "method", "field"]},
+                        "namespace": STRING,
+                        "target_namespace": STRING,
+                        "limit": PAGE["limit"],
+                    },
+                    ("query",),
+                ),
+                "jar_patch": (
+                    {
+                        "source_path": STRING,
+                        "source_download_id": STRING,
+                        "nested_jar": WORKSPACE_JAR["nested_jar"],
+                        "output_path": STRING,
+                        "replace_entries": {
+                            "type": "array",
+                            "items": contract(
+                                {"entry": STRING, "file": STRING}, ("entry", "file")
+                            ),
+                        },
+                        "remove_entries": {"type": "array", "items": STRING},
+                        "strip_signatures": {"type": "boolean"},
+                    },
+                    ("output_path",),
                 ),
                 "exec": (
                     {
@@ -1182,6 +1269,11 @@ TOOLS = [
                             "contains_item": CONTAINS_ITEM,
                             "query": STRING,
                             "result": {"enum": ["list", "by_file", "by_type"]},
+                            "capture_targets": {
+                                "type": "boolean",
+                                "default": True,
+                                "description": "冻结具体 NBT 路径供后续清理；关闭后仅展示或统计。",
+                            },
                         },
                         ("scope",),
                     ),
@@ -1229,7 +1321,12 @@ TOOLS = [
                         "legacy_id": {"type": "integer", "minimum": 0, "maximum": 4095},
                         "result": {"enum": ["list", "by_state"]},
                         "offset": INTEGER,
-                        "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "default": 100,
+                        },
                     },
                     ("path", "x", "z"),
                 ),
@@ -1300,7 +1397,7 @@ TOOLS = [
                 "result": {
                     "enum": ["list", "by_type", "by_chunk", "top_chunks", "by_state"]
                 },
-                "top": {"type": "integer", "minimum": 1, "maximum": 100},
+                "top": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
             }
         ),
     ),
@@ -1366,7 +1463,7 @@ TOOLS = [
     ),
     (
         "mc_context_history",
-        "读取当前任务压缩原文或外置结果；省略entry列索引，entry默认summary有界概览，result_path按JSON键/下标定位，可直接穿过content/text内的JSON字符串，view=value或offset续读必要原文。不重新执行工具；已验收经验用mc_history。",
+        '读取当前任务压缩原文或外置结果；省略entry列索引，entry默认summary有界概览。外置工具记录顶层是tool/arguments/result；返回项用result_path=["result","data","items"]。路径按JSON键/下标定位，可穿过content/text内的JSON字符串；view=value或offset续读必要原文。已验收经验用mc_history。',
         {
             "type": "object",
             "properties": {},
@@ -1429,7 +1526,7 @@ TOOLS = [
                     "trial_feedback_id": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "发布A工作区制品必填。引用任务管理员在当前试服邀请下的通过反馈，或明确授权对该制品免真人进服测试并发布的原始反馈ID。",
+                        "description": "发布A工作区制品必填：填当前邀请下任务管理员的通过反馈ID，或其免真人进服并发布的原始反馈ID。若豁免由管理员本人在/mcainew初始描述明确写下，可填 report。",
                     },
                     "test_operation_id": {
                         "type": "string",
@@ -1778,6 +1875,16 @@ FIELD_HELP = {
     "backup": "当前实例已有备份编号或目录名，使用原操作返回值。",
     "export_id": "mc_region_export返回且usable的区块导出编号。",
     "download_id": "已完成暂存下载的job_id，不是URL或项目编号。",
+    "nested_jar": "外层 JAR 内单个嵌套 .jar 的正斜杠路径。",
+    "include_nested": "遍历一层嵌套 JAR，默认 false；指定 nested_jar 时只查指定内包。",
+    "mapping_path": "任务工作区内的映射文件路径，与 mapping_download_id 二选一。",
+    "mapping_download_id": "当前任务已校验的映射文件下载编号。",
+    "mapping_from": "指定 JAR 实际使用的命名空间。",
+    "mapping_to": "用于阅读反编译结果的目标命名空间。",
+    "class_names": "JAR 实际类的 Java 二进制名，例如 a.b.Outer$Inner。",
+    "source_path": "源 JAR 在当前任务工作区内的路径，与 source_download_id 二选一。",
+    "source_download_id": "源 JAR 的当前任务已校验下载编号。",
+    "strip_signatures": "明确剔除源 JAR 的签名及 MANIFEST.MF 的摘要段，默认 false。",
     "remove_paths": "安装时明确移除的旧组件实例内路径列表。",
 }
 

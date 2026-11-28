@@ -18,6 +18,7 @@ from .plans import execution_configuration, execution_configuration_changed
 from .review import validate_diagnostic_script, verify_scripts
 
 ACTIVE = {"pending", "running"}
+EXECUTE_FLUSH_INTERVAL = 0.25
 
 
 def kill_tree(parent):
@@ -119,6 +120,15 @@ class Jobs:
                 "preview": encoded[:500],
                 "overview": evidence_view(row, 4500),
                 "message": "原文已保存；先看overview，按result_path定向读取必要字段，避免全文分页。",
+                **(
+                    {
+                        k: row[k]
+                        for k in ("path", "line", "tail_window", "tail_order")
+                        if k in row
+                    }
+                    if row.get("tail_order") == "eof_first"
+                    else {}
+                ),
             }
         if self.batching:
             self.rows.append(row)
@@ -146,7 +156,11 @@ class Jobs:
         items, size, cursor = [], 0, after
         for item in self.store.events("job:" + key, after, min(max(limit, 1), 100)):
             encoded = json.dumps(item, ensure_ascii=False)
-            if items and size + len(encoded) > 14000:
+            if items and (
+                size + len(encoded) > 14000
+                or job.get("kind") == "files_query"
+                and item["body"].get("tail_order") == "eof_first"
+            ):
                 break
             items.append(item)
             size += len(encoded)
@@ -214,7 +228,7 @@ class Jobs:
                 return {
                     "view": "summary",
                     "result_path": list(result_path),
-                    "overview": evidence_view(value),
+                    "overview": evidence_view(value, base_path=result_path),
                     "source": {"job_id": key, "reference": reference},
                 }
             text = json.dumps(value, ensure_ascii=False)
@@ -427,24 +441,74 @@ class Jobs:
             process_created=psutil.Process(process.pid).create_time(),
         )
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        loop = asyncio.get_running_loop()
+        last_flush = None
         try:
             async with asyncio.timeout(timeout):
                 with (self.directory(key) / "output.log").open("ab") as output:
-                    while data := await process.stdout.read(2048):
+                    while True:
+                        read = process.stdout.read(16384)
+                        if self.rows:
+                            read_task = asyncio.create_task(read)
+                            try:
+                                done, _ = await asyncio.wait(
+                                    {read_task},
+                                    timeout=max(
+                                        0,
+                                        last_flush
+                                        + EXECUTE_FLUSH_INTERVAL
+                                        - loop.time(),
+                                    ),
+                                )
+                                if not done:
+                                    self.flush(key)
+                                    last_flush = loop.time()
+                                data = await read_task
+                                read_task = None
+                            finally:
+                                if read_task is not None:
+                                    read_task.cancel()
+                                    await asyncio.gather(
+                                        read_task, return_exceptions=True
+                                    )
+                        else:
+                            data = await read
+                        if not data:
+                            break
                         output.write(data)
                         output.flush()
-                        self.emit(key, {"output": decoder.decode(data)})
-                        self.flush(key)
+                        text = decoder.decode(data)
+                        # Keep ordinary output inline in the existing result pages.
+                        for offset in range(0, len(text), 2048):
+                            self.emit(key, {"output": text[offset : offset + 2048]})
+                            if self.batching and (
+                                not self.rows
+                                or last_flush is None
+                                or loop.time() - last_flush >= EXECUTE_FLUSH_INTERVAL
+                            ):
+                                if self.rows:
+                                    self.flush(key)
+                                last_flush = loop.time()
                 tail = decoder.decode(b"", final=True)
                 if tail:
                     self.emit(key, {"output": tail})
+                self.flush(key)
                 code = await process.wait()
                 self.update(key, exit_code=code)
                 if code and not self.stopped(key):
                     raise RuntimeError(f"诊断脚本退出码 {code}，请查看任务输出")
-        except TimeoutError:
-            await terminate_tree(process)
-            raise TimeoutError(f"诊断脚本超过 {timeout} 秒，已结束进程树") from None
+        except (TimeoutError, asyncio.CancelledError) as exc:
+            # Drain the killed child's pipe so a paused transport can also close.
+            if process.returncode is None:
+                drain = asyncio.create_task(process.stdout.read())
+                try:
+                    await terminate_tree(process)
+                finally:
+                    drain.cancel()
+                    await asyncio.gather(drain, return_exceptions=True)
+            if isinstance(exc, TimeoutError):
+                raise TimeoutError(f"诊断脚本超过 {timeout} 秒，已结束进程树") from None
+            raise
 
     async def collect(self, key, rows):
         iterator = iter(rows)
@@ -468,8 +532,11 @@ class Jobs:
                             "scanned_events",
                             "unique_groups_total",
                             "omitted_groups",
+                            "matched_files",
+                            "find_limit",
                             "note",
                         )
+                        if field in row
                     }
             self.update(
                 key,

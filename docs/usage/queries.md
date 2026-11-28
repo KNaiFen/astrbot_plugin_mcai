@@ -14,7 +14,7 @@ AI 通过 `mc_query` 查询当前绑定实例的文件、日志、存档和进�
 {"argv":["nbt","select","--help"]}
 ```
 
-顶层帮助列出类别，类别及子命令帮助说明用途、必填参数、单位和示例。布尔开关采用 `--regex`／`--no-regex` 等形式；数组和对象作为 JSON 字符串传入。输入错误时沿返回的具体用法修正，不重新收集已有效证据。
+顶层帮助列出类别，类别及子命令帮助说明用途、必填参数、单位和示例，并显示已定义的取值范围和默认值。布尔开关采用 `--regex`／`--no-regex` 等形式；数组和对象作为 JSON 字符串传入。输入错误时沿返回的具体用法修正，不重新收集已有效证据。
 
 检索词以负号开头时，也可独立传入，例如 `["files","search","--glob","*.log","--query","-241,-318"]`。检索词若与当前子命令的选项同名，用等号传入，例如 `--query=--help`。
 
@@ -23,6 +23,7 @@ AI 通过 `mc_query` 查询当前绑定实例的文件、日志、存档和进�
 | 目标 | 类别与用法 |
 |---|---|
 | 读取配置 | `files read --path server.properties --line-count 30` |
+| 查找文件 | `files find --glob config/**/*.toml` |
 | 检索文本 | `files search --glob config/**/*.toml --query timeout` |
 | 定向查询日志 | `logs search --query Exception --glob logs/**/*.log*` |
 | 查看独立 NBT 结构 | `nbt read --path level.dat --nbt-path '["Data"]' --view children` |
@@ -43,7 +44,7 @@ AI 通过 `mc_query` 查询当前绑定实例的文件、日志、存档和进�
 
 内存趋势允许采样 120–1200 秒、间隔 30–120 秒，默认分别为 300、60 秒。优先用 Probe 读取堆、GC 和服内指标；Probe 不可用时保留进程采样，有可用 `jcmd` 则补采堆概要。结束后默认附加 30 秒内存 JFR（允许 10–60 秒），可用 `--no-include-jfr` 关闭。堆转储可用 `--compress` 直接生成 `.hprof.gz`；通过群内任务执行时，顶层 `evidence_ids` 引用已结算的 `process` 或 `jvm` 结果供审核。
 
-`/mcaiask` 的 JVM 诊断只开放 `process` 和 `jvm`；内存趋势、JFR、堆转储和离线分析通过排障任务使用。
+`/mcaiask` 的 JVM 诊断只开放 `process` 和 `jvm`；内存趋势、JFR、堆转储和离线分析通过排障任务使用。问答也可用 `mc_inventory` 核对离线实例的模组、插件和数据包。可选 `query` 按组件 ID、名称、路径或来源做不区分大小写的子串过滤，保留对应的问题发现；过滤结果不能用作全量基线或运行时比较。问答不接受 `baseline_job_id`。
 
 例如 AI 的读取参数为：
 
@@ -59,11 +60,17 @@ NBT 的路径、选择器与相对路径配合示例：
 
 先查看 `children` 得到真实结构，再按 UUID、方块实体位置、Slot 或字段匹配选中对象。相对路径从所选对象内开始。SNBT 的值保留类型，例如 `1b`、`2L` 和带引号字符串；修改预览中的 `expected=null` 仅表示已核实新字段不存在。
 
-NBT 节点太大时，查询返回原路径、字节数及可展开的子节点概览。沿原路径用 `children` 逐层查找，再按需读取具体字段；多条结果按返回的续页偏移继续。
+NBT 节点太大时，查询返回截断预览、字节数或其下界，以及可展开的子节点概览。沿原路径用 `children` 逐层查找，再按需读取具体字段；多条结果按返回的续页偏移继续。区域 NBT 的 `read` 可直接读取大 `.mcc` 的指定路径；方块查询读取方块所需的数据，单点查询可带回该坐标的方块实体。独立 NBT 文件原始内容或 gzip 解压后超过 64 MiB 时会报错。
 
 区域 NBT 的 `x/z` 使用全局区块坐标；单点方块读取的 `block-x/y/z` 使用全局方块坐标。存档查询反映已保存数据，活动现场通过 Probe 查询。
 
 日志默认按完整多行异常归组，返回次数、时间范围和首条原文。tick、耗时、UUID 和实体坐标等抖动不会单独开组，端口和普通错误码仍区分。时间仅从行首日志头解析；正文与续行继承本条事件时间，损坏的时间头标为时间未知。返回 `partial: true` 时，计数只覆盖已扫部分；缩小文件名或时间范围再查。查询和预览不会执行生产修复；实际修改继续提交方案，经审核和批准后执行。
+
+`logs search` 优先查 `latest.log`，再按修改时间从新到旧扫描。普通日志超过剩余额度时，优先查文件尾部，摘要标记 `truncated_reason: tail_window`，行号从该窗口起算。`files tail` 对超过 64 MiB 的文本也只查尾部，结果标记 `tail_window: true`，原始行号为 `null`；`files read` 仍要求文件不超过 64 MiB。
+
+`files tail` 可在一页容纳时仍按原顺序输出；需要多页时，首页直接包含文件最末尾，继续翻页查看更早的尾行（`tail_order: eof_first`）。每页内仍按原文件顺序阅读。
+
+`files find` 最多返回 10,000 个匹配文件；发现更多时返回 `partial: true` 和 `truncated_reason: find_limit`，可用更具体的 `--glob` 缩小范围。世界自动发现和数据包清单会忽略大小写跳过插件、网页地图、备份、日志和缓存等目录；数据包清单也跳过区块、实体、兴趣点和玩家数据目录。文本补丁的预览和应用都只接受不超过 16 MiB 的目标文件。
 
 ## 维度与坐标自动定位
 
@@ -96,7 +103,7 @@ NBT 节点太大时，查询返回原路径、字节数及可展开的子节点�
 
 `--nbt-path` 先选择节点；`--query` 在其下按忽略大小写的字段名或字符串子串搜索，命中节点再接受 `--conditions/--contains-item` 过滤。`--contains-item` 递归查嵌套Compound和列表中的物品 `id`，包含容器内的容器、旧 `tag` 与现代 `components`；可附成对的 `nbt_path/value` 或 `conditions` 限定物品自身字段，递归超过32层报错。它筛选外层扫描对象；要以背包物品为冻结目标，应先用 `--nbt-path '["Inventory","*"]'` 选中物品。
 
-`--result` 可为默认的 `list`、按文件计数 `by_file` 或按NBT标签类型计数 `by_type`，三者完成后均冻结目标。沿原 `job_id` 续读；读取期间文件变化会失败。`/mcaiask` 也跟踪本次问答启动的 `nbt_scan`，结束时取消尚未结算工作。
+`--result` 可为默认的 `list`、按文件计数 `by_file` 或按NBT标签类型计数 `by_type`，三者默认冻结目标；纯查询可加 `--no-capture-targets`。列表最多显示 10,000 行；冻结时继续采集完整目标，不冻结时到达上限即停止。沿原 `job_id` 续读；读取期间文件变化会失败。`/mcaiask` 也跟踪本次问答启动的 `nbt_scan`，结束时取消尚未结算工作。
 
 ## 区域扫描与冻结清单
 
@@ -108,9 +115,9 @@ NBT 节点太大时，查询返回原路径、字节数及可展开的子节点�
 {"argv":["region-scan","--world-path","world","--dataset","block_entities","--conditions","[{\"path\":[\"Items\",\"*\",\"id\"],\"op\":\"eq\",\"value\":\"\\\"mod:gem\\\"\"}]","--capture-targets","--result","by_type"]}
 ```
 
-实体／方块实体的 `--conditions` 支持 `exists/eq/ne/gt/ge/lt/le/contains`；`exists` 只需 `path`，其余需带类型SNBT字符串 `value`。路径里的 `*` 仅展开列表／数组，各条件有任一路径命中即可，多个条件全部满足。`contains` 对字符串检查子串、对列表／数组检查带类型元素、对Compound检查字符串键。`--contains-item` 用法与独立NBT扫描相同；这些NBT过滤不应用于 `dataset=blocks`，方块按名称、数字ID及范围筛选。实体类型、UUID和范围先在Java过滤；无NBT条件和容器检索的计数模式省去完整SNBT生成。
+实体／方块实体的 `--conditions` 支持 `exists/not_exists/eq/ne/gt/ge/lt/le/contains`；`exists/not_exists` 只需 `path`，其余需带类型SNBT字符串 `value`。路径里的 `*` 仅展开列表／数组，`exists` 有任一路径命中即可，`not_exists` 要求无任何路径命中，多个条件全部满足。`contains` 对字符串检查子串、对列表／数组检查带类型元素、对Compound检查字符串键。`--contains-item` 用法与独立NBT扫描相同；这些NBT过滤不应用于 `dataset=blocks`，方块按名称、数字ID及范围筛选。实体类型、UUID、范围及 `exists/not_exists` 条件先在Java流式过滤；无复杂NBT条件和容器检索的计数模式在Java端直接汇总。
 
-区域扫描对 `entities/block_entities/blocks` 的 `list` 自动冻结完整目标，计数模式加 `--capture-targets` 才冻结。原后台目录内的 `targets.json` 保存精确文件、坐标／NBT路径与标签SHA-256，`manifest.json` 保存数量、文件范围和样本。摘要的 `target_fingerprint` 是目标清单内容哈希，后续提案以原 `job_id` 作为 `scan_job_id`、该指纹作为 `manifest_sha256`；不要计算 `manifest.json` 文件哈希替代。分页只限制展示，实际清理消费完整清单。
+区域扫描对 `entities/block_entities/blocks` 的 `list` 默认冻结完整目标，计数模式加 `--capture-targets` 才冻结。列表最多显示 10,000 行；若用 `--no-capture-targets` 关闭冻结，达到上限时提前结束并标明结果不完整。原后台目录内的 `targets.json` 保存精确文件、坐标／NBT路径与标签SHA-256，`manifest.json` 保存数量、文件范围和样本。摘要的 `target_fingerprint` 是目标清单内容哈希，后续提案以原 `job_id` 作为 `scan_job_id`、该指纹作为 `manifest_sha256`；不要计算 `manifest.json` 文件哈希替代。分页只限制展示，实际清理消费完整清单。
 
 只有同实例、同目录已完成且非 `partial` 的清单可用于 `region_prune/nbt_prune`。提案还须明确删除／设置完整对象或 `relative_path` 字段；执行会复核冻结对象旧值。`region_prune by_filter`另可在停服后按明确范围筛选，必须声明匹配上限；具体字段与备份边界见[扫描与冻结清理](../design/integrations.md#跨文件扫描与冻结清理)。
 

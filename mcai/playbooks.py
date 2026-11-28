@@ -1,8 +1,9 @@
 """Workflow guidance loaded only when requested by the main agent."""
 
 MOD_REPAIR_GUIDE = """MOD源码修复：先核对故障、目标和素材。用mc_workspace pull从B取素材，用只读工作区能力核对结构与字节码；修改和构建在A端完成。动手搭建试服前先与管理员对齐是否需要真人进服实测。
-首次提案写清范围：隔离试服安装、启动、对比验证与后续正式服发布条件。获批后在原plan_id内继续，用stage登记制品并经install_download部署验证。
-需要真人试玩时，试服就绪后用mc_say提供入口、测试目标与内部test_operation_id并等待；管理员试过通过后，用原反馈id作trial_feedback_id提交正式服发布，无需复问或固定措辞。若为纯服务端改动且管理员明确授权免除真人登录，按已批准或授权豁免的发布路径提交并如实记录未测客户端握手；若仅验证不发布，按目标结案。
+无源码时用 jar_search 和 jar_read 找类及配置，再用 decompile 阅读；遇混淆用 mapping_lookup 或带映射反编译，以 javap 和运行时符号表核对实际签名。重打包用 jar_patch，可通过 nested_jar 一次修补并回填内包；需要编译或改字节码时，经审核运行 exec，直接引用已校验的 $env:MCAI_WORKSPACE_JAVAC 和 $env:MCAI_WORKSPACE_ASM_CP。
+首次提案写清范围：隔离试服安装、启动、对比验证与后续正式服发布条件。获批后在原plan_id内继续，先打开试服托管窗口，用stage登记制品并经install_download部署验证。
+需要真人试玩时，试服就绪后用mc_say提供入口、测试目标与内部test_operation_id并等待；管理员试过通过后，用原反馈id作trial_feedback_id提交正式服发布，无需复问或固定措辞。纯服务端改动获任务管理员书面授权免真人进服并发布时，可用管理员本人/mcainew原文（trial_feedback_id=report）或原反馈ID，仍须试服就绪并说明未测客户端握手；仅验证不发布则按目标结案。
 未通过则查本次试服证据，缺关键线索时单问一个问题并等待。不要把端口可达说成玩家登录通过，回复只说需管理员决定的事、入口或实际结果，内部编号和审核细节留本地。"""
 
 PLAYBOOKS = {

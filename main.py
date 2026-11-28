@@ -310,6 +310,7 @@ class MCAI(Star):
                 workspace_root(config, self.store.directory),
                 powershell,
                 self.workspace_memory.name,
+                store_dir=self.store.directory,
             ),
         )
         from .mcai.settings import Settings
@@ -1137,6 +1138,7 @@ class MCAI(Star):
                         }
                     if quoted_origin is not None:
                         options["quoted_origin"] = quoted_origin
+                        options["admin_report"] = content.strip()
                     job = await self.tasks.create(
                         group,
                         event.unified_msg_origin,

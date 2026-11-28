@@ -97,13 +97,76 @@ def nbt_page(entries, offset, count, *, byte_limit=NBT_PAGE_BYTES, **fields):
     return page
 
 
-def snbt_fields(tag, *, snbt=None, children=True):
+def _snbt_parts(tag):
+    from nbtlib.literal.serializer import (
+        QUOTE_REGEX,
+        STRING_QUOTES,
+        UNQUOTED_COMPOUND_KEY,
+    )
+
+    if isinstance(tag, nbtlib.String):
+        found = QUOTE_REGEX.search(tag)
+        quote = STRING_QUOTES[found[0]] if found else '"'
+        yield quote
+        for offset in range(0, len(tag), 512):
+            yield (
+                tag[offset : offset + 512]
+                .replace("\\", "\\\\")
+                .replace(quote, "\\" + quote)
+            )
+        yield quote
+    elif isinstance(tag, nbtlib.Compound):
+        yield "{"
+        for index, (key, value) in enumerate(tag.items()):
+            if index:
+                yield ", "
+            if UNQUOTED_COMPOUND_KEY.match(key):
+                yield key
+            else:
+                yield from _snbt_parts(nbtlib.String(key))
+            yield ": "
+            yield from _snbt_parts(value)
+        yield "}"
+    elif isinstance(tag, (nbtlib.Array, nbtlib.List)):
+        array = isinstance(tag, nbtlib.Array)
+        yield f"[{tag.array_prefix}; " if array else "["
+        for index, value in enumerate(tag):
+            if index:
+                yield ", "
+            if array:
+                yield value.snbt().upper()
+            else:
+                yield from _snbt_parts(value)
+        yield "]"
+    else:
+        yield tag.snbt()
+
+
+def snbt_fields(tag, *, snbt=None, children=True, measure=False):
+    parts, size, escaped = [], 0, 0
+    source = _snbt_parts(tag) if snbt is None else iter((snbt,))
+    for part in source:
+        size += len(part.encode("utf-8"))
+        escaped += json_size(part) - 2
+        parts.append(part)
+        if escaped > NBT_SNBT_BYTES:
+            break
+    else:
+        return {"snbt": "".join(parts)}
+    preview = "".join(part[:256] for part in parts[:256])[:256]
+    result = {"snbt_bytes": size, "truncated": True, "preview": preview}
     if snbt is None:
-        snbt = tag.snbt()
-    size = len(snbt.encode("utf-8"))
-    if size <= NBT_SNBT_BYTES and json_size(snbt) - 2 <= NBT_SNBT_BYTES:
-        return {"snbt": snbt}
-    result = {"snbt_bytes": size, "truncated": True, "preview": snbt[:256]}
+        result["snbt_bytes_exceeded"] = True
+        if measure:
+            # Selector pages historically include the exact size of medium values.
+            # Keep measuring without collecting text, but never traverse unbounded values.
+            for part in source:
+                size += len(part.encode("utf-8"))
+                if size > 2 * NBT_PAGE_BYTES:
+                    break
+            else:
+                result["snbt_bytes"] = size
+                del result["snbt_bytes_exceeded"]
     if children:
         result["children"] = describe_tag(tag, "children", limit=20, byte_limit=16_000)
     return {**result, "next_view": "children", "note": NBT_NOTE}
@@ -205,10 +268,11 @@ def read_scope(source):
     )
 
 
-def evidence_view(value, limit=6000, *, edges=0):
+def evidence_view(value, limit=6000, *, edges=0, base_path=()):
     original = json.dumps(value, ensure_ascii=False)
     if len(original) <= limit:
         return value
+    base_path = tuple(base_path)
 
     def size(item):
         return len(json.dumps(item, ensure_ascii=False))
@@ -244,13 +308,13 @@ def evidence_view(value, limit=6000, *, edges=0):
                     tag = nbtlib.parse_nbt(item)
                 except nbtlib.InvalidLiteral as error:
                     return {
-                        "result_path": list(path),
+                        "result_path": [*base_path, *path],
                         "characters": len(item),
                         "parse_error": str(error),
                     }
                 return index(describe_tag(tag, "children", limit=20), budget, path)
             leaf = {
-                "result_path": list(path),
+                "result_path": [*base_path, *path],
                 "type": type(item).__name__,
                 "characters": len(encoded),
                 "preview": "",
@@ -260,7 +324,7 @@ def evidence_view(value, limit=6000, *, edges=0):
             return leaf
         if budget < 240:
             return {
-                "result_path": list(path),
+                "result_path": [*base_path, *path],
                 "type": type(item).__name__,
                 "length": len(pairs),
                 "omitted": True,
@@ -282,7 +346,7 @@ def evidence_view(value, limit=6000, *, edges=0):
             entries.append(entry)
             remaining -= len(json.dumps(entry, ensure_ascii=False))
         return {
-            "result_path": list(path),
+            "result_path": [*base_path, *path],
             "type": type(item).__name__,
             "length": len(pairs),
             "items": entries,

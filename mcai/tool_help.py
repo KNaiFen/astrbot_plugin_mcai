@@ -75,7 +75,11 @@ EXAMPLES = {
     },
     "mc_artifact_find": {"job_id": "J", "reference": "R.json", "query": "目标文本"},
     "mc_operation_read": {"operation_id": "O", "result_path": ["operation", "status"]},
-    "mc_context_history": {"entry": 1, "result_path": ["result"], "view": "summary"},
+    "mc_context_history": {
+        "entry": 1,
+        "result_path": ["result", "data", "items"],
+        "view": "summary",
+    },
     "mc_propose": {
         "summary": "重启服务端并确认正常上线",
         "steps": [
@@ -102,6 +106,10 @@ EXAMPLES = {
     },
 }
 GUIDANCE = {
+    "mc_workspace": "无源码时用 jar_search 查常量池或文本，用 jar_read 读条目，decompile 查选定类。javap 可按 method 筛选，完整输出和反编译结果用 read 续读 output_path。"
+    "映射查询用 mapping_lookup；重映射反编译仍传 JAR 中真实类名，编写补丁前用 runtime_symbols_path 核对运行时签名。"
+    "jar_patch 可用 nested_jar（外层内的 .jar 条目，最多 64 MiB）单步修补并重打包；内外任一层有签名时须明确 strip_signatures=true。"
+    "exec 的文本输出见 stdout，按 next_call 续读。安装仍先 stage，再提交 install_download 走试服验证。",
     "mc_history": "list默认status=active、limit=20（1~50），按最新在前返回目录；category按类型精确过滤。search支持中英文多词，默认limit=8（1~20）、status=active；all_servers=true跨服查已关联文档，不能同时指定directory，须核对环境差异。list/search的offset是案例下标，沿next_call续页；read/index的offset是字符偏移。优先list/search定位case_id再用mc_knowledge读详情（跨服命中可同时传directory）。只读问答仅允许所选实例的list/search/read，禁止index、all_servers=true或指定其他directory。",
     "mc_propose": "首次提交summary与具体steps；能一次性确定全部参数与路径的常规操作直接放进同一批steps，不要无故拆成多轮。summary发给群里管理员看，用一两句人话写清原因、目标与关键风险或备份状态即可（启动参数、后续规划和只读核验证据不要堆进summary）。确需按现场结果分批决策时，同时声明continuation的scope、completion与planned_stages（用管理员能直接看懂的日常中文简洁分点写出首批之后预计如何动态推进与收尾，禁止出现内部工具名、动作名、参数名或代码术语）。"
     "返回awaiting_approval后结束本轮等待程序提示批准。批准后续批仅带原plan_id、summary与steps；"

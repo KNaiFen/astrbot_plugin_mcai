@@ -5,8 +5,11 @@ import hashlib
 import re
 from pathlib import PurePosixPath
 
+import nbtlib
+
 from .review import digest
 
+INITIAL_REPORT_FEEDBACK_ID = "report"
 FILE_ACTIONS = {
     "block_batch",
     "region_prune",
@@ -320,7 +323,11 @@ def plan_sections(plan):
             if "scan_job_id" in step:
                 detail += "；按已冻结清单"
             if "bounds" in step:
-                detail += f"；范围 {step['bounds']}，匹配上限 {step['max_matches']}"
+                x1, y1, z1, x2, y2, z2 = step["bounds"]
+                detail += (
+                    f"；坐标范围 ({x1}, {y1}, {z1}) 至 ({x2}, {y2}, {z2})，"
+                    f"匹配上限 {step['max_matches']}"
+                )
             if kind in ("region_prune", "nbt_prune"):
                 for key, title in (
                     ("entity_type", "实体类型"),
@@ -330,11 +337,19 @@ def plan_sections(plan):
                     if key in step:
                         detail += f"；{title} {step[key]}"
                 field = ".".join(map(str, step.get("relative_path", []))) or "匹配对象"
-                detail += (
-                    f"；删除 {field}"
-                    if step["op"] == "delete"
-                    else f"；设置 {field} 为 {step.get('state', step.get('value'))}"
-                )
+                if step["op"] == "delete":
+                    detail += f"；删除 {field}"
+                elif "state" in step:
+                    state = step["state"]
+                    if isinstance(state, str):
+                        state = nbtlib.parse_nbt(state)
+                    name = state.get("Name") if isinstance(state, dict) else None
+                    if name == "minecraft:air":
+                        detail += "；设为空气（minecraft:air）"
+                    else:
+                        detail += f"；设为 {name}" if name else "；设置方块状态"
+                else:
+                    detail += f"；设置 {field} 为 {step.get('value')}"
                 if step.get("clear_block_entity"):
                     detail += "；同时移除对应方块实体"
             if step.get("targets") and "path" not in step:

@@ -3,11 +3,9 @@ import copy
 import difflib
 import hashlib
 import json
-import os
 import shutil
 import time
 import uuid
-from pathlib import Path
 from types import SimpleNamespace
 from zipfile import BadZipFile
 
@@ -80,9 +78,9 @@ from .evidence import (
     tool_evidence,
 )
 from .model_budget import (
-    BASELINE_FACTORS,
     CompactionMessage,
     DeveloperMessage,
+    budget_factor,
     context_input_usage,
     estimated_input,
     record_usage,
@@ -108,6 +106,7 @@ from .tool_results import (
 )
 from .tool_schemas import BASE_TOOLS, QUERY_TOOLS, TOOLS
 from .tracing import traced_provider
+from .workspace_tools import JDK_TOOLS, jdk_executables
 
 PROMPT = (
     """你是 Minecraft 服务端运维与排障助手，用中文协助管理员，目标是把问题定位清楚并推进到可核实的结果。
@@ -200,27 +199,7 @@ def clean_arguments(arguments):
 
 
 def javap_java_executable(configured_path=""):
-    if configured_path:
-        selected = Path(configured_path).expanduser()
-        if selected.name.lower() in ("java.exe", "javap.exe") and selected.is_file():
-            java = selected.resolve().with_name("java.exe")
-            if java.is_file() and java.with_name("javap.exe").is_file():
-                return str(java)
-        raise ValueError(
-            "A 端 workspace_java_path 须指向同一 JDK bin 目录中的 java.exe 或 javap.exe，且两个文件都必须存在"
-        )
-    candidates = []
-    if home := os.environ.get("JAVA_HOME"):
-        candidates.append(Path(home) / "bin" / "java.exe")
-    for executable in ("javap", "java"):
-        if path := shutil.which(executable):
-            candidates.append(Path(path).resolve().with_name("java.exe"))
-    for candidate in candidates:
-        if candidate.is_file() and candidate.with_name("javap.exe").is_file():
-            return str(candidate.resolve())
-    raise ValueError(
-        "A 端找不到含 javap.exe 的 JDK，请配置 workspace_java_path 或设置 A 端 JAVA_HOME / PATH"
-    )
+    return str(jdk_executables(configured_path, required=("java", "javap"))["java"])
 
 
 def clean_tool_arguments(raw):
@@ -525,34 +504,30 @@ class AstrBotAgent:
                 else budget_provider
             )
             budget = job.get("context_budget", {})
-            factor = BASELINE_FACTORS["main"]
-            exact = sum(item.get("compaction_tokens", 0) for item in job["messages"])
-            raw = request_overhead() + tokens(job["messages"]) - exact
-            available = (
-                budget.get("input_limit", budget.get("limit", 272000))
-                - exact
-                - estimated_input(tasks.store, active_budget, "main", raw)
-            ) / factor
+            input_limit = budget.get("input_limit", budget.get("limit", 272000))
+            factor = budget_factor(tasks.store, active_budget, "main", incremental=True)
+            messages = job["messages"]
             usage = job.get("context_usage")
             if (
                 usage
                 and usage["identity"]
                 == context_identity(active_budget, system, tool_definitions)
-                and digest(job["messages"][: usage["messages"]]) == usage["prefix"]
+                and digest(messages[: usage["messages"]]) == usage["prefix"]
             ):
-                tail = job["messages"][usage["messages"] :]
+                tail = messages[usage["messages"] :]
                 if tail and tail[0]["role"] == "assistant":
                     tail = tail[1:]
-                available = min(
-                    available,
-                    (
-                        budget["input_limit"]
-                        - usage["input_tokens"]
-                        - usage["output_tokens"]
-                    )
-                    / factor
-                    - tokens(tail),
-                )
+                available = (
+                    input_limit - usage["input_tokens"] - usage["output_tokens"]
+                ) / factor - tokens(tail)
+            else:
+                exact = sum(item.get("compaction_tokens", 0) for item in messages)
+                raw = request_overhead() + tokens(messages) - exact
+                available = (
+                    input_limit
+                    - exact
+                    - estimated_input(tasks.store, active_budget, "main", raw)
+                ) / factor
             return max(
                 128,
                 int(
@@ -562,22 +537,26 @@ class AstrBotAgent:
                 ),
             )
 
-        def fits_result(result, name, call_id):
-            content = json.dumps(result, ensure_ascii=False)
+        def fits_result(content, name, mode, call_id):
+            paged = name in PAGED_RESULTS or (
+                name == "mc_workspace" and mode in ("read", "jar_read")
+            )
             return (
-                len(content)
-                <= (PAGE_CHAR_LIMIT if name in PAGED_RESULTS else RESULT_CHAR_LIMIT)
+                len(content) <= (PAGE_CHAR_LIMIT if paged else RESULT_CHAR_LIMIT)
                 and tokens(
                     [{"role": "tool", "tool_call_id": call_id, "content": content}]
                 )
                 <= result_budget()
             )
 
-        def reading_view(value):
+        def reading_view(value, base_path=()):
             limit = 6000
             while True:
                 view = evidence_view(
-                    value, limit, edges=min(240, limit // 12) if limit >= 1200 else 0
+                    value,
+                    limit,
+                    edges=min(240, limit // 12) if limit >= 1200 else 0,
+                    base_path=base_path,
                 )
                 size = tokens(
                     [{"role": "user", "content": json.dumps(view, ensure_ascii=False)}]
@@ -685,6 +664,7 @@ class AstrBotAgent:
                         key,
                         job["id"],
                         {**arguments, "script_hashes": record["checks"]},
+                        java_path=self.workspace_java_path,
                     )
                     if workspace
                     else tasks.downloads.download(tasks.local_jobs, key, arguments)
@@ -1161,14 +1141,20 @@ class AstrBotAgent:
                 ]
                 if staged:
                     trial = job.get("trial")
-                    feedback = tasks.admin_feedback(
-                        job, arguments.get("trial_feedback_id")
-                    )
-                    if not approved or not feedback or len(staged) != 1:
-                        raise ValueError(
-                            "发布须沿原多轮方案引用任务管理员的原始反馈，并且每批只发布一份工作区制品"
-                        )
                     waived = arguments.get("client_login_waived", False)
+                    feedback = tasks.admin_feedback(
+                        job, arguments.get("trial_feedback_id"), allow_report=waived
+                    )
+                    if not approved or len(staged) != 1:
+                        raise ValueError(
+                            "发布须沿原多轮方案执行，并且每批只发布一份工作区制品"
+                        )
+                    if not feedback:
+                        raise ValueError(
+                            "trial_feedback_id 须引用任务管理员 /mcaisay 的原始反馈 ID；"
+                            '仅当 client_login_waived=true 且管理员本人在 /mcainew 初始描述中已明确书面豁免时可填 "report"。'
+                            "若尚未取得明确授权，请先用 mc_say 向管理员确认。"
+                        )
                     test_operation_id = arguments.get("test_operation_id")
                     if waived:
                         if not test_operation_id:
@@ -1289,6 +1275,14 @@ class AstrBotAgent:
                 elif name == "mc_workspace":
                     directory = tasks.workspace.directory(job["id"])
                     directory.mkdir(parents=True, exist_ok=True)
+                    env = await asyncio.to_thread(
+                        tasks.workspace.tools.exec_environment, self.workspace_java_path
+                    )
+                    injected_env = {
+                        key: env[key]
+                        for field in (*JDK_TOOLS, "tools_dir", "asm_cp")
+                        if (key := "MCAI_WORKSPACE_" + field.upper()) in env
+                    }
                     material = await asyncio.to_thread(
                         review_material,
                         directory,
@@ -1299,11 +1293,14 @@ class AstrBotAgent:
                             "commands": [arguments["script"]],
                             "powershell_path": tasks.workspace.powershell_path,
                         },
+                        injected_env=injected_env,
                     )
                     material["status"] = {"environment": "A 工作区"}
                     material["configuration"] = {
                         "workspace": str(directory),
                         "powershell_path": tasks.workspace.powershell_path,
+                        "injected_env": injected_env,
+                        "injected_env_note": "列出的 JDK 工具已校验位于同一 bin 目录；列出 ASM 时，4 个 JAR 均通过固定 SHA-256 校验。",
                     }
                 else:
                     if name == "mc_propose":
@@ -1504,10 +1501,26 @@ class AstrBotAgent:
                     return await asyncio.to_thread(
                         tasks.workspace.read, job["id"], arguments
                     )
-                if mode in ("jar_entries", "jar_diff", "javap"):
+                sources = {
+                    "jar_entries": ("",),
+                    "jar_read": ("",),
+                    "jar_search": ("",),
+                    "javap": ("",),
+                    "jar_diff": ("left_", "right_"),
+                    "decompile": ("", "mapping_"),
+                    "mapping_lookup": ("mapping_",),
+                    "jar_patch": ("source_",),
+                }.get(mode)
+                if sources:
                     artifacts = {}
-                    for side in ("left_", "right_") if mode == "jar_diff" else ("",):
+                    for side in sources:
                         path, download = side + "path", side + "download_id"
+                        if (
+                            mode == "decompile"
+                            and side == "mapping_"
+                            and not (path in arguments or download in arguments)
+                        ):
+                            continue
                         if (path in arguments) == (download in arguments):
                             raise ValueError(f"{path} 与 {download} 必须且只能指定一个")
                         if download in arguments:
@@ -1521,9 +1534,16 @@ class AstrBotAgent:
                         return await tasks.workspace.javap(
                             job["id"],
                             arguments,
-                            java_executable=javap_java_executable(
-                                self.workspace_java_path
+                            java_executable=await asyncio.to_thread(
+                                javap_java_executable, self.workspace_java_path
                             ),
+                            **artifacts,
+                        )
+                    if mode in ("decompile", "mapping_lookup"):
+                        return await getattr(tasks.workspace, mode)(
+                            job["id"],
+                            arguments,
+                            java_path=self.workspace_java_path,
                             **artifacts,
                         )
                     return await asyncio.to_thread(
@@ -1650,7 +1670,25 @@ class AstrBotAgent:
                     )
                     if not rows or rows[0]["seq"] != arguments["entry"]:
                         raise ValueError("历史引用不属于当前任务")
-                    value = result_at(rows[0]["body"], arguments.get("result_path", []))
+                    body = rows[0]["body"]
+                    path = arguments.get("result_path", [])
+                    try:
+                        value = result_at(body, path)
+                    except ValueError as exc:
+                        result = body.get("result")
+                        if path and path[0] not in body and isinstance(result, dict):
+                            data = result.get("data")
+                            if path[0] in result:
+                                prefix = ["result"]
+                            elif isinstance(data, dict) and path[0] in data:
+                                prefix = ["result", "data"]
+                            else:
+                                raise
+                            suggestion = json.dumps(prefix + path, ensure_ascii=False)
+                            raise ValueError(
+                                f"{exc}；请改用 result_path={suggestion}"
+                            ) from exc
+                        raise
                     if (
                         arguments.get(
                             "view", "value" if "offset" in arguments else "summary"
@@ -1660,8 +1698,8 @@ class AstrBotAgent:
                         return {
                             "view": "summary",
                             "entry": arguments["entry"],
-                            "result_path": arguments.get("result_path", []),
-                            "overview": reading_view(value),
+                            "result_path": path,
+                            "overview": reading_view(value, path),
                         }
                     text = json.dumps(value, ensure_ascii=False)
                     offset = arguments.get("offset", 0)
@@ -1920,7 +1958,17 @@ class AstrBotAgent:
                             data.update(metadata_omitted=True, note=JOB_METADATA_NOTE)
                         else:
                             poll = ("job_poll_metadata", key, fingerprint)
-                if not fits_result(original, result_name, record["call_id"]):
+                content = json.dumps(original, ensure_ascii=False)
+                size = len(content)
+                inline = ("error" in original and size <= 1200) or (
+                    record["name"] == "mc_context_history"
+                    and "entry" in record["arguments"]
+                    and size <= 2400
+                )
+                mode = result_arguments.get("mode")
+                if not inline and not fits_result(
+                    content, result_name, mode, record["call_id"]
+                ):
                     entry = save_tool_context(
                         tasks,
                         job,
@@ -1955,7 +2003,7 @@ class AstrBotAgent:
                             **metadata,
                             "complete": False,
                             "context_entry": entry,
-                            "overview": reading_view(data),
+                            "overview": reading_view(data, ("result", "data")),
                             "message": "原始结果按预算外置，先看overview，按目标读取必要字段；勿全文分页或重跑。",
                         },
                         "next_call": {
@@ -1973,7 +2021,10 @@ class AstrBotAgent:
                             "message": f"工具失败，完整错误见mc_context_history entry={entry}",
                         }
                     if not fits_result(
-                        record["model_result"], result_name, record["call_id"]
+                        json.dumps(record["model_result"], ensure_ascii=False),
+                        result_name,
+                        mode,
+                        record["call_id"],
                     ):
                         record["model_result"]["data"].pop("overview", None)
                         record["model_result"]["data"]["message"] = (
@@ -2339,7 +2390,7 @@ class AstrBotAgent:
                 for item in notices
             ]
 
-        def append_runtime_state(history):
+        def append_runtime_state(history, *, restoring=False):
             approved = job.get("approved_plan")
             approved_state = None
             if approved:
@@ -2380,13 +2431,13 @@ class AstrBotAgent:
                             present.add(name)
                 if latest is not None and present.issuperset(state["loaded_workflows"]):
                     break
-            guides = {
-                name: PLAYBOOKS[name]
-                for name in state["loaded_workflows"]
-                if name not in present
-            }
-            if latest == state and not guides:
+            loaded = state["loaded_workflows"]
+            missing = [name for name in loaded if name not in present]
+            if latest == state and not missing:
                 return False
+            guides = {
+                name: PLAYBOOKS[name] for name in (loaded if restoring else missing)
+            }
             if guides:
                 state["guides"] = guides
             history.append(
@@ -2475,8 +2526,8 @@ class AstrBotAgent:
                 rejected_compaction=rejected_compaction,
                 **compaction_options,
             )
-            # If compaction consumed a snapshot or its guide, restore it at the tail.
-            if append_runtime_state(fitted):
+            # The next fit can consume older snapshots and the guides they carry.
+            if append_runtime_state(fitted, restoring=True):
                 tasks.save(job)
                 fitted = await fit_history(
                     tasks,

@@ -26,7 +26,7 @@ from .model_budget import (
     tokens,
 )
 from .model_usage import UsageWriteError
-from .plans import plan_text
+from .plans import INITIAL_REPORT_FEEDBACK_ID, plan_text
 from .review import digest, review_file_previews
 from .search import render_citations
 from .tracing import traced_provider
@@ -2112,6 +2112,7 @@ mc_propose的material.effective_steps是程序展开的实际执行顺序，包�
 feedback中的压缩摘要由独立审核侧生成；constraints中的quote来自原反馈的逐字片段，sender/is_admin由程序从原记录补入，来源身份不能根据摘要改变。管理员范围、禁止事项、撤回与后续调整结合时间顺序判断；摘要不构成额外批准。
 evidence由程序从同一任务的持久原始工具记录独立取证。大结果使用确定性结构视图；same_as、covered_by引用同批原始来源，segments保留非重叠范围。view=summary或omitted表示未完整展示，不能据此断言缺省项不存在。若主模型已引用相关evidence_id但正文因超限被折叠，按缺失的具体字段或行段指出补证需求，不视为隐瞒证据；任务相关事实已足够时无需为未读完无关原文拒绝。实际脚本和有效步骤不以有损摘要替代。
 mc_exec 和 mc_console_send 只允许诊断；生产修改必须提交 mc_propose。
+A 端 mc_workspace exec 的 configuration.injected_env 由程序注入，列出的 JDK 路径与 ASM JAR 已分别校验同一 bin 目录与固定 SHA-256；对这些变量的直接引用视为已核实，无需因环境变量引用拒绝。
 mc_query diagnostics heap_dump 属于高开销在线取证（非状态变更，无需改走 mc_propose 或停服），但会造成短时停顿并占用数 GB 磁盘：仅当已核对目标 JVM PID、磁盘剩余空间充足、输出路径隔离，且所引 admin_feedback_id 确为管理员（is_admin=true）在获知停顿与磁盘代价后的明确同意回复时才可放行；缺任一项一律拒绝。
 mc_propose 是等待管理员批准的方案，你的通过不代替管理员批准，允许范围明确的日常运维和故障修复方案。
 首次带continuation的提案同时审核允许范围、完成条件、后续规划（planned_stages）和首批步骤，其中 continuation.scope 必须明确限定具体目标对象（如指定文件、坐标/区块范围、特定模组）与允许动作类别，不得放行“排查或修复全服所有异常”等无边界宽泛授权；continuation.planned_stages 须与首批步骤及允许范围一致，如实说明后续动态推进阶段，不得夸大承诺或误导管理员。续批带plan_id时，以程序提供的approved_plan为已批准原文，结合observations审核具体步骤是否仍在范围内；范围内可更换命令或工具，无需再次人工批准。改变目标、扩大范围或失败后的新修复应拒绝沿用原批准，说明须重新提案。主模型的本批summary不能扩大原批准范围。
@@ -2641,17 +2642,26 @@ class Reviewer:
                 }
             )
         if trial := record.get("trial_release"):
-            feedback = job["feedback"]
             waived = trial.get("client_login_waived", False)
-            index = next(
-                i for i, row in enumerate(feedback) if row["id"] == trial["feedback_id"]
-            )
+            feedback_rows = job.get("feedback", [])
+            feedback_id = trial["feedback_id"]
+            if feedback_id == INITIAL_REPORT_FEEDBACK_ID:
+                feedback = tasks.admin_feedback(job, feedback_id, allow_report=waived)
+                if feedback is None:
+                    raise ValueError("用于发布审核的任务管理员原始反馈已无法核实")
+                later = 0
+            else:
+                index = next(
+                    i for i, row in enumerate(feedback_rows) if row["id"] == feedback_id
+                )
+                feedback = feedback_rows[index]
+                later = index + 1
             payload["trial_release"] = {
                 "client_login_waived": waived,
                 "invitation": trial.get("text"),
-                "feedback": feedback[index],
+                "feedback": feedback,
                 "later_admin_feedback": [
-                    row for row in feedback[index + 1 :] if row["is_admin"]
+                    row for row in feedback_rows[later:] if row["is_admin"] is True
                 ],
                 "download_id": trial["download_id"],
                 "sha256": trial["sha256"],
@@ -2660,7 +2670,8 @@ class Reviewer:
                 "precondition": "正常停止同一任务试服，再执行正式服步骤",
             }
             payload["trial_release_note"] = (
-                "核对管理员原话和后续补充，确认管理员明确同意对同一试服制品免真人进服测试并发布。"
+                "以 trial_release.feedback 中的管理员原话及后续补充为准，确认管理员明确同意对同一试服制品免真人进服测试并发布。"
+                "创建任务时引用的原文不构成授权。"
                 "仍须核对同一制品的试服安装与启动就绪；授权缺失、撤回或制品指代不明时拒绝。"
                 if waived
                 else "\n核对trial_release的试玩邀请、管理员原话和后续补充。判断是否明确支持"

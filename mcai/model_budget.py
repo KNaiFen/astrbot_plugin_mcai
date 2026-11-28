@@ -17,6 +17,9 @@ BASELINE_FACTORS = {
     "review_compaction": 1.6,
     "archive": 1.6,
 }
+MIN_CALIBRATED_FACTORS = dict.fromkeys(BASELINE_FACTORS, 1.10)
+MIN_CALIBRATED_FACTORS["main"] = 1.05
+MIN_CALIBRATION_SAMPLES = 3
 
 
 class DeveloperMessage(Message):
@@ -47,7 +50,7 @@ def calibration_key(provider, purpose):
     config = provider.provider_config
     return digest(
         {
-            "estimator_version": 2,
+            "estimator_version": 3,
             "provider": config.get("id"),
             "type": config.get("type"),
             "model": getattr(provider, "model_name", config.get("model")),
@@ -57,23 +60,37 @@ def calibration_key(provider, purpose):
     )
 
 
-def budget_factor(store, provider, purpose):
-    sample = store.get("token_budget", calibration_key(provider, purpose))
-    return sample["factor"] if sample else BASELINE_FACTORS[purpose]
+def _calibration(purpose, sample):
+    baseline = BASELINE_FACTORS[purpose]
+    ratios = sample.get("ratios", [])
+    overheads = sample.get("overheads")
+    if overheads is None and "input_tokens" in sample:
+        overheads = [sample["input_tokens"] - sample["estimated_tokens"] * baseline]
+    overhead = max(0, max(overheads or (), default=0))
+    if ratios:
+        peak = max(ratios)
+        if len(ratios) >= MIN_CALIBRATION_SAMPLES and not overhead:
+            reduced = peak * 1.10
+            if reduced < baseline:
+                return max(MIN_CALIBRATED_FACTORS[purpose], reduced), 0
+        return max(baseline, peak * 1.05), overhead
+    return max(baseline, sample.get("factor", baseline)), overhead
+
+
+def budget_factor(store, provider, purpose, *, incremental=False):
+    sample = store.get("token_budget", calibration_key(provider, purpose)) or {}
+    if incremental and len(sample.get("ratios", [])) < MIN_CALIBRATION_SAMPLES:
+        return BASELINE_FACTORS[purpose]
+    return _calibration(purpose, sample)[0]
 
 
 def estimated_input(store, provider, purpose, estimate):
     baseline = BASELINE_FACTORS[purpose]
-    sample = store.get("token_budget", calibration_key(provider, purpose))
-    if sample is None:
-        return math.ceil(estimate * baseline)
+    sample = store.get("token_budget", calibration_key(provider, purpose)) or {}
     # Calibrate the measured excess separately: a small request's high ratio
     # must not multiply a provider's fixed input overhead on larger requests.
-    overheads = sample.get(
-        "overheads",
-        [sample["input_tokens"] - sample["estimated_tokens"] * baseline],
-    )
-    return math.ceil(estimate * baseline + max(0, max(overheads)) * 1.05)
+    factor, overhead = _calibration(purpose, sample)
+    return math.ceil(estimate * min(baseline, factor) + overhead * 1.05)
 
 
 def context_input_usage(response):
@@ -119,10 +136,9 @@ def record_usage(store, provider, purpose, estimate, response):
             "purpose": purpose,
             "estimated_tokens": estimate,
             "input_tokens": input_tokens,
-            "factor": max(
-                BASELINE_FACTORS[purpose],
-                max(ratios) * 1.05,
-            ),
+            "factor": _calibration(purpose, {"ratios": ratios, "overheads": overheads})[
+                0
+            ],
             "ratios": ratios,
             "overheads": overheads,
             "samples": (previous["samples"] if previous else 0) + 1,

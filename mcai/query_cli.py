@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import re
 
 from jsonschema import validate
 
@@ -117,7 +118,16 @@ EXAMPLES = {
             "[0,0,0,31,255,31]",
             "--result",
             "by_type",
-        ]
+        ],
+        [
+            "region-scan",
+            "--world-path",
+            "world",
+            "--dataset",
+            "entities",
+            "--conditions",
+            r'[{"op":"eq","path":["Tags","*"],"value":"\"keep\""}]',
+        ],
     ],
     "diagnostics": [
         ["diagnostics", "jvm", "--samples", "1"],
@@ -192,8 +202,9 @@ GUIDANCE["region-nbt"] += (
     "\n" + GUIDANCE["nbt"] + "\npreview-batch的changes每项还需x/z全局区块坐标。"
 )
 GUIDANCE["region-scan"] += (
-    '\nconditions为数组，例如[{"op":"eq","path":["id"],"value":"\\"minecraft:cow\\""}]。'
-    "op支持exists/eq/ne/gt/ge/lt/le/contains；path支持*展开列表或数组，exists只需path，其余还需带类型SNBT字符串value。"
+    "\nconditions为数组；匹配实体标签keep时，value必须保留SNBT字符串的双引号，"
+    r'例如 [{"op":"eq","path":["Tags","*"],"value":"\"keep\""}]。'
+    "op支持exists/not_exists/eq/ne/gt/ge/lt/le/contains；path支持*展开列表或数组，exists/not_exists只需path，其余还需带类型SNBT字符串value。"
 )
 EXAMPLES["files"].append(
     [
@@ -317,10 +328,41 @@ def parser():
             for key, field in fields.items():
                 if key == "mode":
                     continue
+                help_text = field.get("description", key)
+                minimum = field.get("minimum", field.get("minItems"))
+                maximum = field.get("maximum", field.get("maxItems"))
+                details = []
+                if minimum is not None and maximum is not None:
+                    if not re.search(
+                        rf"(?<!\d){minimum}\s*(?:-|–|—|~|～|至|到)\s*{maximum}(?!\d)",
+                        help_text,
+                    ):
+                        details.append(f"范围 {minimum}-{maximum}")
+                elif minimum is not None and not re.search(
+                    rf"(?:至少|最少)\s*{minimum}(?!\d)", help_text
+                ):
+                    details.append(f"至少 {minimum}")
+                elif maximum is not None and not re.search(
+                    rf"(?:至多|最多|不超过)\s*{maximum}(?!\d)", help_text
+                ):
+                    details.append(f"至多 {maximum}")
+                if "default" in field:
+                    default = field["default"]
+                    label = (
+                        default
+                        if isinstance(default, str)
+                        else json.dumps(default, ensure_ascii=False)
+                    )
+                    if not re.search(
+                        rf"默认\s*(?:为\s*)?{re.escape(label)}(?![\w.])", help_text
+                    ):
+                        details.append(f"默认 {label}")
+                if details:
+                    help_text += "（" + "，".join(details) + "）"
                 options = {
                     "dest": key,
                     "required": key in required,
-                    "help": field.get("description", key),
+                    "help": help_text,
                 }
                 kind = field.get("type")
                 if kind == "boolean":

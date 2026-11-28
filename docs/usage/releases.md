@@ -1,4 +1,16 @@
-# 0.21.4 发布说明
+# 0.22.0 发布说明
+
+0.22.0 继续使用 `mcai-9`。本次改动涉及 A 端（AstrBot 插件）、B 端（Windows 主机与 Java 存档辅助程序）与 Probe 0.5.0（八目标已同步重编）；请按[升级步骤](operations.md#升级步骤)配套更新 A、B 与托管窗口，已安装 Probe 的服请停服后用本版 B 包 `probe/` 中同名的 JAR 替换旧文件。下载及校验见 [GitHub Release v0.22.0](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.22.0)。
+
+| 模块 | 主要更新与修复（`8000883..e4645dc`） |
+|---|---|
+| A 端工作区 JAR 反编译、映射与修补 | 补齐 `mc_workspace` 只读与修补工具链：新增 `jar_read`、`jar_search`（支持一层嵌套 JAR）、`mapping_lookup`、`decompile`（Vineflower + mapping-io + ASM，首次缺工具时按固定 SHA-256 自动下载或经离线脚本预置）与 `jar_patch`（支持单次修补最大 64 MiB 的内嵌 JAR 并核验签名与双层哈希）；工作区 `exec` 注入已校验 JDK／ASM 环境变量并纳入独立审核，纯文本页合并为 `stdout`，同步完善试服地址监听与[试服发布指南](operations.md#mod-试服试玩与正式发布) |
+| 上下文校准与免试玩授权 | 历史容量与审核预检升级为按最近 16 次有效用量双向校准，修复压缩缩减前后口径不一致与检查点重复压入；纯服务端改动支持任务管理员在 `/mcainew` 本人原始描述（`trial_feedback_id="report"`）或 `/mcaisay` 中书面授权免真人进服测试并经独立审核与 B 端同 SHA-256／`ready` 核验 |
+| 大数据量存档、日志与诊断防爆治理 | `WorldTool` 改为动态 `-Xmx` 并支持大 `.mcc` 外部区块流式校验、扫描、计数、裁剪（`by_filter` 上限放宽至 2,000,000、支持 `not_exists`）与单区块直读，列表展示限制 10,000 行且冻结清单逐条落盘流式消费；64 MiB+ 大日志 `files tail` 与 `logs search` 直接窗口读尾，超过 256 MiB 的故障留证自动保存首 1 MiB＋尾 16 MiB 摘录；独立 NBT 限制 64 MiB 解压上限与有界 SNBT；方块批改按 section 合并单次解包打包大幅提速；区域快照／校验／安装全程流式化；世界发现与数据包清单跳过网页地图、备份、缓存等巨量目录，`files find` 设 10,000 上限；诊断脚本流式批量落库；JFR 汇总改为 128–1024 MiB 动态堆与 120 秒超时，离线 `.hprof.gz` 避免 Python 整包重复解压并放宽 Dominator 上限；文本补丁限制 16 MiB；共享 Broker 隔离单个 worker 启动异常、超帧与超长报错，不再拖垮其他并发任务 |
+| Probe 0.5.0 高压实体扫描升级 | Probe 八目标重构按区块／类型聚合扫描（不缓存逐实体 UUID，支持最高 200 万实体聚合），跨 tick 游标快照防并发遍历异常，SNBT 输出按 UTF-8 字节预算提前熔断，慢拍摘要上限 16,384 条；B 端根据 MSPT 动态延长低 TPS 等待上限，详见[服内探针说明](probe.md) |
+| 实服压测复盘与体验修复 | 离线或目标不明时 Probe 交换前置校验、严禁向实例目录落盘请求文件；多页 `files tail` 首页改为优先覆盖文件最末尾最新行（`eof_first`）；`mc_inventory` 新增 `query` 子串过滤并向 `/mcaiask` 开放离线组件声明核查；`mc_context_history` 错层报错与概览直出可复用完整 `result_path`，CLI `--help` 补齐范围／默认值与 `--conditions` 转义示例，独立审核材料自动附带冻结筛选条件、样本及触及的 `mods/`／`plugins/` 组件元数据；`region-check --include-related` 遇 0 字节关联文件不遮挡主结果（删除／导出／恢复仍安全拒绝）；`mc_plan_finish` 区分未读系统通知与真实管理员反馈；待批主卡改以通俗中文展示坐标范围与空气方块状态并同步更新[查询与运行文档](queries.md) |
+
+## 0.21.4 发布说明
 
 0.21.4 继续使用 `mcai-9`。本次运行时功能变更仅涉及 A 端（AstrBot 插件），若 B 端已升级至 0.21.3、托管窗口已升级至 0.21.1 且 Probe 0.5.0 已升级至 0.20.8，只需更新 A 端插件即可，无需重启 B 端、托管窗口或替换 Probe JAR；从 0.21.2 或更旧版本升级请按[升级步骤](operations.md#升级步骤)配套更新对应组件。随 B 包提供的 Probe 0.5.0 构建与 0.20.8 相同。下载及校验见 [GitHub Release v0.21.4](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.21.4)。
 

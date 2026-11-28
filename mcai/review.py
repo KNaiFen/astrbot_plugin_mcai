@@ -559,7 +559,13 @@ def script_commands(source, language, parse, root):
 
 
 def review_material(
-    directory, args, *, steps=(), restorations=None, restore_checks=None
+    directory,
+    args,
+    *,
+    steps=(),
+    restorations=None,
+    restore_checks=None,
+    injected_env=None,
 ):
     from .configuration import bat_codepage
     from .text_files import decode_text
@@ -727,6 +733,8 @@ def review_material(
                 )
             for command in commands_cache[cache_key]:
                 words = command["words"]
+                if injected_env and command.get("env_command") in injected_env:
+                    words = [injected_env[command["env_command"]], *words[1:]]
                 validate_script_command(
                     words,
                     command["source"],

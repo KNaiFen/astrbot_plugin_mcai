@@ -1,3 +1,4 @@
+import codecs
 import datetime as dt
 import gzip
 import hashlib
@@ -13,6 +14,30 @@ from pathlib import Path, PureWindowsPath
 from .evidence import json_size
 from .paths import resolve_file
 from .text_files import BOMS, patch_text
+
+MAX_FIND_FILES = 10_000
+IGNORED_SCAN_DIRS = frozenset(
+    {
+        ".git",
+        ".mcai-probe",
+        "backups",
+        "backup",
+        "logs",
+        "libraries",
+        "mods",
+        "plugins",
+        "bluemap",
+        "dynmap",
+        "pl3xmap",
+        "squaremap",
+        "simplebackups",
+        "ftbbackups",
+        "worldbackups",
+        "crash-reports",
+        "cache",
+        ".cache",
+    }
+)
 
 SENSITIVE_EXACT_NAMES = frozenset(
     {
@@ -118,6 +143,73 @@ def shared_binary(path):
     return os.fdopen(msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY), "rb")
 
 
+def _log_window(source, size, available, encoding, cancelled, lines=None):
+    """Seek to a complete line within the byte window, without decoding its prefix."""
+    start = size - available
+    if encoding == "utf-16":
+        encoding = "utf-16-be" if source.read(2) == b"\xfe\xff" else "utf-16-le"
+    width = 2 if encoding.startswith("utf-16") else 1
+    start += -start % width
+    end = size - size % width
+    if start >= end or lines == 0:
+        source.seek(size)
+        return 0, encoding
+    lf, cr = (char.encode(encoding) for char in ("\n", "\r"))
+    # Use LF for CRLF; the lookahead also allows overlapping UTF-16 byte matches.
+    newline = re.compile(
+        b"(?=" + re.escape(lf) + b"|" + re.escape(cr) + b"(?!" + re.escape(lf) + b"))"
+    )
+    if lines is not None:
+        # Keep EOF in scope even when the byte window contains too many lines.
+        right = end
+        while right > start and not cancelled():
+            left = max(start, right - 65536)
+            source.seek(left)
+            block = source.read(min(right + width, end) - left)
+            for pos in reversed([left + m.start() for m in newline.finditer(block)]):
+                stop = pos + width
+                if pos >= right or pos % width or stop >= end:
+                    continue
+                lines -= 1
+                if lines == 0:
+                    source.seek(stop)
+                    return size - stop, encoding
+            right = left
+    source.seek(start - width)
+    previous, first = source.read(width), source.read(width)
+    if previous == lf or previous == cr and first != lf:
+        source.seek(start)
+        return size - start, encoding
+    decoder = (
+        codecs.getincrementaldecoder(encoding)(errors="ignore")
+        if lines is None
+        else None
+    )
+    skipped = 0
+    while start < end and not cancelled():
+        source.seek(start)
+        block = source.read(min(65536 + width, end - start))
+        match = next(
+            (
+                m
+                for m in newline.finditer(block)
+                if m.start() < 65536 and m.start() % width == 0
+            ),
+            None,
+        )
+        if decoder is not None:
+            skipped += len(decoder.decode(block[: match.start() if match else 65536]))
+            if skipped > LOG_MAX_LINE_CHARS:
+                raise ValueError("文件单行超过120000字符，请定向缩小文件")
+        if match:
+            start += match.start() + width
+            source.seek(start)
+            return size - start, encoding
+        start += 65536
+    source.seek(size)
+    return 0, encoding
+
+
 def is_sensitive_path(raw):
     if not isinstance(raw, str) or not raw.strip():
         return False
@@ -179,15 +271,28 @@ def file_rows(directory, args, cancelled=lambda: False):
         ):
             raise ValueError("只读问答不允许读取敏感文件。")
     if mode == "find":
-        for path in find_files(
-            directory,
-            args.get("pattern", "**/*"),
-            exclude_sensitive=args.get("exclude_sensitive", False),
+        for count, path in enumerate(
+            find_files(
+                directory,
+                args.get("pattern", "**/*"),
+                exclude_sensitive=args.get("exclude_sensitive", False),
+            ),
+            1,
         ):
+            if count > MAX_FIND_FILES:
+                yield {
+                    "partial": True,
+                    "truncated_reason": "find_limit",
+                    "matched_files": MAX_FIND_FILES,
+                    "find_limit": MAX_FIND_FILES,
+                    "note": f"匹配文件超过 {MAX_FIND_FILES} 个，已截断；请使用更具体的 glob 路径缩小范围。",
+                }
+                break
+            stat = path.stat()
             yield {
                 "path": path.relative_to(directory).as_posix(),
-                "size": path.stat().st_size,
-                "modified_ns": path.stat().st_mtime_ns,
+                "size": stat.st_size,
+                "modified_ns": stat.st_mtime_ns,
             }
     elif mode == "stat":
         before = path.stat()
@@ -232,16 +337,19 @@ def file_rows(directory, args, cancelled=lambda: False):
         if cancelled():
             return
         size = path.stat().st_size
-        if size > LOG_MAX_SCAN_BYTES:
+        window = size > LOG_MAX_SCAN_BYTES
+        if window and mode == "read":
             raise ValueError("文件读取超过64MiB，请缩小文件后重试")
         scan = {}
-        with (
-            shared_binary(path) as source,
-            io.TextIOWrapper(
-                io.BufferedReader(_LogSnapshot(source, size, scan)),
-                encoding=args.get("encoding", "utf-8"),
-            ) as stream,
-        ):
+        encoding = args.get("encoding", "utf-8")
+        with shared_binary(path) as source:
+            if window:
+                size, encoding = _log_window(
+                    source, size, LOG_MAX_SCAN_BYTES, encoding, cancelled
+                )
+            stream = io.TextIOWrapper(
+                io.BufferedReader(_LogSnapshot(source, size, scan)), encoding=encoding
+            )
             tail = deque(maxlen=args.get("line_count", 100))
             hidden = False
             number = scanned_chars = 0
@@ -265,15 +373,33 @@ def file_rows(directory, args, cancelled=lambda: False):
                     break
                 row = {
                     "path": args["path"],
-                    "line": number,
+                    "line": None if window else number,
                     "text": line.rstrip("\r\n"),
+                    **({"tail_window": True} if window else {}),
                 }
                 if mode == "tail":
                     tail.append(row)
                 else:
                     yield row
             if mode == "tail" and not cancelled():
-                yield from tail
+                # Leave room for event envelopes and the first-row ordering marker.
+                sizes = [len(json.dumps(row, ensure_ascii=False)) + 40 for row in tail]
+                total = sum(sizes)
+                if len(tail) <= 100 and total <= min(14000, 12000 + 40 * len(tail)):
+                    yield from tail
+                    return
+                rows = list(tail)
+                end = len(rows)
+                while end and not cancelled():
+                    start, size = end - 1, sizes[end - 1]
+                    while (
+                        start and end - start < 100 and size + sizes[start - 1] <= 12000
+                    ):
+                        start -= 1
+                        size += sizes[start]
+                    yield {**rows[start], "tail_order": "eof_first"}
+                    yield from rows[start + 1 : end]
+                    end = start
     else:
         raise ValueError("未知文件查询模式")
 
@@ -295,6 +421,7 @@ def _log_rows(directory, args, cancelled, scan):
         end = end.astimezone().replace(tzinfo=None)
     before, after = args.get("before", 3), args.get("after", 8)
     scanned_bytes = 0
+    candidates = []
     for path in find_files(
         directory,
         args.get("pattern", "logs/**/*.log*"),
@@ -302,11 +429,21 @@ def _log_rows(directory, args, cancelled, scan):
     ):
         if cancelled():
             return
+        candidates.append((path, path.stat()))
+    candidates.sort(
+        key=lambda item: (
+            item[0].name.lower() != "latest.log",
+            -item[1].st_mtime_ns,
+            item[0].relative_to(directory).as_posix(),
+        )
+    )
+    for path, stat in candidates:
+        if cancelled():
+            return
         if scan["scanned_files"] >= LOG_MAX_FILES:
             scan.update(truncated_reason="scan_files", event_complete=True)
             return
         scan["scanned_files"] += 1
-        stat = path.stat()
         dated = re.search(r"\d{4}-\d\d-\d\d", path.name)
         date = dated.group() if dated else None
         active_time = None
@@ -315,28 +452,51 @@ def _log_rows(directory, args, cancelled, scan):
         unknown_reported = False
         number = 0
         hidden = False
+        compressed = path.suffix == ".gz"
+        available = LOG_MAX_SCAN_BYTES - scan.get("source_bytes", 0)
+        window = not compressed and stat.st_size > available
+        encoding = args.get("encoding", "utf-8")
         try:
-            with (
-                shared_binary(path) as raw,
-                io.BufferedReader(_LogSnapshot(raw, stat.st_size, scan)) as snapshot,
-                io.TextIOWrapper(
-                    gzip.GzipFile(fileobj=snapshot)
-                    if path.suffix == ".gz"
-                    else snapshot,
-                    encoding=args.get("encoding", "utf-8"),
-                ) as stream,
-            ):
+            with shared_binary(path) as raw:
+                size = stat.st_size
+                if window:
+                    scan["truncated_reason"] = "tail_window"
+                    size, encoding = _log_window(
+                        raw,
+                        size,
+                        available,
+                        encoding,
+                        cancelled,
+                        LOG_MAX_LINES - scan["scanned_lines"],
+                    )
+                snapshot = io.BufferedReader(_LogSnapshot(raw, size, scan))
+                stream = io.TextIOWrapper(
+                    gzip.GzipFile(fileobj=snapshot) if compressed else snapshot,
+                    encoding=encoding,
+                )
                 while True:
                     if cancelled():
                         return
                     line = stream.readline(LOG_MAX_LINE_CHARS + 1)
                     if not line:
                         break
+                    if window and len(line) > LOG_MAX_LINE_CHARS:
+                        # A flood line must not hide later crash lines in the window.
+                        while line and not line.endswith("\n") and not cancelled():
+                            line = stream.readline(LOG_MAX_LINE_CHARS + 1)
+                        number += 1
+                        scan["scanned_lines"] += 1
+                        scan["overlong_lines"] = scan.get("overlong_lines", 0) + 1
+                        active_time = None
+                        history.clear()
+                        remaining = 0
+                        continue
                     match = LOG_HEADER.match(line)
                     scanned_bytes += len(line.encode("utf-8"))
                     if (
                         scan["scanned_lines"] >= LOG_MAX_LINES
-                        or scanned_bytes > LOG_MAX_SCAN_BYTES
+                        or not window
+                        and scanned_bytes > LOG_MAX_SCAN_BYTES
                         or len(line) > LOG_MAX_LINE_CHARS
                     ):
                         scan.update(
@@ -344,7 +504,7 @@ def _log_rows(directory, args, cancelled, scan):
                                 "scan_lines"
                                 if scan["scanned_lines"] >= LOG_MAX_LINES
                                 else "scan_bytes"
-                                if scanned_bytes > LOG_MAX_SCAN_BYTES
+                                if not window and scanned_bytes > LOG_MAX_SCAN_BYTES
                                 else "line_size"
                             ),
                             event_complete=number == 0 or bool(match),
@@ -393,6 +553,7 @@ def _log_rows(directory, args, cancelled, scan):
                         "time": active_time.isoformat() if active_time else None,
                         "text": line.rstrip("\r\n"),
                         "matched": matched,
+                        **({"tail_window": True} if window else {}),
                     }
                     if matched:
                         for previous in history:
@@ -425,6 +586,8 @@ def _log_rows(directory, args, cancelled, scan):
                 "path": path.relative_to(directory).as_posix(),
                 "error": f"{type(exc).__name__}: {exc}",
             }
+        if window:
+            return
 
 
 def log_scan_summary(scan, scanned_events, unique_groups_total=0, omitted_groups=0):
@@ -437,7 +600,12 @@ def log_scan_summary(scan, scanned_events, unique_groups_total=0, omitted_groups
             {
                 "partial": True,
                 "truncated_reason": scan["truncated_reason"],
-                "note": LOG_LIMIT_NOTE,
+                "note": (
+                    "日志超过剩余扫描额度，本次仅读取文件尾部；行号从尾部窗口起算。"
+                    + ("窗口内超长行已跳过。" if scan.get("overlong_lines") else "")
+                    if scan["truncated_reason"] == "tail_window"
+                    else LOG_LIMIT_NOTE
+                ),
             }
             if "truncated_reason" in scan
             else {}
@@ -608,8 +776,7 @@ def discover_worlds(directory, excluded=None):
         folders[:] = [
             name
             for name in folders
-            if name not in (".git", ".mcai-probe")
-            and name not in ("backups", "backup", "logs", "libraries", "mods")
+            if name.casefold() not in IGNORED_SCAN_DIRS
             and (
                 excluded is None or not (base / name).resolve().is_relative_to(excluded)
             )

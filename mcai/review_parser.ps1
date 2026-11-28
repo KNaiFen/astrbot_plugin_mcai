@@ -160,6 +160,8 @@ while ($null -ne ($line = $inputStream.ReadLine())) {
                 if ($variable.VariablePath.IsVariable) {
                     $name = ($variable.VariablePath.UserPath -split ':')[-1]
                     $writes[$name]++
+                } elseif ($variable.VariablePath.UserPath -like 'env:*') {
+                    $writes[$variable.VariablePath.UserPath]++
                 }
             }
         }
@@ -203,7 +205,14 @@ while ($null -ne ($line = $inputStream.ReadLine())) {
                 $words.Add((Get-LiteralWord $element.Argument $scriptRoot $bindings))
             }
         }
-        $commands.Add(@{ words = $words.ToArray(); source = $command.Extent.Text })
+        $result = @{ words = $words.ToArray(); source = $command.Extent.Text }
+        $target = $command.CommandElements[0].Extent.Text
+        if ($command.InvocationOperator -eq 'Ampersand' -and $null -eq $words[0] -and
+            $target -match '^(?<quote>"?)\$env:(?<name>MCAI_WORKSPACE_(?:JAVA|JAVAC|JAR|JAVAP))\k<quote>$') {
+            $variable = $Matches.name.ToUpperInvariant()
+            if (-not $writes.ContainsKey("env:$variable")) { $result.env_command = $variable }
+        }
+        $commands.Add($result)
     }
     foreach ($member in $ast.FindAll({ param($node) $node -is [InvokeMemberExpressionAst] }, $true)) {
         if ($member.Member -isnot [StringConstantExpressionAst]) {

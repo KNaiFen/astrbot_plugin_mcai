@@ -4,7 +4,7 @@
 
 ## Java版存档
 
-单独NBT使用 `nbtlib`，区域容器使用独立Java21+辅助程序和固定MCA Selector 2.9官方JAR，复用配套Querz NBT接口。辅助程序通过标准输入／输出交换JSON请求和结果行，日志走标准错误与本地文件，不启动GUI。
+单独NBT使用 `nbtlib`，区域容器使用独立Java21+辅助程序和固定MCA Selector 2.9官方JAR，复用配套Querz NBT接口。辅助程序通过标准输入／输出交换JSON请求和结果行，日志走标准错误与本地文件，不启动GUI；Java 堆上限按 B 共享内存额度 `operations_memory_limit_mib` 与宿主机可用内存动态计算（最高 2048 MiB），区块校验、实体扫描与整对象列表删除均采用单遍流式二进制 NBT 读写，避免大 `.mcc` 文件整块常驻堆或转回 Python 构造对象树。
 
 | 范围 | 当前处理 |
 |---|---|
@@ -15,6 +15,10 @@
 | 世界发现 | 原版、Bukkit分离世界、模组维度中的 `region/entities/poi` |
 | 检索统计 | 实体类型、不同UUID表示、方块坐标范围、NBT字段条件与容器搜物；按类型／状态／区块计数与排行 |
 
+自动发现世界和清点数据包时，按目录名忽略大小写跳过插件、网页地图、备份和缓存等目录。数据包清单也跳过 `region`、`entities`、`poi` 和 `playerdata`，并继续单独读取顶层 `mods/*.jar` 与 `plugins/*.jar`。文本补丁预览和应用的输入均限制为 16 MiB。
+
+JFR 汇总按共享额度和宿主机可用内存中较小值的四分之一分配 Java 堆，介于 128 与 1024 MiB；汇总超时为 120 秒。离线 HPROF 分析对 gzip 文件仅在 Python 检查文件头，其记录和 gzip 完整性由 Java 在解析时流式校验。HPROF 的 Java 堆上限为可用辅助内存的一半、最多 2048 MiB；对象图超过节点、边或内存预算时，保留类直方图并报告未计算保留大小。
+
 每条结果携带世界／维度、区域文件、全局区块坐标、NBT路径和 `DataVersion`。负坐标按向下取整处理。未知模组字段保留，不自动转换世界版本。
 
 区域查询与修改可显式指定实例内 `path`，也可用 `dimension` 和坐标自动定位，多世界时用 `world_path` 限定实例内实际维度目录。标准维度 `minecraft:overworld`、`minecraft:the_nether`、`minecraft:the_end` 分别对应主世界、`DIM-1`、`DIM1`；模组资源名 `mod:dimension` 对应 `dimensions/mod/dimension`，1.7.10 等旧世界可用数字维度 `0/-1/1/其他整数` 或 `DIM<number>`。发现范围包括 Bukkit 分离世界目录，例如 `world_nether/DIM-1`；世界与维度条件必须唯一匹配，多个候选或未找到时返回候选路径，不猜测目标。具体用法见[自动定位](../usage/queries.md#维度与坐标自动定位)。
@@ -22,6 +26,8 @@
 `block_x/block_z` 先向下取整到区块，再由全局区块 `x/z` 向下取整到区域坐标。自动定位的物理 `dataset` 为 `region/entities/poi`，默认 `region`；先找 `.mca`，仅 `region` 在 `.mca` 不存在时回退同坐标 `.mcr`。显式 `path` 直接指定文件，不再按维度推断。自动定位要求目标文件已存在，不创建区域或区块。
 
 独立NBT和区域读取支持`selector`：按UUID（字符串、四整数及Most/Least表示）、方块实体`x/y/z`、物品`Slot`或带类型字段匹配；`relative_path`指向选中对象内字段。`mode: select`返回匹配数量、实际路径和SNBT，`preview_batch`验证并预览批量修改，不写文件。查询可返回多个匹配，实际修改要求每项唯一。
+
+区域 NBT 的 `read` 未指定选择器时，Java 直接沿二进制路径跳过无关字段。`children` 每页最多 100 项、约 120 KB，`value` 超过 12 KB 时停止生成 SNBT，返回截断预览和子项；不回传整块 NBT。方块查询和扫描流式提取方块解码字段，跳过实体和无关方块实体；单点读取只返回该坐标命中的方块实体，保留其在原区块内的 NBT 路径。独立 NBT 读取原始或解压后的内容最多 64 MiB，SNBT 展示同样按预算停止序列化。
 
 批量修改用`nbt_batch`或`region_batch`，每项`changes`包含`op: set/delete`、`nbt_path`、可选`selector/relative_path`，并提供带类型SNBT的`expected`或64位十六进制`expected_sha256`；`set`另有带类型SNBT的`value`。哈希针对目标标签的二进制NBT载荷，不是SNBT文本或整份文件；两者同时提供时都须匹配。`expected: null`只表示新字段原先不存在，不能与哈希并用，也不能跳过旧值检查。区域每项另带全局区块`x/z`；自动定位可按实际区域文件分组。一次最多1000项，同一文件内先按原状态解析全部目标并校验旧值／重叠，之后应用修改；同列表多项删除按原下标处理，不因前一次删除漂移。数组保留Byte/Int/Long类型重建，未修改字段保留。
 
@@ -33,20 +39,22 @@
 
 `mc_region_scan` 通过查询CLI的 `region-scan` 启动后台扫描，逻辑 `dataset` 为 `entities/block_entities/chunks/poi/blocks`。实体与方块实体支持 `entity_type`、UUID、三维方块 `bounds`、NBT `conditions` 和 `contains_item`；现代独立实体文件存在时优先读取，避免旧区块实体副本重复计数。`dataset=blocks` 按注册名 `name`、旧数字 `legacy_id` 和三维范围筛选已存储方块，支持列表、`by_type/by_state/by_chunk/top_chunks` 计数；Java 先按范围与调色板注册名排除无关区块，Python 解码命中区块并计数。方块扫描不应用实体NBT条件或容器搜物条件。
 
-实体类型、UUID与范围过滤下推到Java。无 `conditions/contains_item` 的 `by_type/by_chunk/top_chunks` 使用轻量行，不生成完整对象SNBT；冻结目标时由Java直接计算目标标签原始二进制载荷的SHA-256。NBT条件与容器递归仍在Python执行。条件 `path` 中的 `*` 只展开列表／数组元素；每个条件任一实际路径满足即可，多个条件全部满足。`contains` 对字符串做子串匹配、对列表／数组做带类型元素匹配、对Compound检查字符串键是否存在。
+实体类型、UUID、范围及 `exists/not_exists` 条件过滤下推到Java，按流式二进制逐条处理并直接计算原始载荷 SHA-256。无 Python 侧复杂条件、无容器搜物且不冻结目标的 `by_type/by_chunk/top_chunks` 在 Java 端直接按区块汇总计数。其余 NBT 值比较条件与容器递归仍在Python执行。停服按条件清理时，Python 同样逐行消费 Java 输出，命中数超过 `max_matches` 立即结束子进程并拒绝写入。条件 `path` 中的 `*` 只展开列表／数组元素；`exists` 有任一实际路径命中即通过，`not_exists` 要求无任何路径命中，多个条件全部满足。`contains` 对字符串做子串匹配、对列表／数组做带类型元素匹配、对Compound检查字符串键是否存在。
 
 `contains_item: {id, nbt_path?, value?, conditions?}` 递归搜索Compound和列表中的物品 `id`，覆盖嵌套容器、旧 `tag` 与现代 `components` 结构；可用成对 `nbt_path/value` 或 `conditions` 限定该物品标签，递归超过32层明确报错。它筛选包含物品的扫描对象，不自动将匹配物品改成修改目标。
 
 `mc_nbt` 的 `scan`（CLI：`nbt scan`）作为 `nbt_scan` 后台任务扫描独立NBT。`scope=playerdata` 默认唯一主世界的 `playerdata/*.dat`，多世界可用 `world_path` 指定主世界；`saved_data` 默认扫描发现维度的 `data/*.dat`，可用 `world_path/dimension` 收窄；`glob` 使用实例内显式文件模式。`nbt_path` 可含列表／数组通配符；`query` 在选中节点下按忽略大小写的字段名／字符串子串检索，另支持相同的 `conditions/contains_item`。结果可为 `list/by_file/by_type`；读取期间文件大小或修改时间变化会失败，不发布可用清单。
 
-独立NBT扫描完成后始终冻结目标；区域扫描对 `entities/block_entities/blocks` 的列表结果自动冻结，计数模式需显式 `capture_targets=true`。完整目标保存在原后台目录的 `targets.json`，`manifest.json` 记录实例目录、数据集、文件范围、数量、前5个样本及 `partial`；结果摘要返回 `target_count/target_files_count/target_fingerprint`。`target_fingerprint` 是 `targets.json` 内容的SHA-256，后续作为 `manifest_sha256`，并非 `manifest.json` 文件哈希。显示分页或缩略不会缩小冻结目标范围。
+独立 NBT 扫描默认冻结目标，可用 `capture_targets=false` 关闭；区域扫描对 `entities/block_entities/blocks` 的列表结果默认冻结，计数模式需显式 `capture_targets=true`。列表最多展示 10,000 行，达到上限后若仍需冻结则继续采集；若不冻结则提前停止并标记扫描不完整。目标逐条落盘并计算 SHA-256，完整数组保存在原后台目录的 `targets.json`；`manifest.json` 记录实例目录、数据集、文件范围、数量、前 5 个样本及 `partial`。摘要的 `target_fingerprint` 是 `targets.json` 的 SHA-256，后续作为 `manifest_sha256`。从冻结清单删除完整区域实体或方块实体时，按区域顺序读出目标并交给 Java 校验。
+
+冻结清单的 `manifest.json` 同时保存原始查询筛选条件。独立审核的 `scan_previews` 附带这些条件和最多 3 条有界样本，供核对目标的筛选依据。
 
 批准方案的清理步骤沿用停服、备份、候选校验与失败留现场流程：
 
 | 步骤 | 输入与边界 |
 |---|---|
 | `region_prune`，`mode=from_scan` | 必填 `scan_job_id/manifest_sha256/op`，只接受本实例同目录已完成、非partial的实体／方块实体／方块冻结清单；执行按原文件、坐标／路径及目标哈希核对，不重新筛选扩大范围 |
-| `region_prune`，`mode=by_filter` | 必填 `dataset/bounds/max_matches/op`、`world_path`或`dimension`，且按数据集强制约束筛选与操作字段：实体／方块实体必填非空 `entity_type`（禁用 `name/legacy_id/state/clear_block_entity`），方块必填 `name` 或 `legacy_id` 且仅限 `op=set` 与 `state`（禁用 `entity_type/conditions/contains_item/value/relative_path/expected`）；`max_matches` 为1–100000。审核先列候选区域及MCC文件，精确目标停服后筛选，超过上限整步不写入 |
+| `region_prune`，`mode=by_filter` | 必填 `dataset/bounds/max_matches/op`、`world_path`或`dimension`，且按数据集强制约束筛选与操作字段：实体／方块实体必填非空 `entity_type`（禁用 `name/legacy_id/state/clear_block_entity`），方块必填 `name` 或 `legacy_id` 且仅限 `op=set` 与 `state`（禁用 `entity_type/conditions/contains_item/value/relative_path/expected`）；`max_matches` 为1–2000000。审核先列候选区域及MCC文件，精确目标停服后筛选，超过上限整步不写入 |
 | `nbt_prune` | 必填 `scan_job_id/manifest_sha256/op`，消费已完成的独立NBT冻结清单；根目标删除会删除整份文件，根目标设置须为Compound |
 
 实体／方块实体和独立NBT清理的 `op=delete/set` 默认作用于完整匹配对象：`set` 须提供带类型 `value`（不能同时提交 `state`），`delete` 不接受 `value` 或 `state`；可用 `relative_path` 只改对象内字段，可选 `expected` 再核对字段旧值，执行前仍核对完整冻结对象哈希。方块清理只接受 `op=set` 与完整 `state`（不能同时提交 `value`），删除方块须设为目标版本的空气状态；`clear_block_entity=true` 才自动移除对应唯一方块实体，歧义则拒绝。所有区域候选准备完成后才开始替换；跨文件安装失败仍按既有逐文件记录保留现场，不承诺跨文件事务。
@@ -55,7 +63,7 @@
 
 `mc_region_blocks`的`read`按`block_x/block_y/block_z`查询一个已存储方块及对应方块实体；`search`按全局区块`x/z`查询该区块的已存储section，可按注册名`name`或旧数字`legacy_id`过滤，分页列表或`by_state`计数。支持现代`sections.block_states`、旧`Level.Sections.Palette/BlockStates`、旧Anvil数字`Blocks/Data/Add`，以及只读MCR列式数组；缺少section明确返回未存储，不当作空气或在线状态。
 
-方案`block_set`提供文件或维度、方块坐标、完整带类型SNBT的`expected/state`；`block_batch`用1–1000项`changes`，每项提供方块坐标、`state`与`expected`或`expected_sha256`，按实际区域和区块分组，重复坐标拒绝。`mc_region_blocks preview_batch`使用相同批量参数只预览，不写盘。调色板修改重编码索引，按DataVersion区分连续与padded布局，保留其他方块和未知字段。
+方案`block_set`提供文件或维度、方块坐标、完整带类型SNBT的`expected/state`；`block_batch`用1–1000项`changes`，每项提供方块坐标、`state`与`expected`或`expected_sha256`，按实际区域和区块分组，重复坐标拒绝。`mc_region_blocks preview_batch`使用相同批量参数只预览，不写盘。每个受影响的 section 只解包和重编码一次，按 DataVersion 保留连续或 padded 布局；完成前置校验后统一更新方块实体和缓存。范围完整覆盖 section 时，调色板扫描直接统计索引；列表查询仍计算全部匹配数，只为本页生成方块结果。
 
 旧Anvil支持标准`Blocks/Data/Add`的12-bit数字ID写入，状态格式为`{Id:整数,Data:元数据b}`，ID范围0–4095、Data范围0–15；按需建立或更新`Add`半字节数组。读取`level.dat`中FML `ItemData`或`Registries.minecraft:blocks.ids`映射，辅助显示和按注册名查询；写入仍明确使用数字`Id/Data`。包含`Blocks16/Add2/Data16/BlocksB2/BlockIDs`等未知扩展数组的区块明确拒绝方块语义写入；GTNH等自定义节格式须按实际数组判断，读取成功不能推定可写。MCR列式方块仍只读。
 
@@ -69,13 +77,19 @@
 
 `mc_region_export`把指定位置的原始压缩记录、外部MCC和来源清单保存到B的`jobs/<job_id>/chunk.zip`，不会安装或修改存档。可带`backup`从同规范目录的原备份提取，备份须实际覆盖所选关联文件；目录备份覆盖其子项。清单记录源目录、维度路径、坐标、DataVersion、来源备份和采集时间，归档计算SHA-256。损坏／采集中变化的导出仍留现场但`usable: false`，不能用于恢复；二进制ZIP供B本地保存或后续操作，`mc_artifact_read/find`用于文本产物。
 
+点检查遇到区域头尚未写完的关联文件时，保留主文件检查结果，并把该关联项标为 `valid: false, incomplete_header: true`；主文件头不完整仍直接报错。纳入范围的任何文件头不完整时，区块删除、恢复和导出均拒绝。
+
 方案`region_restore`需提供`path/x/z/export_id/expected`，`expected`为当前点检查得到的关联指纹，且检查与导出使用相同关联范围。审核读取导出来源清单；执行前复核归档哈希、规范目录、维度路径和坐标，停服并备份全部实际区域／MCC目标（显式 `path` 目标缺失时备份清单记录不存在状态，并在恢复时新建写入）。恢复优先复用可确认未被其他区块占用的目标原扇区，其次使用确认空闲的连续扇区；占用边界不可靠时跳过复用，追加时也避开其他头项声明的范围。除目标头项和写入范围外，其他字节保持不变，包括不可解码的邻居记录。候选先由原Java后端重新读取验证，之后才替换生产文件。源压缩方式和NBT结构保留，不迁移世界版本。
 
 确需删除损坏区块、等待服务端按其正常机制重新生成时，使用批准方案`region_remove`，同样声明坐标和当前关联指纹，默认处理关联数据并保留备份。它不主动加载／生成区块。恢复和删除均不跨路径搬迁区块；已无差异的内容不重复重写。多关联文件逐个替换，失败时原操作记录`writing/written_files`，保留已完成部分与备份，不自动重跑或回滚。
 
-在线扫描逐区域复制区域及关联外部文件到任务临时目录，记录采集时间和源文件是否变化。每实例同时一个扫描，不同实例可并行；一次批量扫描复用一个JVM。损坏区块和不支持格式返回位置及部分完成状态，不静默跳过。
+在线扫描逐区域复制区域文件到任务临时目录。有坐标范围的只读查询和扫描只复制相应的外部 MCC；整区检查与写入快照保留同区域的全部 MCC，供邻块校验。点检查和整区检查分块计算 MCC 的原始指纹，点检查以文件复制给 Java 校验并复查源文件状态。结果记录采集时间和源文件是否变化。每实例同时一个扫描，不同实例可并行；一次批量扫描复用一个JVM。损坏区块和不支持格式返回位置及部分完成状态，不静默跳过。
+
+区域编辑和清理按文件计算变动，保留已验证的候选文件在磁盘；完成备份记录后，安装逐文件复制到目标同目录再替换。整区检查、批量替换和实体清理的 Java 请求默认允许 600 秒，其余请求默认 120 秒；停服筛选的逐行读取也受 600 秒总时限约束。
 
 磁盘只代表已保存内容。活动区块优先用服务端命令、jcmd和已有spark；强制保存经批准，不默认停服或 `save-all flush`。区域修改在停服备份后编辑副本，重新读取验证再替换；外部MCC新增、修改、移除进入修改与恢复清单。
+
+服内 Probe 交换在创建目录或写请求之前核对托管状态和当前 Java PID；离线、目标不明或能力文件属于其他 JVM 时，旧能力文件不会触发实例目录写入。已确认在线的同一 JVM 即使心跳暂时过期，也可尝试请求并按原超时、取消流程取证。
 
 只读NBT／方块查询和扫描按目标记录校验偏移、分配扇区及实际负载边界，完整头下的可读记录不因文件尾尚未补齐扇区而被拒绝；截断负载仍失败。整区检查仍报告文件尾异常，写入仍要求完整扇区及可解码邻居。读取不为补齐扇区修改源文件。
 
@@ -101,6 +115,8 @@
 
 ## MOD元数据与下载
 
+独立审核的 `touched_components` 最多列出步骤明确涉及的 10 个现存 `mods/` 或 `plugins/` 归档，提供 SHA-256 和声明的组件 ID、版本、运行环境，便于直接核对待变更组件。
+
 本地安装情况使用`mc_inventory`：读取Forge／NeoForge TOML、Fabric／Quilt JSON、Bukkit／Paper YAML、数据包`pack.mcmeta`，不按JAR文件名推断身份。Fabric嵌套JAR及Forge JarJar同时解析；元数据最多2MiB，嵌套JAR最多3层、单个64MiB，超限和损坏明确报告。每个物理文件计算SHA-256，目录数据包按文件名及内容汇总哈希。清单保存为后台任务产物`inventory.json`，再次查询带`baseline: 先前job_id`返回新增、删除和内容／版本变化；基线须属于同实例、同规范目录且已完成，部分基线会标明；损坏或未知归档会使清单标记partial。
 
 清单列出重复ID、仅客户端声明、未找到的必需依赖和数值版本范围不匹配。常见精确、比较、通配和Maven区间可检查；不支持的版本语法明确`version_unverified`，不能据此判定兼容。可从实际JVM参数、所选JDK的release及实际主JAR的version.json确认部分运行版本，其他MC／加载器要求返回`runtime_requirement_unverified`。清单是磁盘声明与取证线索，不证明某个MOD已成功加载，也不自动安装、卸载或解决依赖。
@@ -117,13 +133,17 @@ A通过Modrinth v2及CurseForge官方API查询项目、说明、版本、加载�
 
 ## A工作区与测试副本
 
-`mc_workspace`把任务文件放在A插件数据目录的`workspaces/<task_id>/`，可按名称翻页列目录、按指定编码读取文本、对工作区或经`Downloads.verify`核验的`download_id`制品只读检查JAR条目（`jar_entries`）、对比两条目哈希差异（`jar_diff`）或调用同目录有`javap.exe`的JDK执行有界字节码只读检查（`javap`）、执行PowerShell 7.3+构建命令，并从B正式实例内拉取文件。列表把 `next_cursor` 传给 `after`，文本把 `next_cursor` 传给 `cursor`；文件有变化后需重新读取；三种JAR只读检查无需多轮方案或独立AI审核。构建子进程加入A端共享Job Object资源组，默认8GiB，取消结束进程树；重载后依据原后台任务与进程身份判定中断，不重新执行。工作区脚本以AstrBot Windows账号运行，不提供操作系统沙箱。
+`mc_workspace` 将任务文件放在 A 端 `workspaces/<task_id>/`。列表把 `next_cursor` 传给 `after`，文本把 `next_cursor` 传给 `cursor`；文件变化后从头读取。工作区路径与经 `Downloads.verify` 核验的本任务下载编号二选一。`jar_entries` 列签名和内包，`jar_read` 按字符偏移读文本，`jar_search` 检索字节码符号和文本资源，可扫描一层嵌套 JAR。`jar_diff` 比较未压缩条目内容的 SHA-256；`javap` 预览可按方法名缩小范围，其原始输出留在 `_javap/`（最多 2 MiB）。这些检查及 `mapping_lookup`、`decompile` 无需多轮方案或独立审核。
+
+`decompile` 选择实际 JAR 类名及其内部类，将 Vineflower 的 Java 输出存入 `_decompiled/`；带映射时用 mapping-io 和 ASM 生成 `_remapped/` 中的分析副本，并提供运行时符号表。缓存由源 JAR、内包及映射内容和命名空间参数决定。只有在映射文件包含描述符时，`mapping_lookup` 才能返回对应的 JVM 描述符；旧格式省略的描述符为 `null`。反编译和映射 Java 子进程加入 A 端共享 Job Object（默认 8 GiB），各使用最多 512 MiB Java 堆，超时结束进程树。工具从开发预置目录或 A 数据目录校验加载，缺少时 A 可从 Maven Central 下载固定版本；B 不访问外网。
+
+`jar_patch` 仅在任务工作区内替换、添加或移除明确指定的条目，保留其他条目的未压缩内容。指定 `nested_jar` 可修补一个不超过 64 MiB 的内包，校验两层后原子写入外层；结果包含内外 SHA-256 和条目差异。任一层有签名时默认拒绝；显式剔除签名时保留清单主段的非签名属性。通用 PowerShell 7.3+ `exec` 仍由独立审核并要求获批多轮方案；它以 AstrBot Windows 账号启动，可用已校验的 JDK 和 ASM 环境变量。构建子进程也加入共享 Job Object，取消结束进程树；重载后按原后台任务与进程身份判定中断，不重新执行。工作区脚本不在操作系统沙箱内运行。
 
 主模型与独立审核共用的任务提示词规定：MOD源码修改、编译和重新打包必须在A工作区完成，B的隔离副本也适用。主模型在制定方案和调用工具时遵守这项分工，独立审核核对实际执行位置。`stage`在A登记制品，提交`install_download`时才经HTTPS发送给B。B负责现场诊断、备份、接收和安装制品、启停与验证。
 
 从B拉取文件中途遇到连接中断或响应未传完时，A沿同一调用从文件头重传一次，完整接收后才替换工作区目标文件；再次失败会返回错误并移除未完成文件。
 
-管理员在 B 的 `host.json` 全局配置 `test_address` 和专用 `test_port`。`prepare_test` 在 B 任务工作区复制 `start.bat` 与显式 `paths` 或实例 `test_copy_paths` 指定的路径，并改写测试端口。列全实际存在的启动和运行依赖；源路径不存在时在审核材料阶段明确返回缺失路径，执行时也会复核。`copy_test_world`通过正式服停服、快照、恢复运行后复制所选世界路径。`mc_test_server` 支持查询测试副本状态（未创建时返回 `not_created`，已创建后区分对外配置地址与 `server.properties` 的 `listen_ip`/`listen_port`）、打开 B 独立托管窗口或关闭已停服窗口释放全局名额。接受打开及启停操作时，B 以原操作编号保留试服名额，启动前再次检查。可保留多份停止的磁盘副本，但一次只有一个试服窗口或运行中的试服；状态、查询、控制台和提案用`environment=test`访问测试副本。试服发布证据通过绑定安装记录、启动前目标JAR实际SHA-256及安装后最近一次`ready`记录验证有效性，普通配置或诊断命令不再误废未变动制品，目标JAR变化时要求重测；管理书面豁免客户端进服测试（`client_login_waived=true`）且试服已干净停止时仍需核验同SHA-256及`ready`证据。仅试服结案可通过`mc_plan_finish`记录管理员反馈豁免而不修改正式服。测试服是原任务的子环境，生产实例仍是唯一任务目标。地址和端口无效或被占用时明确失败，不自动更换目标或端口。操作步骤见[试服试玩与正式发布](../usage/operations.md#mod-试服试玩与正式发布)。
+管理员在 B 的 `host.json` 全局配置 `test_address` 和专用 `test_port`。`prepare_test` 在 B 任务工作区复制 `start.bat` 与显式 `paths` 或实例 `test_copy_paths` 指定的路径，并改写测试端口。回环 `test_address` 会写入 `server-ip`（`localhost` 写 `127.0.0.1`），其他地址留空；打开窗口和启动前同步两项。列全实际存在的启动和运行依赖；源路径不存在时在审核材料阶段明确返回缺失路径，执行时也会复核。`copy_test_world`通过正式服停服、快照、恢复运行后复制所选世界路径。`mc_test_server` 支持查询测试副本状态（未创建时返回 `not_created`，已创建后区分对外配置地址与 `server.properties` 的 `listen_ip`/`listen_port`）、打开 B 独立托管窗口或关闭已停服窗口释放全局名额。接受打开及启停操作时，B 以原操作编号保留试服名额，启动前再次检查。可保留多份停止的磁盘副本，但一次只有一个试服窗口或运行中的试服；状态、查询、控制台和提案用`environment=test`访问测试副本。试服发布证据通过绑定安装记录、启动前目标JAR实际SHA-256及安装后最近一次`ready`记录验证有效性，普通配置或诊断命令不再误废未变动制品，目标JAR变化时要求重测；任务管理员书面豁免客户端进服测试（`client_login_waived=true`）可提交 `/mcaisay` 原反馈编号，或用 `report` 引用管理员本人在 `/mcainew` 明确写下的豁免；独立审核会核对后续反馈，B 即使在试服已干净停止时也仍核验同 SHA-256 及 `ready` 证据。仅试服结案可通过`mc_plan_finish`记录管理员反馈豁免而不修改正式服。测试服是原任务的子环境，生产实例仍是唯一任务目标。地址和端口无效或被占用时明确失败，不自动更换目标或端口。操作步骤见[试服试玩与正式发布](../usage/operations.md#mod-试服试玩与正式发布)。
 
 「运行概览」读取试服目录、窗口和进程状态。B 只收敛目录已消失、窗口已退出且无未结算操作的记录；目录缺失但窗口仍在时继续展示。活动任务可在停稳后关窗，任务结束后才允许通过面板停服、强停或删除。试服控制用任务锁；只有隔离试服在无法执行常规强停或关窗时，才按创建时间核验并结束整个试服窗口进程树。
 

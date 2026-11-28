@@ -16,7 +16,7 @@
 | `curseforge_api_key` | 空 | CurseForge官方API／CDN凭据，仅A使用，不进入模型上下文 |
 | `workspace_dir` | 插件数据目录下的 `workspaces` | A端任务源码、MOD和构建文件目录 |
 | `workspace_powershell_path` | 空 | A 端 PowerShell 7.3+ 完整路径；留空自动查找。插件启动和保存 A 设置时都会校验，即使尚未使用 MOD 源码构建 |
-| `workspace_java_path` | 空 | A 端 `mc_workspace javap` 使用的 JDK；填写同一 JDK 目录中的 `java.exe` 或 `javap.exe`，留空自动查找 |
+| `workspace_java_path` | 空 | A 端工作区字节码检查、反编译、映射和构建使用的 JDK 21+；填写 JDK `bin` 下的 `java.exe` 或 `javap.exe`，留空从 `JAVA_HOME` 或 `PATH` 自动查找 |
 | `provider_id` | 空 | OpenAI 兼容 Chat／Responses 排障提供商；留空使用当前群同类配置，一键测试需明确选择 |
 | `reasoning_effort` | 空 | 排障思考强度；留空继承，支持服务商接受的自定义值 |
 | `backup_provider_id` | 空 | 备用排障模型提供商（OpenAI 兼容 Chat／Responses，不能与主排障模型相同）；留空不启用故障切换 |
@@ -222,7 +222,9 @@ ASCII BAT在`auto`下采用系统ANSI代码页，但BAT编码不能证明Java／
 
 Modrinth 公开 API 无需令牌。CurseForge 在A插件设置的高级项填写，密钥只保存在A配置中，仅返回已配置状态；支持替换、清空和官方只读接口测试。B不访问MCAI外网，密钥不提供给模型。分发受限或无官方下载地址时明确失败。
 
-A工作区按任务目录保存源码、现场MOD、反编译结果和构建输出。`mc_workspace` 可读取文件、从 B 拉取实例文件、只读检查 JAR 条目／哈希差异与字节码（`jar_entries`、`jar_diff`、`javap`，其中 `javap` 使用 A 端 `workspace_java_path`，留空则从 `JAVA_HOME` 或 `PATH` 查找同时含 `java.exe` 和 `javap.exe` 的 JDK）、暂存构建 JAR，并在审核和已批准方案的范围内执行 PowerShell 7.3+ 命令。命令使用 AstrBot 的 Windows 账号权限。试服地址和端口在 B 的 `host.json` 全局配置，实例只配置复制清单，流程见 [MOD 试玩与发布](operations.md#mod-试服试玩与正式发布)。
+A 工作区按任务目录保存源码、现场 MOD、反编译结果和构建输出。`mc_workspace` 可从 B 拉取文件、检查 JAR、读取反编译与映射结果、生成补丁 JAR 和登记制品。外部 Java 工具只在 A 端使用，固定版本和 SHA-256 校验通过后才加载。首次反编译或映射时，如果没有预置，A 通过环境代理从 Maven Central 下载到插件数据目录 `tools/workspace/`。离线部署可在源码目录运行 `scripts/setup_workspace_tools.py --target <A数据目录>/tools/workspace` 提前准备；各依赖与许可见[第三方组件](../development/third-party.md#a-端工作区-java-工具)。
+
+经审核、在已批准方案内执行的 PowerShell 7.3+ 命令以 AstrBot 的 Windows 账号运行。若找到 JDK，会注入 `MCAI_WORKSPACE_JAVA`、`MCAI_WORKSPACE_JAVAC`、`MCAI_WORKSPACE_JAVAP` 和 `MCAI_WORKSPACE_JAR`；若有已校验的 ASM 工具，会注入 `MCAI_WORKSPACE_TOOLS_DIR` 和 `MCAI_WORKSPACE_ASM_CP`。常规 PowerShell 用法无需额外安装 Java。试服地址和端口在 B 的 `host.json` 全局配置，实例只配置复制清单，流程见 [MOD 试玩与发布](operations.md#mod-试服试玩与正式发布)。
 
 A 的网页获取、MOD API 与下载支持 `HTTP_PROXY`、`HTTPS_PROXY` 等环境变量；模型请求和独立搜索沿用 AstrBot 提供商代理。托管搜索的出站网络由服务商控制。
 
@@ -238,7 +240,7 @@ B 实例设置 `incident_watch: true` 后，B 可在 Java 意外退出、短时�
 
 在 MCAI 设置的「主动留证」可改全局启动失败窗口、容量上限并查看当前用量。默认窗口为 120 秒，窗口内观测到 3 次未就绪退出才留证。留证库默认上限为 256 MiB，可设为 64–4096 MiB 的整数；达到上限时按先后顺序删除最早的整起故障，调低上限时立即回收。两项可在设置页在线保存并应用，留空恢复默认。若留证库暂时无法应用新容量，设置页区分已保存值与当前上限；处理页面提示的错误后可重新保存。直接编辑 `host.json` 则在 B 下次启动时加载。
 
-事件会冻结并保存当时仍在托管窗口缓冲区里的控制台内容（最多 9,999 行、16 MiB，包括未换行输出）。Java 退出后，B 尝试复制能确认属于本轮的整份 `logs/latest.log` 和最多两份崩溃报告。BAT 自动重启应留出至少 10 秒；复制使用其中最多 8 秒，不延迟重启。连续启动失败的前两次先暂存，达到阈值才归档和通知。单份源文件读取上限 256 MiB、暂存 gzip 上限 64 MiB；超过上限、来不及完整复制、无法确认归属或留证库放不下时会写明原因并清理部分副本。主线程卡死但 Java 未退出时，沿用控制台和指标留证。
+事件会冻结并保存当时仍在托管窗口缓冲区里的控制台内容（最多 9,999 行、16 MiB，包括未换行输出）。Java 退出后，B 尝试复制能确认属于本轮的 `logs/latest.log` 和最多两份崩溃报告。若 `latest.log` 超过 256 MiB，则在同一个 gzip 附件里保留开头 1 MiB 和末尾 16 MiB，并标明原始大小和省略字节；尾部仍用于关联崩溃报告。崩溃报告源文件上限仍为 256 MiB，单份暂存 gzip 上限为 64 MiB。BAT 自动重启应留出至少 10 秒；复制使用其中最多 8 秒，不延迟重启。连续启动失败的前两次先暂存，达到阈值才归档和通知。源文件变化、未能按时复制、无法确认归属或留证库放不下时会记录原因并清理部分副本。主线程卡死但 Java 未退出时，沿用控制台和指标留证。
 
 原文件不改动；复制时直接写为 gzip，不额外写一份未压缩的临时文件，与控制台一起计入 B 的 `data_dir/incidents.sqlite3` 容量。清理旧事件会一起删除附件，不影响其他数据库或备份。旧事件保留原有内容，不补造文件附件。
 

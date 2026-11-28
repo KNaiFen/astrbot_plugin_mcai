@@ -41,6 +41,7 @@ __pycache__/
 /build/
 /dist/
 /mcai/vendor/*.jar
+/mcai/vendor/workspace/
 *.class
 **/.gradle/
 /mods/mcai-probe/**/build/

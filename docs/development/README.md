@@ -32,9 +32,10 @@
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e '.[test]'
 .\.venv\Scripts\python.exe scripts/setup_world_tools.py
+.\.venv\Scripts\python.exe scripts/setup_workspace_tools.py
 ```
 
-辅助程序构建脚本读取 `HTTPS_PROXY` 或Git的 `http.proxy`，也可显式传 `--proxy`；`--java-home`指定JDK目录。上游源码和外部依赖下载走代理，参考项目放 `.upstream/`，不要提交上游副本。
+辅助程序构建脚本读取 `HTTPS_PROXY` 或 Git 的 `http.proxy`，也可显式传 `--proxy`；`--java-home` 指定 JDK 目录。工作区工具默认预置到被忽略的 `mcai/vendor/workspace/`，可用 `--target` 指定离线缓存目录。上游源码和外部依赖下载走代理，参考项目放 `.upstream/`，不要提交上游副本。
 
 完整Agent集成需要AstrBot **v4.29.4** 源码和依赖。`.upstream/AstrBot`可能是其他版本，先核对；既有测试环境示例为 `runtime/astrbot-4.29.4`，参见[测试命令](testing.md#运行)。
 
@@ -54,7 +55,7 @@ py -3.12 -m venv .venv
 | B 操作、备份、验收检查与定时维护 | `operation_context.py`、`backup.py`、`verification.py`、`scheduler.py` |
 | 后台工作、辅助进程与共享内存 | `jobs.py`、`execution.py`、`worker.py`、`memory_job.py` |
 | 托管窗口与控制台缓冲 | `terminal.py`、`remote_terminal.py`、`console.py`、`console_buffer.py` |
-| A 源码工作区、路径约束与 B 隔离试服 | `workspace.py`、`workspace_worker.py`、`paths.py`、`test_environment.py` |
+| A 工作区、JAR 检查、Java 工具与 B 隔离试服 | `workspace.py`、`workspace_jar.py`、`workspace_tools.py`、`workspace_worker.py`、`paths.py`、`test_environment.py` |
 | B 故障留证、附件和告警 | `incidents.py`、`incident_files.py`、`incident_store.py`、`alerts.py` |
 | 占用统计、数据清理和日志轮转 | `storage_usage.py`、`cleanup.py`、`monthly_logs.py` |
 | 查询 CLI、文本编辑、组件清单和进程／JFR 诊断 | `query_cli.py`、`queries.py`、`text_files.py`、`inventory.py`、`diagnostics.py`、`chunk_jfr.py` |
@@ -91,7 +92,7 @@ B生命周期使用HostRunner：在aiohttp的pre_shutdown停止WebSocket输入�
 
 从 Git 工作树构建时，源码清单取自 `git ls-files --cached`，内容取自工作树；新增、删除或改名的路径要先更新索引。完整源码 ZIP 内附 `SOURCE_MANIFEST.json`，解压到无 Git 的目录后可用同一命令构建。已有匹配版本的 Java 和八个 Probe 构建产物时，可加 `--package-only` 单独打包；清单错误会在构建前报告，三个 ZIP 都通过内部校验后才替换旧包。`verify.py --mode package` 与 `--mode release` 使用 `--package-only`，并自动完成解压链接检查、A 包隔离导入、B 包离线 wheel 构建安装和 `mcai --help` 冒烟。
 
-- `astrbot_plugin_mcai.zip`：插件入口、配置 schema、A 所需模块、依赖清单、运行时规则模板、设置视图、README 和分层文档。
+- `astrbot_plugin_mcai.zip`：插件入口、配置 schema、A 所需模块、依赖清单、工作区 Java 辅助源码和许可、运行时规则模板、设置视图、README 和分层文档。A 工作区第三方 JAR 和编译产物不进安装包或公开 `main`。
 - `mcai_windows_host.zip`：Python 项目、基础与实例配置示例、模块、规则模板、JAR 与许可、README 和分层文档。
 - `probe/`：八个目标的主 JAR、完整源码 ZIP 与许可（另在 `dist/probe/` 单独保留各目标 sources JAR）；B 包随 `probe/` 纳入白名单内的上述主 JAR、源码 ZIP 与许可。
 - `mcai-<版本>-source.zip`：来自 Git 跟踪清单的源码、构建脚本、测试和许可；开发 `AGENTS.md`、未跟踪试验文件、运行数据和 Git 历史不打包。

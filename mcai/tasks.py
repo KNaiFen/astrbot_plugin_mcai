@@ -20,7 +20,13 @@ from .client import ReleaseDeferred, RemoteError
 from .knowledge import Knowledge
 from .model_usage import task_usage
 from .paths import resolve_file
-from .plans import approval_command, plan_identity, plan_sections, plan_text
+from .plans import (
+    INITIAL_REPORT_FEEDBACK_ID,
+    approval_command,
+    plan_identity,
+    plan_sections,
+    plan_text,
+)
 from .review import digest
 from .tool_results import plain_output
 from .web import WebPages
@@ -754,6 +760,7 @@ class Tasks:
         attachments=(),
         workspace_root=None,
         quoted_origin=None,
+        admin_report=None,
     ):
         entry = await self.instance_entry(instance) if instance is not None else None
         async with self.create_lock:
@@ -769,6 +776,7 @@ class Tasks:
                 attachments,
                 workspace_root,
                 quoted_origin=quoted_origin,
+                admin_report=admin_report,
                 wake=False,
             )
             if job.get("directory"):
@@ -793,6 +801,7 @@ class Tasks:
         workspace_root,
         *,
         quoted_origin=None,
+        admin_report=None,
         wake=True,
     ):
         self.check_create(group, name)
@@ -839,6 +848,8 @@ class Tasks:
         }
         if quoted_origin is not None:
             job["quoted_origin"] = quoted_origin
+        if admin_report is not None:
+            job["admin_report"] = admin_report
         if entry:
             job["directory"] = entry["canonical_directory"]
         if workspace_root is not None:
@@ -1483,7 +1494,25 @@ class Tasks:
         pending, job["pending"] = job["pending"], []
         return pending
 
-    def admin_feedback(self, job, feedback_id):
+    def admin_feedback(self, job, feedback_id, *, allow_report=False):
+        if feedback_id == INITIAL_REPORT_FEEDBACK_ID:
+            if not allow_report:
+                return None
+            text = job.get(
+                "admin_report",
+                job.get("report") if job.get("quoted_origin") is None else None,
+            )
+            admin = job.get("admin")
+            if admin and admin != "system" and isinstance(text, str) and text.strip():
+                return {
+                    "id": INITIAL_REPORT_FEEDBACK_ID,
+                    "sender": admin,
+                    "is_admin": True,
+                    "text": text,
+                    "time": job.get("created"),
+                    "source": "initial_report",
+                }
+            return None
         return next(
             (
                 row
@@ -1630,8 +1659,14 @@ class Tasks:
         self.require_plan(job, plan_id)
         if job.get("operation") or job["state"] == "applying" or job.get("background"):
             raise ValueError("当前操作或后台结果尚未结算，请先核对结果")
-        if job["pending"]:
+        if any(item.get("sender") != "system" for item in job["pending"]):
             raise ValueError("收到新反馈，请先读取补充再结束方案")
+        if job["pending"]:
+            preview = job["pending"][0]["text"][:160]
+            raise ValueError(
+                f"存在 {len(job['pending'])} 条未处理的系统通知（无新管理员反馈），"
+                f"请先核对后再结束方案：{preview}"
+            )
         if (job.get("trial") or job.get("trial_required")) and not job.get(
             "trial_published"
         ):

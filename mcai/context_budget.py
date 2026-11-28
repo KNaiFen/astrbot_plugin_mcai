@@ -24,13 +24,7 @@ from .agent_runtime import (
     request_provider,
     search_compatible_call,
 )
-from .model_budget import (
-    BASELINE_FACTORS,
-    budget_factor,
-    estimated_input,
-    record_usage,
-    tokens,
-)
+from .model_budget import budget_factor, estimated_input, record_usage, tokens
 from .review import digest
 from .tracing import traced_provider
 
@@ -376,9 +370,12 @@ def checkpoint_ledgers(messages, report, entry):
         facts = checkpoint[1] if checkpoint else developer_event(message, REMOTE_FACTS)
         if facts is not None:
             for item in facts.get("admin_directives", []):
+                directives.pop(item["text"], None)
                 directives[item["text"]] = item
             for item in facts.get("evidence_ledger", []):
-                evidence[item.get("evidence_id", item["tool_call_id"])] = item
+                key = item.get("evidence_id", item["tool_call_id"])
+                evidence.pop(key, None)
+                evidence[key] = item
             continue
         for item in admin_feedback(message):
             text = item["text"].removeprefix("【管理员补充】\n")
@@ -542,6 +539,21 @@ def context_facts(job, original, entry):
         "admin_directives": directives,
         "evidence_ledger": ledger,
     }
+
+
+def write_local_facts(history, facts):
+    checkpoints = [i for i, message in enumerate(history) if split_checkpoint(message)]
+    for i in checkpoints:
+        message = history[i]
+        body, marker, _ = message["content"].rpartition(FACTS_MARKER)
+        if i == checkpoints[-1]:
+            content = (body if marker else message["content"]) + FACTS_MARKER
+            history[i] = {
+                **message,
+                "content": content + json.dumps(facts, ensure_ascii=False),
+            }
+        elif marker:
+            history[i] = {**message, "content": body}
 
 
 def low_compaction_effort(extra, *, responses):
@@ -875,7 +887,10 @@ async def fit_history(
                     usage["input_tokens"]
                     + usage["output_tokens"]
                     + math.ceil(
-                        tokens(history[length + 1 :]) * BASELINE_FACTORS[purpose]
+                        tokens(history[length + 1 :])
+                        * budget_factor(
+                            tasks.store, provider, purpose, incremental=True
+                        )
                     )
                 )
                 return estimated, used, "api_usage+estimate"
@@ -966,7 +981,55 @@ async def fit_history(
     keep_extra = True
     while force or used >= trigger or used > input_limit:
         previous_tokens = used
+        previous_estimated = estimated
         groups, required, protected = protection(extra=keep_extra)
+        local_checkpoints = []
+        if not archive:
+            snapshots = [
+                i
+                for i, message in enumerate(messages)
+                if developer_event(message, "runtime_state")
+            ]
+            obsolete = set(snapshots[:-1]) - protected
+            obsolete.intersection_update(
+                group.start for group in groups if len(group) == 1
+            )
+            if obsolete:
+                replace_history(
+                    [message for i, message in enumerate(messages) if i not in obsolete]
+                )
+                tasks.log(job, "context_runtime_states_pruned", removed=len(obsolete))
+                force = False
+                continue
+
+            local_checkpoints = [
+                (i, message)
+                for i, message in enumerate(messages)
+                if split_checkpoint(message)
+            ]
+            if (
+                sum(
+                    FACTS_MARKER in message["content"]
+                    for _, message in local_checkpoints
+                )
+                >= 2
+            ):
+                updated = messages.copy()
+                facts = context_facts(
+                    job, [message for _, message in local_checkpoints], None
+                )
+                write_local_facts(updated, facts)
+                if estimate(updated) < previous_estimated:
+                    replace_history(updated)
+                    tasks.log(
+                        job,
+                        "context_checkpoint_facts_merged",
+                        before_estimated_tokens=previous_estimated,
+                        estimated_tokens=estimated,
+                    )
+                    force = False
+                    continue
+
         protected_size = estimate([messages[i] for i in sorted(required)])
         if protected_size > input_limit:
             raise capacity_error(
@@ -1018,7 +1081,8 @@ async def fit_history(
                             )
                         )
                 elif (
-                    estimate(updated := [*compacted, *messages[end:]]) < previous_tokens
+                    estimate(updated := [*compacted, *messages[end:]])
+                    < previous_estimated
                 ):
                     batches += 1
                     replace_history(updated)
@@ -1029,6 +1093,8 @@ async def fit_history(
                         mode=remote_compaction_mode,
                         before_tokens=previous_tokens,
                         used_tokens=used,
+                        before_estimated_tokens=previous_estimated,
+                        estimated_tokens=estimated,
                         preserved_messages=len(messages) - len(compacted),
                     )
                     force = False
@@ -1047,8 +1113,12 @@ async def fit_history(
                 continue
 
         def expand_retained_checkpoint():
+            nonlocal remote
             if not any("compaction_items" in item for item in messages):
                 return False
+            remote = (
+                False  # The restored history needs a different compaction strategy.
+            )
             replace_history(restore_compaction(tasks, job, messages))
             return True
 
@@ -1063,10 +1133,14 @@ async def fit_history(
                     intervals.append([])
             else:
                 intervals[-1].append(group)
+        # A short orphan must not outrank a much larger local checkpoint.
         eligible = max(
             intervals,
             key=lambda interval: (
-                any(not split_checkpoint(messages[group.start]) for group in interval),
+                archive
+                and any(
+                    not split_checkpoint(messages[group.start]) for group in interval
+                ),
                 tokens([messages[i] for group in interval for i in group]),
             ),
         )
@@ -1087,11 +1161,11 @@ async def fit_history(
             ):
                 keep_extra = False
                 continue
+            if not force and used <= input_limit:
+                break  # Do not keep summarizing the same checkpoint.
             if expand_retained_checkpoint():
                 keep_extra = True
                 continue
-            if not force and used <= input_limit:
-                break  # Do not keep summarizing the same checkpoint.
         if not eligible:
             raise capacity_error("仅剩受保护的用户消息或完整交互组，无法容纳请求", used)
 
@@ -1398,16 +1472,37 @@ async def fit_history(
                 "role": "user",
                 "content": f"{SUMMARY_PREFIX}{seq} 按字符续读）：\n{text}",
             }
-            checkpoint["content"] += FACTS_MARKER + json.dumps(
-                context_facts(job, original, seq),
-                ensure_ascii=False,
-            )
+            start, end = selected[0].start, selected[-1].stop
             updated = [
-                *messages[: selected[0].start],
+                *messages[:start],
                 checkpoint,
-                *messages[selected[-1].stop :],
+                *messages[end:],
             ]
-            if estimate(updated) < previous_tokens:
+            if archive:
+                checkpoint["content"] += FACTS_MARKER + json.dumps(
+                    context_facts(job, original, seq), ensure_ascii=False
+                )
+            else:
+                facts = context_facts(
+                    job,
+                    [
+                        *(message for i, message in local_checkpoints if i < start),
+                        *original,
+                        *(message for i, message in local_checkpoints if i >= end),
+                    ],
+                    seq,
+                )
+                write_local_facts(updated, facts)
+                if (
+                    only_checkpoints
+                    and reduction_attempt
+                    and estimate(updated) >= previous_estimated
+                ):
+                    ledger = facts["evidence_ledger"]
+                    if len(ledger) > 1:
+                        facts["evidence_ledger"] = ledger[-(len(ledger) // 2) :]
+                        write_local_facts(updated, facts)
+            if estimate(updated) < previous_estimated:
                 break
             if not reduction_attempt:
                 summary_target = max(128, json.loads(prompt)["max_characters"] // 2)
@@ -1431,6 +1526,8 @@ async def fit_history(
             entry=seq,
             before_tokens=previous_tokens,
             used_tokens=used,
+            before_estimated_tokens=previous_estimated,
+            estimated_tokens=estimated,
             preserved_messages=len(messages) - 1,
         )
         force = False

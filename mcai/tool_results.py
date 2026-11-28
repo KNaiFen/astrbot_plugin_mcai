@@ -93,6 +93,11 @@ def model_result(name, arguments, result, operation_id=None):
                 "勿将失败输出作为有效结论或送审依据。"
             )
         data["job_id"] = data.pop("id")
+        if data["items"] and data["items"][0]["body"].get("tail_order") == "eof_first":
+            data["tail_order"] = "eof_first"
+            data["tail_note"] = (
+                "尾行从文件末尾开始分块，每页内从旧到新；继续翻页将向前查看更早的尾行。"
+            )
         probe = (
             data.get("progress", {}).get("kind")
             if data.get("kind") == "probe"
@@ -132,6 +137,17 @@ def model_result(name, arguments, result, operation_id=None):
                 body["message"] = (
                     "先看overview；mc_artifact_read默认结构概览，result_path定向展开，view=value或offset读取原文。"
                 )
+        if (
+            name == "mc_workspace"
+            and arguments.get("mode") == "exec"
+            and all(
+                row["body"].keys() == {"output"}
+                and isinstance(row["body"]["output"], str)
+                for row in data["items"]
+            )
+        ):
+            data["stdout"] = "".join(row["body"]["output"] for row in data.pop("items"))
+            data.setdefault("stdout_truncated", not data["complete"])
         if data["next_cursor"] is not None:
             next_name = (
                 "mc_job_wait"
@@ -143,7 +159,7 @@ def model_result(name, arguments, result, operation_id=None):
             artifact = max(
                 (
                     row["body"]
-                    for row in data["items"]
+                    for row in data.get("items", ())
                     if "reference" in row["body"]
                     and (
                         "characters" in row["body"]

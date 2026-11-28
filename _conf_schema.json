@@ -5,7 +5,7 @@
   "curseforge_api_key": {"description": "CurseForge 官方 API 密钥；只在 A 端访问外网", "type": "string", "secret": true, "default": ""},
   "workspace_dir": {"description": "A 端 Agent 工作区根目录，留空使用插件数据目录下的 workspaces", "type": "string", "default": ""},
   "workspace_powershell_path": {"description": "A 端 PowerShell 7.3+ 路径，留空自动查找 pwsh.exe", "type": "string", "default": ""},
-  "workspace_java_path": {"description": "A 端 javap 使用的 JDK 路径，填写 java.exe 或 javap.exe，留空自动查找", "type": "string", "default": ""},
+  "workspace_java_path": {"description": "A 端工作区字节码检查、反编译、映射和构建用的 JDK 21+ 路径，填写 java.exe 或 javap.exe，留空自动查找", "type": "string", "default": ""},
   "provider_id": {"description": "排障模型（仅支持 OpenAI 兼容 Chat／Responses，先在 AstrBot 模型页配置）", "type": "string", "default": "", "_special": "select_provider"},
   "reasoning_effort": {"description": "排障模型思考强度，留空继承提供商；支持自定义值", "type": "string", "default": ""},
   "backup_provider_id": {"description": "备用排障模型（可选，主排障连续失败时自动回退；仅支持 OpenAI 兼容 Chat／Responses）", "type": "string", "default": "", "_special": "select_provider"},

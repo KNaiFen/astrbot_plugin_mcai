@@ -79,6 +79,7 @@ READ_TOOLS = (
         "mc_history",
         "mc_knowledge",
         "mc_status",
+        "mc_inventory",
         "mc_query",
         "mc_console_read",
         "mc_console_line",
@@ -93,6 +94,7 @@ BACKGROUND = {
     "region_scan",
     "region_export",
     "diagnostics",
+    "inventory",
 }
 IPV4_RE = re.compile(
     r"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}"
@@ -781,6 +783,12 @@ async def run_question(
             action, arguments = "probe", {"kind": name[3:], **arguments}
             if arguments.get("inventory_job_id"):
                 raise ValueError("只读问答不引用其他任务的磁盘清单。")
+        elif name == "mc_inventory":
+            if "baseline" in arguments:
+                raise ValueError("只读问答不比较组件清单基线。")
+            if "query" in arguments:
+                check_ask_query(arguments["query"])
+            action = "inventory"
         elif name == "mc_status":
             action, arguments = "metrics", {**arguments, "view": "question"}
         else:
@@ -815,7 +823,14 @@ async def run_question(
                         "argv": query_argv(next_call["name"], next_call["arguments"])
                     },
                 )
-            result = sanitize_ask_data(result, hide_status_paths=(name == "mc_status"))
+            result = sanitize_ask_data(
+                result,
+                hide_status_paths=name in ("mc_status", "mc_inventory")
+                or (
+                    isinstance(raw_result, dict)
+                    and raw_result.get("kind") == "inventory"
+                ),
+            )
         except (ValueError, ValidationError, *BACKEND_ERRORS) as exc:
             result = {
                 "ok": False,

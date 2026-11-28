@@ -9,6 +9,9 @@ import json
 import re
 import tomllib
 
+MAX_PATCH_TEXT_BYTES = 16 * 1024**2
+PATCH_SIZE_ERROR = "文本补丁目标超过 16 MiB 上限，请缩小目标文件或改用专用工具"
+
 BOMS = (
     (codecs.BOM_UTF32_LE, "utf-32-le"),
     (codecs.BOM_UTF32_BE, "utf-32-be"),
@@ -49,10 +52,14 @@ def parse_document(data, format, encoding=None):
 
 
 def patch_text(path, arguments):
+    if path.stat().st_size > MAX_PATCH_TEXT_BYTES:
+        raise ValueError(PATCH_SIZE_ERROR)
     return patch_data(path.read_bytes(), arguments, path.name)
 
 
 def patch_data(data, arguments, name):
+    if len(data) > MAX_PATCH_TEXT_BYTES:
+        raise ValueError(PATCH_SIZE_ERROR)
     actual = hashlib.sha256(data).hexdigest()
     if actual != arguments["sha256"].lower():
         raise ValueError("文件已变化，请重新读取并提案")
