@@ -1,4 +1,14 @@
-# 0.22.2 发布说明
+# 0.22.3 发布说明
+
+0.22.3 继续使用 `mcai-9`。本版主要是发行包与版本号治理：Windows B 端离线安装包升级为带版本号命名（`mcai_windows_host-0.22.3.zip`），服内探针 Probe 八目标统一推进至 `0.6.0` 并重编。若你已升级至 `0.22.2` 且无需更新 Probe 版本号，运行时行为无变化，可按需更新 A、B 与 Probe 0.6.0（停服替换 `mods/` 中旧版 Probe JAR）；从 `0.22.1` 或更旧版本升级请按[升级步骤](operations.md#升级步骤)配套更新。下载及校验见 [GitHub Release v0.22.3](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.22.3)。
+
+| 模块 | 主要更新与修复（`ac16837`） |
+|---|---|
+| B 端主机包带版本号命名 | Windows 主机发行包由无版本号文件名升级为 `mcai_windows_host-<版本>.zip`（本版即 `mcai_windows_host-0.22.3.zip`），同步更新构建、校验、发版流程、打包测试与全部安装／运维文档 |
+| Probe 推进至 `0.6.0` | 全仓 Probe 源码、9 个 Gradle 模块、7 份加载器元数据与文档统一推进至 `0.6.0` 并重新构建全部 8 个目标平台 JAR（`1.7.10`–`1.21.1` Forge／Fabric／NeoForge）与源码包，随 B 包与 Release 附件一并提供；详见[服内探针说明](probe.md) |
+| 组件版本推进规范与校验 | 明确 A 端、B 端与 Probe 任一组件更新必推对应版本号、禁止不同构建复用同一版本号的交付规则；新增 `scripts/release.py bump-probe <版本>` 一键同步工具与 `scripts/verify.py` 全量 19 处 Probe 版本一致性静态检查 |
+
+## 0.22.2 发布说明
 
 0.22.2 继续使用 `mcai-9`。本次改动同时涉及 A 端（AstrBot 插件）与 B 端（Windows 主机），请按[升级步骤](operations.md#升级步骤)配套更新 A 与 B（已有托管窗口若已升级至 0.22.0 无需重启，随 B 包提供的 Probe 0.5.0 与 0.22.0 相同，已安装同构建的服无需替换 Probe JAR）。升级不会自动覆盖已有运行时规则，建议升级后在「MCAI 设置 → 运行时规则」对比并按需合并新版 `AGENTS.md` 与 `REVIEW_AGENTS.md`。下载及校验见 [GitHub Release v0.22.2](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.22.2)。
 

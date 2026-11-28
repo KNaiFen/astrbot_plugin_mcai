@@ -17,7 +17,7 @@
 
 ## 一、安装前准备
 
-A 与 B 当前使用 `mcai-9` 协议（Probe 协议 1）；B 使用 `mcai_windows_host.zip`（附带可选 Probe 0.5.0），A 使用 `astrbot_plugin_mcai.zip`。从源码构建见[开发指南](../development/README.md#构建与发行)。
+A 与 B 当前使用 `mcai-9` 协议（Probe 协议 1）；B 使用 `mcai_windows_host-<版本>.zip`（附带可选 Probe 0.6.0），A 使用 `astrbot_plugin_mcai.zip`。从源码构建见[开发指南](../development/README.md#构建与发行)。
 
 ### 软件与版本
 
@@ -76,7 +76,7 @@ py -3.12 --version
 
 ### 1. 解压并安装主机程序
 
-将 `mcai_windows_host.zip` 解压到例如 `D:\MCAI`，确认目录内直接存在 `pyproject.toml`。在 PowerShell 7 中执行：
+将 `mcai_windows_host-<版本>.zip` 解压到例如 `D:\MCAI`，确认目录内直接存在 `pyproject.toml`。在 PowerShell 7 中执行：
 
 ```powershell
 Set-Location -LiteralPath 'D:\MCAI'
@@ -260,7 +260,7 @@ Set-Location -LiteralPath 'D:\MCAI'
 
 ## 五、可选探针、日常开机与常见安装问题
 
-- **可选服内诊断 Probe**：提供玩家现场、维度 TPS/MSPT、已加载对象普查与短时热点，无需客户端安装。停服后从 B 包 `probe/` 选对应版本与加载器的**一个 JAR** 放进 `mods/`，重启看到 `MCAI Probe 0.5.0 ready` 即可，详见[Probe 安装与使用](probe.md#安装)。
+- **可选服内诊断 Probe**：提供玩家现场、维度 TPS/MSPT、已加载对象普查与短时热点，无需客户端安装。停服后从 B 包 `probe/` 选对应版本与加载器的**一个 JAR** 放进 `mods/`，重启看到 `MCAI Probe 0.6.0 ready` 即可，详见[Probe 安装与使用](probe.md#安装)。
 - **下次开机顺序**：先启动 B（`.\.venv\Scripts\python.exe -m mcai host`），再为每台服开托管窗口（`mcai.exe tm -C ...`）并运行 `.\start.bat`，A 端照常启动 AstrBot。详见[多窗口管理服务端](operations.md#多窗口管理服务端)。
 - **自定义运行时规则与备份**：自定义规则在「MCAI 设置 → 运行时规则」维护，升级不会覆盖原规则（见[运行时规则](configuration.md#运行时规则)）；修复备份默认保存在 `data_dir/backups/操作编号/`（见[数据与备份](operations.md#数据与备份)）；版本升级见[升级步骤](operations.md#升级步骤)。
 

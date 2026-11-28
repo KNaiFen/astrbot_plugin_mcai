@@ -20,6 +20,9 @@
 - **脚本与长任务**：PowerShell 脚本明确使用 `pwsh`，保留参数边界和字面路径；长任务在后台执行并检查结果。
 - **验证与消融审查**：先核对并复用既有测试，验证强度与影响匹配（真实流程、生产修改、重试和恢复需要集成测试；文档核对链接、示例、忽略规则和受影响的发行包，不为格式或低影响改动新增零碎单测）。实现后做消融审查，删除不必要设计；测试维护及临时产物清理按[编写与维护测试](testing.md#编写与维护测试)执行。
 - **运行时模板边界**：`mcai/agent_rules.md`、`mcai/review_rules.md`、`mcai/summary_rules.md`、`mcai/cyber_rules.md` 是随安装包提供的[运行时模板](../usage/configuration.md#运行时规则)，开发文档不能替代它们，升级不能覆盖用户已有运行时规则。
+- **组件更新必推版本号**：无论 **A 端（AstrBot 插件）**、**B 端（Windows 主机）** 还是 **Probe（服内探针）**，只要该组件的代码或构建产物有更新，就必须推进对应版本号，严禁不同构建复用同一版本号：
+  - A 端或 B 端有更新时，发版前使用 `scripts/release.py bump <版本>` 推进 MCAI 产品版本号，B 端主机发行包固定以 `mcai_windows_host-<版本>.zip` 命名；
+  - Probe 有更新时，必须使用 `scripts/release.py bump-probe <版本>` 推进 Probe 版本号并运行 `scripts/build_probe.py` 重编全部 8 个目标；`scripts/verify.py --mode static` 自动校验所有 Probe 源码、Gradle、加载器元数据与构建脚本的版本一致。
 - **文档同步与提交纪律**：配置、命令、工具、重试或数据格式改动同步对应文档和示例；验证结果注明版本、条件和限制，历史结果不得冒充本轮结果。验证通过后在本地 `dev` 单独创建简短中文提交；未经授权不推送、部署或发送外部消息。
 
 ## 环境与源码安装
@@ -93,7 +96,7 @@ B生命周期使用HostRunner：在aiohttp的pre_shutdown停止WebSocket输入�
 从 Git 工作树构建时，源码清单取自 `git ls-files --cached`，内容取自工作树；新增、删除或改名的路径要先更新索引。完整源码 ZIP 内附 `SOURCE_MANIFEST.json`，解压到无 Git 的目录后可用同一命令构建。已有匹配版本的 Java 和八个 Probe 构建产物时，可加 `--package-only` 单独打包；清单错误会在构建前报告，三个 ZIP 都通过内部校验后才替换旧包。`verify.py --mode package` 与 `--mode release` 使用 `--package-only`，并自动完成解压链接检查、A 包隔离导入、B 包离线 wheel 构建安装和 `mcai --help` 冒烟。
 
 - `astrbot_plugin_mcai.zip`：插件入口、配置 schema、A 所需模块、依赖清单、工作区 Java 辅助源码和许可、运行时规则模板、设置视图、README 和分层文档。A 工作区第三方 JAR 和编译产物不进安装包或公开 `main`。
-- `mcai_windows_host.zip`：Python 项目、基础与实例配置示例、模块、规则模板、JAR 与许可、README 和分层文档。
+- `mcai_windows_host-<版本>.zip`：Python 项目、基础与实例配置示例、模块、规则模板、JAR 与许可、README 和分层文档。
 - `probe/`：八个目标的主 JAR、完整源码 ZIP 与许可（另在 `dist/probe/` 单独保留各目标 sources JAR）；B 包随 `probe/` 纳入白名单内的上述主 JAR、源码 ZIP 与许可。
 - `mcai-<版本>-source.zip`：来自 Git 跟踪清单的源码、构建脚本、测试和许可；开发 `AGENTS.md`、未跟踪试验文件、运行数据和 Git 历史不打包。
 
@@ -102,8 +105,10 @@ A、B 包保留 README 引用的文档及目录层级，具体为 `docs/README.m
 常规版本发布统一使用 `scripts/release.py`，不再手工拼临时脚本、不再逐版新增 `records/release-<版本>.md` 流水账，也不在发布后回写二次提交：
 
 ```powershell
-# 1. 同步版本号（pyproject.toml、metadata.yaml、mcai/protocol.py、README.md）
-.\.venv\Scripts\python.exe scripts/release.py bump 0.20.4
+# 1. 同步版本号（A/B 更新用 bump；Probe 有更新时必须另用 bump-probe 并重编八目标）
+.\.venv\Scripts\python.exe scripts/release.py bump 0.22.3
+# 若本版更新了 Probe：
+.\.venv\Scripts\python.exe scripts/release.py bump-probe 0.6.0
 # 2. 发版最后一步：整理并同步本版涉及的全部文档（README.md、docs/usage/、docs/design/ 与 docs/usage/releases.md 顶部发布说明），确认链接和结构干净后提交 dev
 # 3. 获授权发布时一键校验、归档 dist/<版本>/ + SHA256SUMS.txt、推 main 并创建 GitHub Release
 .\.venv\Scripts\python.exe scripts/release.py publish

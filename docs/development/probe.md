@@ -4,6 +4,8 @@
 
 ## 构建
 
+凡 Probe 源码、协议或编译依赖有更新，必须先执行 `.\.venv\Scripts\python.exe scripts/release.py bump-probe <版本>` 推进 Probe 版本号再重编全部 8 个目标，禁止不同构建复用同一版本号；`scripts/verify.py --mode static` 会自动核对全仓 Probe 版本号一致性。
+
 在源码根执行：
 
 ```powershell

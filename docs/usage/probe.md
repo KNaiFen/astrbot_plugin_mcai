@@ -4,7 +4,7 @@
 
 MCAI Probe 只安装在服务端，让 AI 获取当前玩家位置、全服与维度指标、已加载对象数量和短时实体热点。客户端不需要安装，也不新增端口或密钥。
 
-Probe 0.5.0 提供在线玩家、区块加载／tick 状态、对象计时、慢 tick 筛选及直接强加载汇总。直接 ticket 与传播后的有效加载等级分别解释。NeoForge 能核对控制器、所有者及实际注册模组时才显示对应字段。旧 JAR 保留原有能力。调用模组定向查询、已加载方块普查等可选功能前，先看 `mc_status` 返回的 `probe.capabilities`；不支持时，工具错误会列出当前已上报的能力。
+Probe 0.6.0 提供在线玩家、区块加载／tick 状态、对象计时、慢 tick 筛选及直接强加载汇总。直接 ticket 与传播后的有效加载等级分别解释。NeoForge 能核对控制器、所有者及实际注册模组时才显示对应字段。旧 JAR 保留原有能力。调用模组定向查询、已加载方块普查等可选功能前，先看 `mc_status` 返回的 `probe.capabilities`；不支持时，工具错误会列出当前已上报的能力。
 
 安装兼容 Probe 后，`mc_verify`的启动就绪检查会自动确认服务端主线程能够处理本次请求；即使Java仍在、日志曾出现Done，主线程未响应也不会通过。未安装Probe时只报告日志就绪。已安装旧Probe但缺少响应能力时需配套更新，不能把旧日志或上次进程的能力文件当成本次响应。检查不设置TPS／MSPT性能基线。
 
@@ -14,20 +14,20 @@ Probe 0.5.0 提供在线玩家、区块加载／tick 状态、对象计时、慢
 
 | Minecraft | 加载器 | 文件 | Java |
 |---|---|---|---|
-| 1.7.10 | Forge 10.13.4.1614 + lwjgl3ify 3.1.0 + UniMixins 0.3.2 | `mcai-probe-1.7.10-forge-0.5.0.jar` | 17／21 |
-| 1.16.5 | Forge 36.2.39+（36.x） | `mcai-probe-1.16.5-forge-0.5.0.jar` | 8 |
-| 1.19.2 | Forge 43.x | `mcai-probe-1.19.2-forge-0.5.0.jar` | 17 |
-| 1.20.1 | Forge 47.x | `mcai-probe-1.20.1-forge-0.5.0.jar` | 17 |
-| 1.20.1 | Fabric | `mcai-probe-1.20.1-fabric-0.5.0.jar` | 17 |
-| 1.21.1 | Forge 52.x | `mcai-probe-1.21.1-forge-0.5.0.jar` | 21 |
-| 1.21.1 | Fabric | `mcai-probe-1.21.1-fabric-0.5.0.jar` | 21 |
-| 1.21.1 | NeoForge 21.1.247+（21.1.x） | `mcai-probe-1.21.1-neoforge-0.5.0.jar` | 21 |
+| 1.7.10 | Forge 10.13.4.1614 + lwjgl3ify 3.1.0 + UniMixins 0.3.2 | `mcai-probe-1.7.10-forge-0.6.0.jar` | 17／21 |
+| 1.16.5 | Forge 36.2.39+（36.x） | `mcai-probe-1.16.5-forge-0.6.0.jar` | 8 |
+| 1.19.2 | Forge 43.x | `mcai-probe-1.19.2-forge-0.6.0.jar` | 17 |
+| 1.20.1 | Forge 47.x | `mcai-probe-1.20.1-forge-0.6.0.jar` | 17 |
+| 1.20.1 | Fabric | `mcai-probe-1.20.1-fabric-0.6.0.jar` | 17 |
+| 1.21.1 | Forge 52.x | `mcai-probe-1.21.1-forge-0.6.0.jar` | 21 |
+| 1.21.1 | Fabric | `mcai-probe-1.21.1-fabric-0.6.0.jar` | 21 |
+| 1.21.1 | NeoForge 21.1.247+（21.1.x） | `mcai-probe-1.21.1-neoforge-0.6.0.jar` | 21 |
 
-B 包的 `probe/` 目录提供 Probe 0.5.0 的八个目标；若当次发行未调整 Probe，构建与已安装的 0.5.0 相同，无需重复替换。更换旧构建时正常停服，移走旧 Probe 后放入对应的新 JAR，再启动；A、B 须配套更新，Probe 协议 1 按能力声明扩展。Forge 版不依赖 Fabric API；Fabric 版需要对应版本的 Fabric API 和 Loader 0.16.14+。Forge 包含 MixinExtras，NeoForge 使用加载器自带的 MixinExtras；不要安装 `sources` 源码包。Forge、NeoForge 和 Fabric 版本按表中加载器分别选择。NeoForge 按 21.1.247 基线构建并验证，其他 NeoForge 21.1.x 仅声明兼容范围。1.7.10 当前基线是标准 Forge + lwjgl3ify + UniMixins；GTNH 2.6.1 有隔离服验证记录，其他组合须按实际环境验证。
+B 包的 `probe/` 目录提供 Probe 0.6.0 的八个目标；Probe 有更新必推版本号，已安装的 0.6.0 版本一致时无需重复替换。更换旧构建时正常停服，移走旧 Probe 后放入对应的新 JAR，再启动；A、B 须配套更新，Probe 协议 1 按能力声明扩展。Forge 版不依赖 Fabric API；Fabric 版需要对应版本的 Fabric API 和 Loader 0.16.14+。Forge 包含 MixinExtras，NeoForge 使用加载器自带的 MixinExtras；不要安装 `sources` 源码包。Forge、NeoForge 和 Fabric 版本按表中加载器分别选择。NeoForge 按 21.1.247 基线构建并验证，其他 NeoForge 21.1.x 仅声明兼容范围。1.7.10 当前基线是标准 Forge + lwjgl3ify + UniMixins；GTNH 2.6.1 有隔离服验证记录，其他组合须按实际环境验证。
 
 1.16.5 目标要求 Forge 36.2.39 或更高的 36.x，已验证标准 Forge 36.2.39 与 CatServer `1.16.5-1d8d6313`（Forge 36.2.39／Java 11.0.21）。混合端验证仅覆盖上述版本的隔离Probe／spark环境，其他插件及整合包组合需另测。
 
-B 配置的实例目录应与 BAT 启动 Java 时的工作目录一致。MOD 在工作目录生成 `.mcai-probe/`，B 自动发现，无额外配置。启动日志显示 `MCAI Probe 0.5.0 ready` 后即可使用。
+B 配置的实例目录应与 BAT 启动 Java 时的工作目录一致。MOD 在工作目录生成 `.mcai-probe/`，B 自动发现，无额外配置。启动日志显示 `MCAI Probe 0.6.0 ready` 后即可使用。
 
 ## 使用
 
