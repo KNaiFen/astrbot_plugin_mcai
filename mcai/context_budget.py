@@ -15,9 +15,11 @@ from .agent_runtime import (
     compaction_rejected,
     compaction_unsupported,
     context_length_error,
+    cybersecurity_risk_error,
     effort_provider,
     hosted_tools,
     model_request,
+    prepend_cyber_prompt,
     prompt_cache_key_rejected,
     replay_compaction,
     request_option_rejected,
@@ -581,6 +583,10 @@ async def remote_checkpoint(
     origin=None,
     active_slot=None,
     flags=None,
+    cyber_failover=None,
+    cyber_fallback_action="pause",
+    cyber_prompt_prefix=None,
+    active_cyber=False,
 ):
     def build_remote(slot_provider, slot_flags):
         selected = request_provider(slot_provider)
@@ -590,12 +596,12 @@ async def remote_checkpoint(
         selected = traced_provider(selected, tasks.store, job["id"], "上下文压缩")
         return selected, slot_flags
 
-    async def build_parameters(selected, slot_flags):
+    async def build_parameters(selected, slot_flags, slot_system):
         contexts, _ = sanitize_contexts_by_modalities(
             original, selected.provider_config.get("modalities")
         )
         parameters, _ = await selected._prepare_chat_payload(
-            None, contexts=contexts, system_prompt=system
+            None, contexts=contexts, system_prompt=slot_system
         )
         parameters.pop("store")
         parameters["prompt_cache_key"] = f"mcai:{job['id']}"
@@ -647,6 +653,8 @@ async def remote_checkpoint(
                     send, parameters, tasks=tasks, job=job, flags=slot_flags
                 )
             except APIError as exc:
+                if cybersecurity_risk_error(exc):
+                    raise
                 if "prompt_cache_key" in parameters and prompt_cache_key_rejected(exc):
                     tasks.log(job, "prompt_cache_key_unavailable", stage="上下文压缩")
                     del parameters["prompt_cache_key"]
@@ -675,10 +683,11 @@ async def remote_checkpoint(
 
     used_provider = provider
     used_parameters = None
+    used_system = system
     if failover is None:
         base_flags = flags if flags is not None else job
         selected, slot_flags = build_remote(provider, base_flags)
-        used_parameters = await build_parameters(selected, slot_flags)
+        used_parameters = await build_parameters(selected, slot_flags, system)
         status, value = await model_request(
             tasks,
             job,
@@ -692,47 +701,77 @@ async def remote_checkpoint(
         prepared_slots = {}
 
         async def compact_slot(active):
-            nonlocal used_provider, used_parameters
+            nonlocal used_provider, used_parameters, used_system
+            same_slot = (
+                active.cyber == active_cyber
+                and active.slot == active_slot
+                and active.provider_id == provider.provider_config.get("id")
+            )
             slot_provider = (
                 provider
-                if active.slot == active_slot
-                and active.provider_id == provider.provider_config.get("id")
+                if same_slot
                 else effort_provider(active.provider, active.effort)
             )
             if slot_provider.provider_config.get("type") != "openai_responses":
-                return ("fallback", "backup_not_responses")
+                return (
+                    "fallback",
+                    "cyber_not_responses" if active.cyber else "backup_not_responses",
+                )
+            is_normal_primary = (not active.cyber) and active.slot == "primary"
             slot_flags = (
                 job
-                if active.slot == "primary"
+                if is_normal_primary
                 else job.setdefault("backup_provider_flags", {}).setdefault(
                     active.provider_id, {}
                 )
             )
             if slot_flags.get("remote_compaction_disabled"):
+                if active.cyber and not active_cyber:
+                    return ("fallback", "cyber_unsupported")
                 return (
                     "fallback",
                     "backup_unsupported"
-                    if active.slot == "backup" and active_slot == "primary"
+                    if (not active.cyber)
+                    and active.slot == "backup"
+                    and active_slot == "primary"
                     else "unsupported",
                 )
-            key = (active.slot, active.provider_id, active.effort)
+            slot_system = (
+                prepend_cyber_prompt(system, cyber_prompt_prefix)
+                if active.cyber and not active_cyber
+                else system
+            )
+            key = (active.cyber, active.slot, active.provider_id, active.effort)
             if key not in prepared_slots:
                 selected, slot_flags = build_remote(slot_provider, slot_flags)
-                params = await build_parameters(selected, slot_flags)
-                prepared_slots[key] = (slot_provider, selected, params, slot_flags)
-            slot_provider, selected, params, slot_flags = prepared_slots[key]
+                params = await build_parameters(selected, slot_flags, slot_system)
+                prepared_slots[key] = (
+                    slot_provider,
+                    selected,
+                    params,
+                    slot_flags,
+                    slot_system,
+                )
+            slot_provider, selected, params, slot_flags, slot_system = prepared_slots[
+                key
+            ]
             used_provider = slot_provider
             used_parameters = params
+            used_system = slot_system
             status, value = await run_compact(selected, params, slot_flags)
-            if (
-                status == "fallback"
-                and active.slot == "backup"
-                and active_slot == "primary"
+            if status == "fallback" and (
+                (active.cyber and not active_cyber)
+                or (
+                    (not active.cyber)
+                    and active.slot == "backup"
+                    and active_slot == "primary"
+                )
             ):
                 if value not in ("context_length_exceeded",):
                     slot_flags["remote_compaction_disabled"] = True
                 if value != "replay_rejected":
-                    return ("fallback", f"backup_{value}")
+                    prefix = "cyber_" if active.cyber else "backup_"
+                    return ("fallback", f"{prefix}{value}")
             return (status, value)
 
         status, value = await model_request(
@@ -746,7 +785,12 @@ async def remote_checkpoint(
             failover=failover,
             origin=origin,
             preferred_primary_id=job.get("provider_id"),
-            preferred_slot=active_slot,
+            preferred_slot=(
+                active_slot if (not job.get("cyber_fallback") or active_cyber) else None
+            ),
+            cyber_failover=cyber_failover,
+            cyber_fallback_action=cyber_fallback_action,
+            cyber_prompt_active=bool((cyber_prompt_prefix or "").strip()),
         )
     if status == "fallback":
         return (value, None)
@@ -759,7 +803,7 @@ async def remote_checkpoint(
             tasks.store,
             used_provider,
             "compaction",
-            tokens([{"role": "system", "content": system}])
+            tokens([{"role": "system", "content": used_system}])
             + tokens(original)
             + (
                 tokens(
@@ -840,6 +884,10 @@ async def fit_history(
     origin=None,
     active_slot=None,
     flags=None,
+    cyber_failover=None,
+    cyber_fallback_action="pause",
+    cyber_prompt_prefix=None,
+    active_cyber=False,
 ):
     limit = provider.provider_config.get("max_context_tokens", 0) or 272000
     trigger = int(limit * HARD_RATIO)
@@ -1068,9 +1116,13 @@ async def fit_history(
                     origin=origin,
                     active_slot=active_slot,
                     flags=flag_store,
+                    cyber_failover=cyber_failover,
+                    cyber_fallback_action=cyber_fallback_action,
+                    cyber_prompt_prefix=cyber_prompt_prefix,
+                    active_cyber=active_cyber,
                 )
                 if fallback is not None:
-                    if fallback.startswith("backup_"):
+                    if fallback.startswith(("backup_", "cyber_")):
                         tasks.log(job, "remote_compaction_unavailable", reason=fallback)
                     else:
                         disable_remote(fallback)
@@ -1169,9 +1221,23 @@ async def fit_history(
         if not eligible:
             raise capacity_error("仅剩受保护的用户消息或完整交互组，无法容纳请求", used)
 
-        summary_system = (
+        base_summary_system = (
             UPDATE_SUMMARIZATION_PROMPT if checkpoints else SUMMARY_PROMPT
         ) + ("\n角色规则：\n" + summary_rules if summary_rules else "")
+        is_currently_cyber = bool(
+            active_cyber
+            or (
+                not archive
+                and cyber_failover is not None
+                and cyber_fallback_action == "fallback"
+                and job.get("cyber_fallback")
+            )
+        )
+        summary_system = (
+            prepend_cyber_prompt(base_summary_system, cyber_prompt_prefix)
+            if is_currently_cyber
+            else base_summary_system
+        )
         summary_overhead = tokens([{"role": "system", "content": summary_system}])
         summary_budget = (
             int(min(trigger, limit - summary_output) / factor) - summary_overhead
@@ -1332,6 +1398,7 @@ async def fit_history(
 
         use_failover = not archive and failover is not None
         used_provider = provider
+        used_summary_system = summary_system
         if not use_failover:
             summary_provider = build_summary_provider(provider)
 
@@ -1369,13 +1436,17 @@ async def fit_history(
             slot_summary_providers = {}
 
             async def summarize(active):
-                nonlocal used_provider
-                key = (active.slot, active.provider_id, active.effort)
+                nonlocal used_provider, used_summary_system
+                key = (active.cyber, active.slot, active.provider_id, active.effort)
                 if key not in slot_summary_providers:
+                    same_slot = (
+                        active.cyber == active_cyber
+                        and active.slot == active_slot
+                        and active.provider_id == provider.provider_config.get("id")
+                    )
                     slot_base = (
                         provider
-                        if active.slot == active_slot
-                        and active.provider_id == provider.provider_config.get("id")
+                        if same_slot
                         else effort_provider(active.provider, active.effort)
                     )
                     slot_summary_providers[key] = (
@@ -1385,6 +1456,15 @@ async def fit_history(
                     )
                 slot_base, slot_wrapped, stream_disabled = slot_summary_providers[key]
                 used_provider = slot_base
+                slot_summary_system = (
+                    prepend_cyber_prompt(base_summary_system, cyber_prompt_prefix)
+                    if active.cyber
+                    else base_summary_system
+                )
+                used_summary_system = slot_summary_system
+                slot_summary_overhead = tokens(
+                    [{"role": "system", "content": slot_summary_system}]
+                )
                 tasks.log(
                     job,
                     "context_compaction_request",
@@ -1398,7 +1478,7 @@ async def fit_history(
                     input_tokens=math.ceil(
                         factor
                         * (
-                            summary_overhead
+                            slot_summary_overhead
                             + tokens([{"role": "user", "content": prompt}])
                         )
                     ),
@@ -1411,7 +1491,7 @@ async def fit_history(
                     contexts=[],
                     func_tool=None,
                     request_max_retries=1,
-                    system_prompt=summary_system,
+                    system_prompt=slot_summary_system,
                 )
                 if not stream_disabled:
                     try:
@@ -1437,7 +1517,14 @@ async def fit_history(
                     failover=failover,
                     origin=origin,
                     preferred_primary_id=job.get("provider_id"),
-                    preferred_slot=active_slot,
+                    preferred_slot=(
+                        active_slot
+                        if (not job.get("cyber_fallback") or active_cyber)
+                        else None
+                    ),
+                    cyber_failover=cyber_failover,
+                    cyber_fallback_action=cyber_fallback_action,
+                    cyber_prompt_active=bool((cyber_prompt_prefix or "").strip()),
                 )
             else:
                 response = await model_request(
@@ -1455,7 +1542,8 @@ async def fit_history(
                 tasks.store,
                 used_provider,
                 "compaction",
-                summary_overhead + tokens([{"role": "user", "content": prompt}]),
+                tokens([{"role": "system", "content": used_summary_system}])
+                + tokens([{"role": "user", "content": prompt}]),
                 response,
             )
             factor = budget_factor(tasks.store, provider, "compaction")

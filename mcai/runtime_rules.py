@@ -1,4 +1,4 @@
-"""Install and explicitly update the three user-owned runtime rule files."""
+"""Install and explicitly update the four user-owned runtime rule files."""
 
 import os
 import time
@@ -16,6 +16,7 @@ TEMPLATES = {
         ("AGENTS.md", "agent_rules.md"),
         ("REVIEW_AGENTS.md", "review_rules.md"),
         ("SUMMARY_AGENTS.md", "summary_rules.md"),
+        ("CYBER_AGENTS.md", "cyber_rules.md"),
     )
 }
 BASELINE = "rule_baseline"

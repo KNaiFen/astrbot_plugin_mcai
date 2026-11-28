@@ -50,15 +50,54 @@ WEB_SEARCH_PAUSED = (
 )
 API_CONFIGURATION_ERROR = r"(?:invalid|incorrect|expired)[_ ](?:api[_ ]?)?(?:key|token)|authentication|unauthorized|model.*(?:not found|does not exist)|invalid_model"
 API_QUOTA_ERROR = r"\b(?:insufficient[_ ]quota|quota[_ ](?:exceeded|exhausted)|billing_hard_limit_reached|exceeded your current quota|(?:insufficient|not enough) (?:credits?|balance)|credit balance is too low)\b"
+CYBER_POLICY_ERROR_CODES = frozenset(
+    {
+        "cyber_policy",
+        "cybersecurity_risk",
+        "invalid_prompt",
+        "content_policy_violation",
+        "content_filter",
+        "responsibleaipolicyviolation",
+    }
+)
+CYBERSECURITY_RISK_ERROR = (
+    r"flagged for possible cybersecurity risk"
+    r"|cybersecurity[_ ]risk"
+    r"|\bcyber_policy\b"
+    r"|extra (?:care|caution) with (?:some )?cybersecurity requests"
+    r"|trusted access for cyber"
+    r"|apply for daybreak"
+    r"|cyber permissive safeguards"
+    r"|flagged as potentially violating our usage policy"
+    r"|\bcontent_policy_violation\b"
+    r"|\bresponsibleaipolicyviolation\b"
+    r"|rejected (?:as a result of|by) (?:our|the provider) (?:safety system|content filter)"
+    r"|triggering .*content management policy"
+)
+CYBER_SOFT_BLOCK_BANNER = (
+    r"this content can['’]t be shown.*(?:cybersecurity|daybreak|trusted access for cyber)"
+    r"|we take extra (?:care|caution) with (?:some )?cybersecurity requests"
+)
+CYBER_FALLBACK_ACTIONS = ("pause", "fallback")
 REVIEW_CAPACITY_NOTE = (
     "审核输入超出上下文容量，请拆分变更或缩小附带文件与反馈体积后重试。"
 )
 
 
+def prepend_cyber_prompt(system_prompt, prefix):
+    clean = (prefix or "").strip()
+    if not clean:
+        return system_prompt
+    if not system_prompt:
+        return clean
+    return f"{clean}\n\n{system_prompt}"
+
+
 class _SlotChanged(Exception):
-    def __init__(self, slot):
+    def __init__(self, slot, *, cyber=None):
         super().__init__(slot)
         self.slot = slot
+        self.cyber = cyber
 
 
 TASK_POLICY = """工作场景包括 Minecraft 服务端日常运维、明确操作和故障排查。明确操作按目标、现状、范围和预期效果核实执行，不以存在故障为前提；所有修改、启停和强制保存均须经过独立审核与管理员批准，文件修改遵循先停服备份。
@@ -257,16 +296,58 @@ def check_response(response, *, summary=False):
         )
     ):
         raise ConnectionError("模型返回未完成响应，原记录保留")
-    if summary and (
-        any(_field(_field(choice, "message"), "refusal") for choice in choices)
-        or any(
-            _field(part, "type") == "refusal"
-            for item in output
-            if _field(item, "type") == "message"
-            for part in _field(item, "content") or []
+    has_refusal = any(
+        _field(_field(choice, "message"), "refusal") for choice in choices
+    ) or any(
+        _field(part, "type") == "refusal"
+        for item in output
+        if _field(item, "type") == "message"
+        for part in _field(item, "content") or []
+    )
+    if has_refusal:
+        raise ModelRefusalError(
+            "模型明确拒绝生成摘要，原记录保留"
+            if summary
+            else "模型响应被上游安全策略拒绝（refusal），原记录保留"
         )
-    ):
-        raise ModelRefusalError("模型明确拒绝生成摘要，原记录保留")
+    has_tools = (
+        bool(getattr(response, "tools_call_name", None))
+        or any(_field(item, "type") == "function_call" for item in output)
+        or any(
+            _field(_field(choice, "message"), "tool_calls")
+            or _field(_field(choice, "message"), "function_call")
+            for choice in choices
+        )
+    )
+    if not has_tools:
+        parts = []
+        for item in output:
+            if _field(item, "type") == "message":
+                for part in _field(item, "content") or []:
+                    if _field(part, "type") == "output_text" and (
+                        text := _field(part, "text")
+                    ):
+                        parts.append(str(text))
+        for choice in choices:
+            content = _field(_field(choice, "message"), "content")
+            if isinstance(content, str) and content:
+                parts.append(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("text"):
+                        parts.append(str(part["text"]))
+                    elif text := getattr(part, "text", None):
+                        parts.append(str(text))
+        combined = (
+            "\n".join(parts).strip()
+            or str(getattr(response, "completion_text", "") or "").strip()
+        )
+        if 0 < len(combined) <= 600 and re.search(
+            CYBER_SOFT_BLOCK_BANNER, combined, re.I
+        ):
+            raise ModelRefusalError(
+                "模型输出被上游安全风控屏蔽（cyber_policy），原记录保留"
+            )
 
 
 def check_review_feedback(job, record):
@@ -276,10 +357,54 @@ def check_review_feedback(job, record):
         )
 
 
+def _api_error_codes(error):
+    codes = set()
+
+    def add(value):
+        if isinstance(value, str) and value.strip():
+            codes.add(value.strip().lower())
+
+    add(getattr(error, "code", None))
+    body = getattr(error, "body", None)
+    if isinstance(body, dict):
+        add(body.get("code"))
+        add(body.get("codex_error_info"))
+        inner_top = body.get("innererror")
+        if isinstance(inner_top, dict):
+            add(inner_top.get("code"))
+        detail = body.get("error")
+        if isinstance(detail, dict):
+            add(detail.get("code"))
+            add(detail.get("codex_error_info"))
+            inner = detail.get("innererror")
+            if isinstance(inner, dict):
+                add(inner.get("code"))
+    if match := re.search(
+        r"Responses API (?:request|stream) failed:\s*([A-Za-z0-9_.-]+)\s*:",
+        str(error),
+        re.I,
+    ):
+        add(match.group(1))
+    return codes
+
+
+def cybersecurity_risk_error(error):
+    for item in error_chain(error):
+        if isinstance(item, ModelRefusalError):
+            return True
+        if getattr(item, "status_code", None) not in (None, 400, 403, 422):
+            continue
+        if _api_error_codes(item) & CYBER_POLICY_ERROR_CODES:
+            return True
+        if re.search(CYBERSECURITY_RISK_ERROR, api_error_text(item), re.I):
+            return True
+    return False
+
+
 def retryable(error):
     if isinstance(
         error, (ModelRefusalError, ModelOutputTruncatedError, UsageWriteError)
-    ):
+    ) or cybersecurity_risk_error(error):
         return False
     status = getattr(error, "status_code", None)
     if status is not None:
@@ -344,6 +469,8 @@ def request_option_rejected(error, option, *, invalid=False):
 
 
 def feature_blocked(error):
+    if cybersecurity_risk_error(error):
+        return False
     text = api_error_text(error)
     return bool(
         getattr(error, "status_code", None) == 403
@@ -361,6 +488,8 @@ def feature_blocked(error):
 
 
 def compaction_unsupported(error):
+    if cybersecurity_risk_error(error):
+        return False
     if feature_blocked(error):
         return True
     text = api_error_text(error)
@@ -400,7 +529,11 @@ def compaction_rejected(error):
 def slow_api_error(error):
     for item in error_chain(error):
         status = getattr(item, "status_code", None)
-        if status in (401, 403) and not feature_blocked(item):
+        if (
+            status in (401, 403)
+            and not feature_blocked(item)
+            and not cybersecurity_risk_error(item)
+        ):
             return f"认证或权限失败（HTTP {status}）"
         if re.search(API_QUOTA_ERROR, api_error_text(item), re.I):
             return "额度不足（HTTP 429）"
@@ -450,6 +583,7 @@ class ResolvedProvider:
     provider_id: str
     provider: object
     effort: str
+    cyber: bool = False
 
 
 class ModelFailover:
@@ -564,6 +698,7 @@ class ModelFailover:
             provider_id=target_id,
             provider=provider,
             effort=target_effort,
+            cyber=self.role == "cyber",
         )
 
     async def call_bounded(
@@ -577,6 +712,7 @@ class ModelFailover:
         on_attempt=None,
         on_retry=None,
         on_switch=None,
+        on_cyber_switch=None,
         on_failure=None,
         check_result=None,
         require_valid=True,
@@ -588,6 +724,7 @@ class ModelFailover:
             origin=origin, preferred_primary_id=preferred_primary_id
         )
         exhausted = set()
+        cyber_risk_exhausted = set()
         slot_failures = 0
         total_attempt = 0
         while True:
@@ -612,6 +749,19 @@ class ModelFailover:
                     on_attempt(slot, total_attempt, None)
                 if on_failure is not None:
                     on_failure(slot, total_attempt, exc, active)
+                other = "backup" if slot == "primary" else "primary"
+                if cybersecurity_risk_error(exc):
+                    if self.role == "cyber" and has_backup:
+                        cyber_risk_exhausted.add(slot)
+                        exhausted.add(slot)
+                        if other not in cyber_risk_exhausted and other not in exhausted:
+                            if on_cyber_switch is not None:
+                                on_cyber_switch(slot, other, exc, active)
+                            elif on_switch is not None:
+                                on_switch(slot, other, exc)
+                            slot, probing, slot_failures = other, False, 0
+                            continue
+                    raise
                 if isinstance(
                     exc,
                     (
@@ -622,7 +772,6 @@ class ModelFailover:
                     ),
                 ):
                     raise
-                other = "backup" if slot == "primary" else "primary"
                 missing_slot = (
                     active is None
                     and has_backup
@@ -753,6 +902,9 @@ async def model_request(
     origin=None,
     preferred_primary_id=None,
     preferred_slot=None,
+    cyber_failover=None,
+    cyber_fallback_action="pause",
+    cyber_prompt_active=None,
 ):
     primary_id = backup_id = ""
     has_backup = False
@@ -762,25 +914,74 @@ async def model_request(
         )
         has_backup = bool(backup_id)
 
-    async def new_state(slot_override=None):
+    cyber_primary_id = cyber_backup_id = ""
+    cyber_has_backup = False
+    cyber_available = False
+    if (
+        failover is not None
+        and cyber_failover is not None
+        and cyber_fallback_action == "fallback"
+    ):
+        cyber_primary_id, _, cyber_backup_id, _ = await cyber_failover.pair_ids()
+        cyber_available = bool(cyber_primary_id)
+        cyber_has_backup = bool(cyber_primary_id and cyber_backup_id)
+
+    def active_failover(is_cyber):
+        return cyber_failover if is_cyber and cyber_available else failover
+
+    def active_pair(is_cyber):
+        if is_cyber and cyber_available:
+            return cyber_primary_id, cyber_backup_id, cyber_has_backup
+        return primary_id, backup_id, has_backup
+
+    def slot_label(slot_name, is_cyber):
+        if is_cyber:
+            return "Cyber 退避备用模型" if slot_name == "backup" else "Cyber 退避主模型"
+        return "备用模型" if slot_name == "backup" else "主模型"
+
+    def slot_provider_id(slot_name, is_cyber):
+        p_id, b_id, _ = active_pair(is_cyber)
+        return b_id if slot_name == "backup" else p_id
+
+    def prompt_applied():
+        return bool(
+            cyber_prompt_active()
+            if callable(cyber_prompt_active)
+            else cyber_prompt_active
+        )
+
+    async def new_state(slot_override=None, cyber_override=None):
         if failover is None:
             return {"id": uuid.uuid4().hex, "stage": stage, "attempt": 0}
+        is_cyber = (
+            bool(cyber_override)
+            if cyber_override is not None
+            else bool(cyber_available and job.get("cyber_fallback"))
+        )
+        if is_cyber and not cyber_available:
+            is_cyber = False
+        target_failover = active_failover(is_cyber)
+        _, _, target_has_backup = active_pair(is_cyber)
         if slot_override in ("primary", "backup") and (
-            slot_override == "primary" or has_backup
+            slot_override == "primary" or target_has_backup
         ):
             slot, probing = slot_override, False
+        elif is_cyber:
+            slot, probing, _ = await target_failover.start_slot()
         else:
-            slot, probing, _ = await failover.start_slot(
+            slot, probing, _ = await target_failover.start_slot(
                 origin=origin, preferred_primary_id=preferred_primary_id
             )
         return {
             "id": uuid.uuid4().hex,
             "stage": stage,
             "attempt": 0,
+            "cyber": is_cyber,
             "slot": slot,
             "probing": probing,
             "slot_failures": 0,
             "slot_exhausted": [],
+            "cyber_risk_exhausted": [],
             "slot_errors": {},
             "slot_slow": {},
             "round": 0,
@@ -790,20 +991,35 @@ async def model_request(
     if saved.get("stage") == stage:
         state = saved
         if failover is not None:
-            if not has_backup:
-                state["slot"] = "primary"
-                state["probing"] = False
-            elif state.get("slot") not in ("primary", "backup"):
-                slot, probing, _ = await failover.start_slot(
-                    origin=origin, preferred_primary_id=preferred_primary_id
+            saved_cyber = bool(state.get("cyber"))
+            if saved_cyber and not cyber_available:
+                state = await new_state(
+                    slot_override=preferred_slot, cyber_override=False
                 )
-                state.setdefault("slot", slot)
-                state.setdefault("probing", probing)
-            state.setdefault("slot_failures", 0)
-            state.setdefault("slot_exhausted", [])
-            state.setdefault("slot_errors", {})
-            state.setdefault("slot_slow", {})
-            state.setdefault("round", 0)
+            elif not saved_cyber and cyber_available and job.get("cyber_fallback"):
+                state = await new_state(cyber_override=True)
+            else:
+                state["cyber"] = saved_cyber
+                target_failover = active_failover(saved_cyber)
+                _, _, target_has_backup = active_pair(saved_cyber)
+                if not target_has_backup:
+                    state["slot"] = "primary"
+                    state["probing"] = False
+                elif state.get("slot") not in ("primary", "backup"):
+                    if saved_cyber:
+                        slot, probing, _ = await target_failover.start_slot()
+                    else:
+                        slot, probing, _ = await target_failover.start_slot(
+                            origin=origin, preferred_primary_id=preferred_primary_id
+                        )
+                    state.setdefault("slot", slot)
+                    state.setdefault("probing", probing)
+                state.setdefault("slot_failures", 0)
+                state.setdefault("slot_exhausted", [])
+                state.setdefault("cyber_risk_exhausted", [])
+                state.setdefault("slot_errors", {})
+                state.setdefault("slot_slow", {})
+                state.setdefault("round", 0)
     else:
         state = await new_state(slot_override=preferred_slot)
 
@@ -830,7 +1046,13 @@ async def model_request(
             or state.get("notified")
         ):
             return False
-        if has_backup:
+        is_cyber = bool(state.get("cyber"))
+        _, _, cur_has_backup = active_pair(is_cyber)
+        effective_backup = cur_has_backup and not (
+            is_cyber and bool(state.get("cyber_risk_exhausted"))
+        )
+        stage_title = f"{stage}（Cyber 退避）" if is_cyber else stage
+        if effective_backup:
             if not both_slots_failed():
                 return False
             both_slow = bool(
@@ -839,18 +1061,18 @@ async def model_request(
             )
             alert = "failover-slow" if both_slow else "retry"
             headline = (
-                f"{stage} 主备 API 均出现认证、额度或配置问题，将每 5 分钟轮流重试。"
+                f"{stage_title} 主备 API 均出现认证、额度或配置问题，将每 5 分钟轮流重试。"
                 if both_slow
-                else f"{stage} 主备 API 均已连续失败，正在主备轮流重试。"
+                else f"{stage_title} 主备 API 均已连续失败，正在主备轮流重试。"
             ) + f"{failover_error_summary()}。"
         else:
             if state.get("failures", 0) < (1 if slow else 3):
                 return False
             alert = slow or "retry"
             headline = (
-                f"{stage} API 首次发现认证或额度问题，将每 5 分钟重试。"
+                f"{stage_title} API 首次发现认证或额度问题，将每 5 分钟重试。"
                 if slow
-                else f"{stage} API 已连续失败 3 次，正在继续重试。"
+                else f"{stage_title} API 已连续失败 3 次，正在继续重试。"
             ) + f"错误类别：{state['error_type']}。"
         now = time.time()
         alerts = job.setdefault("model_retry_alerts", {}).setdefault(stage, {})
@@ -900,10 +1122,13 @@ async def model_request(
                 if minutes and "first_failed_at" in state:
                     elapsed = now - state["first_failed_at"]
                     if elapsed >= minutes * 60:
-                        if has_backup and state.get("slot_errors"):
-                            reason = f"{stage} 主备 API 连续失败已达 {elapsed / 60:.1f} 分钟（{failover_error_summary()}）"
+                        is_cyber = bool(state.get("cyber"))
+                        _, _, cur_has_backup = active_pair(is_cyber)
+                        stage_title = f"{stage}（Cyber 退避）" if is_cyber else stage
+                        if cur_has_backup and state.get("slot_errors"):
+                            reason = f"{stage_title} 主备 API 连续失败已达 {elapsed / 60:.1f} 分钟（{failover_error_summary()}）"
                         else:
-                            reason = f"{stage} API 连续失败已达 {elapsed / 60:.1f} 分钟，错误类别：{state['error_type']}"
+                            reason = f"{stage_title} API 连续失败已达 {elapsed / 60:.1f} 分钟，错误类别：{state['error_type']}"
                         state["auto_paused"] = True
                         tasks.pause(job, reason)
                         raise ModelUnavailable(reason)
@@ -917,11 +1142,16 @@ async def model_request(
             api_complete = False
             try:
                 if failover is not None:
-                    active = await failover.resolve(
-                        state["slot"],
-                        origin=origin,
-                        preferred_primary_id=preferred_primary_id,
-                    )
+                    is_cyber = bool(state.get("cyber"))
+                    cur_failover = active_failover(is_cyber)
+                    if is_cyber:
+                        active = await cur_failover.resolve(state["slot"])
+                    else:
+                        active = await cur_failover.resolve(
+                            state["slot"],
+                            origin=origin,
+                            preferred_primary_id=preferred_primary_id,
+                        )
                     state["provider_id"] = active.provider_id
                     result = await call(active)
                 else:
@@ -933,8 +1163,16 @@ async def model_request(
                 if validate is not None:
                     validate(result)
             except _SlotChanged as switch:
+                if switch.cyber is True and cyber_available:
+                    state = await new_state(
+                        slot_override=switch.slot, cyber_override=True
+                    )
+                    job["model_retry"] = state
+                    tasks.save(job)
+                    continue
+                _, _, cur_has_backup = active_pair(bool(state.get("cyber")))
                 if switch.slot in ("primary", "backup") and (
-                    switch.slot == "primary" or has_backup
+                    switch.slot == "primary" or cur_has_backup
                 ):
                     state["slot"] = switch.slot
                     state["probing"] = False
@@ -964,8 +1202,15 @@ async def model_request(
                     raise ModelUnavailable(reason) from exc
                 last_error = exc
                 state["error"] = f"{type(exc).__name__}: {exc}"
+                is_cyber = bool(state.get("cyber"))
+                _, _, cur_has_backup = active_pair(is_cyber)
+                cur_slot = state.get("slot")
+                other_slot = "backup" if cur_slot == "primary" else "primary"
+                effective_has_backup = cur_has_backup and not (
+                    is_cyber and other_slot in state.get("cyber_risk_exhausted", ())
+                )
                 slow_error = slow_api_error(exc)
-                fast_error = failover_fast_error(exc) if has_backup else None
+                fast_error = failover_fast_error(exc) if effective_has_backup else None
                 state["error_type"] = fast_error or slow_error or model_error_type(exc)
                 job["model_retry"] = state
                 tasks.log(job, "model_attempt_failed", **state)
@@ -993,10 +1238,97 @@ async def model_request(
                         tasks.save(job)
                         break
                     # This is a new, smaller request, not a transport retry.
-                    current_slot = state.get("slot") if failover is not None else None
+                    prev_cyber = bool(state.get("cyber"))
+                    now_cyber = bool(
+                        failover is not None
+                        and cyber_available
+                        and (prev_cyber or job.get("cyber_fallback"))
+                    )
+                    current_slot = (
+                        state.get("slot")
+                        if failover is not None and now_cyber == prev_cyber
+                        else None
+                    )
                     job.pop("model_retry", None)
-                    state = await new_state(slot_override=current_slot)
+                    state = await new_state(
+                        slot_override=current_slot,
+                        cyber_override=now_cyber if failover is not None else None,
+                    )
                     continue
+                if cybersecurity_risk_error(exc):
+                    if not (check_stop and failover is not None and cyber_available):
+                        break
+                    if not is_cyber:
+                        job["cyber_fallback"] = True
+                        next_slot, _, _ = await cyber_failover.start_slot()
+                        next_provider_id = slot_provider_id(next_slot, True)
+                        next_label = slot_label(next_slot, True)
+                        applied = prompt_applied()
+                        tasks.log(
+                            job,
+                            "cyber_fallback_activated",
+                            stage=stage,
+                            from_slot=cur_slot,
+                            from_provider_id=state.get("provider_id"),
+                            to_slot=next_slot,
+                            to_provider_id=next_provider_id,
+                            cyber_prompt_applied=applied,
+                            error=state["error"],
+                        )
+                        prompt_note = (
+                            "（已附加 CYBER_AGENTS.md 前置说明）" if applied else ""
+                        )
+                        tasks.message(
+                            job,
+                            f"{stage}触发上游 Cyber 安全风控，已自动切换至{next_label}（{next_provider_id}）继续{prompt_note}，本任务后续步骤将沿用该退避通道。",
+                            job["admin"],
+                            identity=f"cyber-fallback-{state['id']}-activate",
+                        )
+                        state = await new_state(
+                            slot_override=next_slot, cyber_override=True
+                        )
+                        state["next_retry_at"] = time.time()
+                        job["model_retry"] = state
+                        tasks.save(job)
+                        continue
+                    slot = state["slot"]
+                    risk_exhausted = list(
+                        dict.fromkeys([*state.get("cyber_risk_exhausted", []), slot])
+                    )
+                    state["cyber_risk_exhausted"] = risk_exhausted
+                    other = "backup" if slot == "primary" else "primary"
+                    if cyber_has_backup and other not in risk_exhausted:
+                        next_provider_id = slot_provider_id(other, True)
+                        next_label = slot_label(other, True)
+                        applied = prompt_applied()
+                        tasks.log(
+                            job,
+                            "cyber_fallback_switched",
+                            stage=stage,
+                            from_slot=slot,
+                            from_provider_id=state.get("provider_id"),
+                            to_slot=other,
+                            to_provider_id=next_provider_id,
+                            cyber_prompt_applied=applied,
+                            error=state["error"],
+                        )
+                        prompt_note = (
+                            "（已附加 CYBER_AGENTS.md 前置说明）" if applied else ""
+                        )
+                        tasks.message(
+                            job,
+                            f"{stage}{slot_label(slot, True)}触发上游 Cyber 安全风控，已自动切换至{next_label}（{next_provider_id}）继续{prompt_note}。",
+                            job["admin"],
+                            identity=f"cyber-fallback-{state['id']}-switch-{other}",
+                        )
+                        state["slot"] = other
+                        state["probing"] = False
+                        state["slot_failures"] = 0
+                        state["next_retry_at"] = time.time()
+                        job["model_retry"] = state
+                        tasks.save(job)
+                        continue
+                    break
                 if context_length_error(exc) or isinstance(
                     exc, (ModelRefusalError, ModelOutputTruncatedError)
                 ):
@@ -1010,7 +1342,7 @@ async def model_request(
                     state.pop("first_failed_at", None)
                     state.pop("slow_error", None)
                     delay = RETRY_DELAYS[min(state["protocol_failures"] - 1, 1)]
-                elif check_stop and has_backup:
+                elif check_stop and effective_has_backup:
                     rate_limited = state["error_type"] == "速率限制（HTTP 429）"
                     missing_backup = (
                         active is None
@@ -1137,12 +1469,18 @@ async def model_request(
                 tasks.save(job)
             else:
                 if failover is not None and active is not None:
-                    failover.record_success(active.slot, primary_id, backup_id)
+                    is_cyber = bool(state.get("cyber"))
+                    cur_failover = active_failover(is_cyber)
+                    cur_primary_id, cur_backup_id, _ = active_pair(is_cyber)
+                    cur_failover.record_success(
+                        active.slot, cur_primary_id, cur_backup_id
+                    )
                     if state.get("failures", 0) > 0 and active.slot == "backup":
                         tasks.log(
                             job,
                             "model_failover_succeeded",
                             stage=stage,
+                            cyber=is_cyber,
                             slot=active.slot,
                             provider_id=active.provider_id,
                             attempts=state["attempt"],
@@ -1768,6 +2106,9 @@ class MainProvider:
         failover=None,
         slot_factory=None,
         preferred_primary_id=None,
+        cyber_failover=None,
+        get_cyber_action=None,
+        get_cyber_prompt_active=None,
     ):
         self.provider = (
             request_provider(provider)
@@ -1788,10 +2129,23 @@ class MainProvider:
         self.failover = failover
         self.slot_factory = slot_factory
         self.preferred_primary_id = preferred_primary_id
+        self.cyber_failover = cyber_failover
+        self.get_cyber_action = get_cyber_action
+        self.get_cyber_prompt_active = get_cyber_prompt_active
         self.active_runtime = None
         self.input_ready = asyncio.Event()
         self.preparing = False
         self.context_steered = False
+
+    def _cyber_action(self):
+        return self.get_cyber_action() if callable(self.get_cyber_action) else "pause"
+
+    def _cyber_prompt_active(self):
+        return bool(
+            self.get_cyber_prompt_active()
+            if callable(self.get_cyber_prompt_active)
+            else False
+        )
 
     async def prepare(
         self, kwargs, *, force=False, rejected_compaction=False, runtime=None
@@ -1883,11 +2237,21 @@ class MainProvider:
 
                 async def ensure_prepared(active):
                     nonlocal prepared_key, prepare_switches
-                    key = (active.slot, active.provider_id, active.effort)
+                    key = (active.cyber, active.slot, active.provider_id, active.effort)
                     runtime = self.slot_factory(active)
                     self.active_runtime = runtime
                     if self.inject and prepared_key != key:
-                        before_seq, _ = self.failover.success_version
+                        cur_failover = (
+                            self.cyber_failover
+                            if active.cyber and self.cyber_failover is not None
+                            else self.failover
+                        )
+                        before_seq, _ = cur_failover.success_version
+                        before_cyber_seq = (
+                            self.cyber_failover.success_version[0]
+                            if self.cyber_failover is not None
+                            else 0
+                        )
                         try:
                             await self.prepare(kwargs, runtime=runtime)
                         except (
@@ -1908,8 +2272,33 @@ class MainProvider:
                             raise ModelUnavailable(self.job["pause_reason"])
                         if reason := self.tasks.check_token_limit(self.job):
                             raise ModelUnavailable(reason)
+                        if (
+                            not active.cyber
+                            and self.cyber_failover is not None
+                            and self._cyber_action() == "fallback"
+                            and self.job.get("cyber_fallback")
+                            and prepare_switches < 2
+                        ):
+                            (
+                                cyber_primary_id,
+                                _,
+                                _,
+                                _,
+                            ) = await self.cyber_failover.pair_ids()
+                            if cyber_primary_id:
+                                after_cyber_seq, post_cyber_slot = (
+                                    self.cyber_failover.success_version
+                                )
+                                target_slot = (
+                                    post_cyber_slot
+                                    if after_cyber_seq != before_cyber_seq
+                                    and post_cyber_slot in ("primary", "backup")
+                                    else None
+                                )
+                                prepare_switches += 1
+                                raise _SlotChanged(target_slot, cyber=True)
                         # If compaction itself failed over to another slot, hand control back to model_request.
-                        after_seq, post_slot = self.failover.success_version
+                        after_seq, post_slot = cur_failover.success_version
                         if (
                             after_seq != before_seq
                             and post_slot in ("primary", "backup")
@@ -1941,7 +2330,20 @@ class MainProvider:
                         raise ModelUnavailable(self.job["pause_reason"])
                     if reason := self.tasks.check_token_limit(self.job):
                         raise ModelUnavailable(reason)
-                    prepared_key = (active.slot, active.provider_id, active.effort)
+                    if (
+                        not active.cyber
+                        and self.cyber_failover is not None
+                        and self._cyber_action() == "fallback"
+                        and self.job.get("cyber_fallback")
+                    ):
+                        prepared_key = None
+                    else:
+                        prepared_key = (
+                            active.cyber,
+                            active.slot,
+                            active.provider_id,
+                            active.effort,
+                        )
 
                 operation = asyncio.create_task(
                     model_request(
@@ -1953,6 +2355,9 @@ class MainProvider:
                         failover=self.failover,
                         origin=self.job["origin"],
                         preferred_primary_id=self.preferred_primary_id,
+                        cyber_failover=self.cyber_failover,
+                        cyber_fallback_action=self._cyber_action(),
+                        cyber_prompt_active=self._cyber_prompt_active,
                         recover_context=recover if self.inject else None,
                         recover_if=lambda error: (
                             context_length_error(error)
@@ -2175,6 +2580,10 @@ class Reviewer:
         backup_provider_id="",
         backup_effort="",
         backup_cooldown_minutes=DEFAULT_BACKUP_COOLDOWN_MINUTES,
+        cyber_failover=None,
+        cyber_fallback_action="pause",
+        get_cyber_action=None,
+        get_cyber_prompt_prefix=None,
     ):
         self.context, self.provider_id, self.effort, self.attempts = (
             context,
@@ -2185,6 +2594,10 @@ class Reviewer:
         self.backup_provider_id = backup_provider_id
         self.backup_effort = backup_effort
         self.backup_cooldown_minutes = backup_cooldown_minutes
+        self.cyber_failover = cyber_failover
+        self.cyber_fallback_action = cyber_fallback_action
+        self._get_cyber_action = get_cyber_action
+        self._get_cyber_prompt_prefix = get_cyber_prompt_prefix
 
         async def get_primary(*, origin=None, preferred_id=None):
             return preferred_id or self.provider_id, self.effort
@@ -2200,6 +2613,16 @@ class Reviewer:
         self.cache_unsupported = set()
         self.stream_unsupported = set()
         self.schema_unsupported = set()
+
+    def _cyber_action(self):
+        if callable(self._get_cyber_action):
+            return self._get_cyber_action()
+        return self.cyber_fallback_action
+
+    def _cyber_prompt_prefix(self, *, store=None, task=None):
+        if callable(self._get_cyber_prompt_prefix):
+            return self._get_cyber_prompt_prefix(store=store, task=task)
+        return ""
 
     @staticmethod
     def endpoint(provider):
@@ -2290,6 +2713,10 @@ class Reviewer:
         *,
         failover=None,
         preferred_slot=None,
+        cyber_failover=None,
+        cyber_fallback_action="pause",
+        cyber_prompt_prefix=None,
+        active_cyber=False,
     ):
         """Keep main-model summaries out of the independent review input."""
         source = payload["feedback"]
@@ -2302,7 +2729,19 @@ class Reviewer:
             extra.get("max_completion_tokens") or 0,
             extra.get("max_tokens") or 0,
         ) or min(8192, max(1, limit // 10))
-        history_system = REVIEW_HISTORY_PROMPT + "\n规则文件：\n" + payload["rules"]
+        base_history_system = (
+            REVIEW_HISTORY_PROMPT + "\n规则文件：\n" + payload["rules"]
+        )
+        prefix = cyber_prompt_prefix or ""
+
+        def history_system_for(is_cyber):
+            return (
+                prepend_cyber_prompt(base_history_system, prefix)
+                if is_cyber
+                else base_history_system
+            )
+
+        history_system = history_system_for(active_cyber)
         base = {"task": job["name"], "report": job.get("report", "")}
         budget = int((int(limit * 0.85) - output) / factor) - tokens(
             [
@@ -2396,20 +2835,30 @@ class Reviewer:
         for batch in batches():
             check_review_feedback(job, record)
             prompt = json.dumps({**base, "feedback": batch}, ensure_ascii=False)
+            batch_cyber = bool(
+                active_cyber
+                or (
+                    cyber_failover is not None
+                    and cyber_fallback_action == "fallback"
+                    and job.get("cyber_fallback")
+                )
+            )
+            batch_system = history_system_for(batch_cyber)
             key = digest(
                 {
                     "task": job["id"],
                     "provider": calibration_key(provider, "review_compaction"),
-                    "system": history_system,
+                    "system": batch_system,
                     "prompt": prompt,
                 }
             )
             cached = tasks.store.get("review_feedback", key)
             if cached is None:
                 used_provider = provider
+                used_system = batch_system
                 parsed_value = None
 
-                async def send(active):
+                async def send(active, *, system_text=batch_system):
                     return await self.send(
                         tasks,
                         job,
@@ -2418,7 +2867,7 @@ class Reviewer:
                         stream=True,
                         prompt=prompt,
                         contexts=[],
-                        system_prompt=history_system,
+                        system_prompt=system_text,
                         func_tool=None,
                         request_max_retries=1,
                     )
@@ -2481,7 +2930,7 @@ class Reviewer:
                         "review_compaction",
                         tokens(
                             [
-                                {"role": "system", "content": history_system},
+                                {"role": "system", "content": used_system},
                                 {"role": "user", "content": prompt},
                             ]
                         ),
@@ -2499,7 +2948,9 @@ class Reviewer:
                                 "审核历史压缩",
                                 "review_feedback",
                                 REVIEW_FEEDBACK_SCHEMA,
-                                send,
+                                lambda active_p: send(
+                                    active_p, system_text=used_system
+                                ),
                             )
 
                     await model_request(
@@ -2514,8 +2965,13 @@ class Reviewer:
                 else:
 
                     async def request_slot(active):
-                        nonlocal used_provider
-                        cache_key = (active.slot, active.provider_id, active.effort)
+                        nonlocal used_provider, used_system
+                        cache_key = (
+                            active.cyber,
+                            active.slot,
+                            active.provider_id,
+                            active.effort,
+                        )
                         if cache_key not in slot_cache:
                             base_p = request_provider(
                                 effort_provider(active.provider, active.effort)
@@ -2526,6 +2982,7 @@ class Reviewer:
                             )
                         base_p, slot_selected = slot_cache[cache_key]
                         used_provider = base_p
+                        used_system = history_system_for(active.cyber)
                         async with asyncio.timeout(SUMMARY_TIMEOUT):
                             return await self.request_with_schema(
                                 tasks,
@@ -2534,7 +2991,9 @@ class Reviewer:
                                 "审核历史压缩",
                                 "review_feedback",
                                 REVIEW_FEEDBACK_SCHEMA,
-                                send,
+                                lambda active_p: send(
+                                    active_p, system_text=used_system
+                                ),
                             )
 
                     await model_request(
@@ -2546,14 +3005,29 @@ class Reviewer:
                         summary=True,
                         validate=validate,
                         failover=failover,
-                        preferred_slot=preferred_slot,
+                        preferred_slot=(
+                            preferred_slot
+                            if (not job.get("cyber_fallback") or active_cyber)
+                            else None
+                        ),
+                        cyber_failover=cyber_failover,
+                        cyber_fallback_action=cyber_fallback_action,
+                        cyber_prompt_active=bool(prefix.strip()),
                     )
                 check_review_feedback(job, record)
                 cached = parsed_value
                 cached["entry"] = tasks.store.event(
                     "review_context:" + job["id"], {"feedback": batch}
                 )
-                tasks.store.save("review_feedback", key, cached)
+                actual_key = digest(
+                    {
+                        "task": job["id"],
+                        "provider": calibration_key(used_provider, "review_compaction"),
+                        "system": used_system,
+                        "prompt": prompt,
+                    }
+                )
+                tasks.store.save("review_feedback", actual_key, cached)
             result.append(cached)
         return [*result, *latest]
 
@@ -2562,15 +3036,36 @@ class Reviewer:
     ):
         if not self.provider_id:
             raise ValueError("请显式配置 review_provider_id，受审操作尚未执行")
-        primary_resolved = await self.failover.resolve("primary")
-        start_slot, _, _ = await self.failover.start_slot()
-        if start_slot == "backup":
-            try:
-                initial = await self.failover.resolve("backup") or primary_resolved
-            except ValueError:
+        cyber_action = self._cyber_action()
+        cyber_prefix = self._cyber_prompt_prefix(store=tasks.store, task=job["id"])
+        cyber_available = False
+        if self.cyber_failover is not None and cyber_action == "fallback":
+            cyber_primary_id, _, _, _ = await self.cyber_failover.pair_ids()
+            cyber_available = bool(cyber_primary_id)
+        if cyber_available and job.get("cyber_fallback"):
+            initial_failover = self.cyber_failover
+            primary_resolved = await self.cyber_failover.resolve("primary")
+            start_slot, _, _ = await self.cyber_failover.start_slot()
+            if start_slot == "backup":
+                try:
+                    initial = (
+                        await self.cyber_failover.resolve("backup") or primary_resolved
+                    )
+                except ValueError:
+                    initial = primary_resolved
+            else:
                 initial = primary_resolved
         else:
-            initial = primary_resolved
+            initial_failover = self.failover
+            primary_resolved = await self.failover.resolve("primary")
+            start_slot, _, _ = await self.failover.start_slot()
+            if start_slot == "backup":
+                try:
+                    initial = await self.failover.resolve("backup") or primary_resolved
+                except ValueError:
+                    initial = primary_resolved
+            else:
+                initial = primary_resolved
         rules = TASK_POLICY + rules
         evidence = []
         for key in record["arguments"].get("evidence_ids", []):
@@ -2685,7 +3180,16 @@ class Reviewer:
                 {"tool": "apply_plan", "result": evidence_view(copy.deepcopy(repair))}
                 for repair in job.get("repairs", [])[-1:]
             ]
-        system = REVIEW_PROMPT + "\n规则文件：\n" + rules
+        base_system = REVIEW_PROMPT + "\n规则文件：\n" + rules
+
+        def system_for(is_cyber):
+            return (
+                prepend_cyber_prompt(base_system, cyber_prefix)
+                if is_cyber
+                else base_system
+            )
+
+        current_cyber = initial.cyber
 
         def provider_limits(slot_provider):
             limit = (
@@ -2720,11 +3224,12 @@ class Reviewer:
                 reason, sorted(sources, key=lambda row: -row["characters"])[:8]
             )
 
-        def measure(value):
+        def measure(value, *, is_cyber=None):
+            flag = current_cyber if is_cyber is None else is_cyber
             text = json.dumps(value, ensure_ascii=False)
             return text, tokens(
                 [
-                    {"role": "system", "content": system},
+                    {"role": "system", "content": system_for(flag)},
                     {"role": "user", "content": text},
                 ]
             )
@@ -2772,7 +3277,7 @@ class Reviewer:
 
         feedback_compacted = False
 
-        async def compact(slot_provider, slot_name):
+        async def compact(slot_provider, slot_name, *, is_cyber=False):
             nonlocal feedback_compacted, payload, prompt, request_estimate
             if feedback_compacted or not payload["feedback"]:
                 return False
@@ -2787,6 +3292,10 @@ class Reviewer:
                 limit,
                 failover=self.failover,
                 preferred_slot=slot_name,
+                cyber_failover=self.cyber_failover,
+                cyber_fallback_action=cyber_action,
+                cyber_prompt_prefix=cyber_prefix,
+                active_cyber=is_cyber,
             )
             check_review_feedback(job, record)
             reduced = {**payload, "feedback": feedback}
@@ -2796,10 +3305,10 @@ class Reviewer:
             payload, prompt, request_estimate = reduced, smaller, estimate
             return True
 
-        async def ensure_fits(slot_provider, slot_name):
+        async def ensure_fits(slot_provider, slot_name, *, is_cyber=False):
             changed = False
             if not fits_for(slot_provider, request_estimate):
-                if await compact(slot_provider, slot_name):
+                if await compact(slot_provider, slot_name, is_cyber=is_cyber):
                     changed = True
                 while not fits_for(slot_provider, request_estimate) and shrink():
                     changed = True
@@ -2812,7 +3321,7 @@ class Reviewer:
         slot_runtimes = {}
 
         def get_slot_runtime(resolved):
-            key = (resolved.slot, resolved.provider_id, resolved.effort)
+            key = (resolved.cyber, resolved.slot, resolved.provider_id, resolved.effort)
             if key not in slot_runtimes:
                 slot_provider = request_provider(
                     effort_provider(resolved.provider, resolved.effort)
@@ -2830,22 +3339,53 @@ class Reviewer:
 
         prompt, request_estimate = measure(payload)
         initial_provider, _, current_selected = get_slot_runtime(initial)
-        before_init_seq, _ = self.failover.success_version
-        await ensure_fits(initial_provider, initial.slot)
-        after_init_seq, post_initial_slot = self.failover.success_version
-        if (
-            after_init_seq != before_init_seq
-            and post_initial_slot in ("primary", "backup")
-            and post_initial_slot != initial.slot
-        ):
+        before_init_seq, _ = initial_failover.success_version
+        before_init_cyber_seq = (
+            self.cyber_failover.success_version[0]
+            if self.cyber_failover is not None
+            else 0
+        )
+        await ensure_fits(initial_provider, initial.slot, is_cyber=initial.cyber)
+        if not initial.cyber and cyber_available and job.get("cyber_fallback"):
             try:
-                switched = await self.failover.resolve(post_initial_slot)
+                after_cyber_seq, post_cyber_slot = self.cyber_failover.success_version
+                if after_cyber_seq != before_init_cyber_seq and post_cyber_slot in (
+                    "primary",
+                    "backup",
+                ):
+                    target_slot = post_cyber_slot
+                else:
+                    target_slot, _, _ = await self.cyber_failover.start_slot()
+                switched = await self.cyber_failover.resolve(target_slot)
                 if switched is not None:
                     initial = switched
+                    current_cyber = initial.cyber
+                    prompt, request_estimate = measure(payload)
                     initial_provider, _, current_selected = get_slot_runtime(initial)
-                    await ensure_fits(initial_provider, initial.slot)
+                    await ensure_fits(
+                        initial_provider, initial.slot, is_cyber=initial.cyber
+                    )
             except ValueError:
                 pass
+        else:
+            after_init_seq, post_initial_slot = initial_failover.success_version
+            if (
+                after_init_seq != before_init_seq
+                and post_initial_slot in ("primary", "backup")
+                and post_initial_slot != initial.slot
+            ):
+                try:
+                    switched = await initial_failover.resolve(post_initial_slot)
+                    if switched is not None:
+                        initial = switched
+                        initial_provider, _, current_selected = get_slot_runtime(
+                            initial
+                        )
+                        await ensure_fits(
+                            initial_provider, initial.slot, is_cyber=initial.cyber
+                        )
+                except ValueError:
+                    pass
         identity = digest({"payload": payload, "rules": rules})
         audit = {
             "id": record["id"],
@@ -2854,21 +3394,67 @@ class Reviewer:
             "provider": initial.provider_id,
             "effort": initial.effort,
             "slot": initial.slot,
+            "cyber_fallback": initial.cyber,
+            "cyber_prompt_applied": bool(initial.cyber and cyber_prefix.strip()),
             "request": payload,
             "rules": rules,
         }
         tasks.store.save("review", record["id"], audit)
-        prepared_key = (initial.slot, initial.provider_id, initial.effort)
+        prepared_key = (
+            initial.cyber,
+            initial.slot,
+            initial.provider_id,
+            initial.effort,
+        )
         prepare_switches = 0
 
         async def request(active):
-            nonlocal current_selected, identity, prepared_key, prepare_switches
+            nonlocal \
+                current_selected, \
+                current_cyber, \
+                prompt, \
+                request_estimate, \
+                identity, \
+                prepared_key, \
+                prepare_switches
             slot_provider, kind, selected = get_slot_runtime(active)
-            key = (active.slot, active.provider_id, active.effort)
+            key = (active.cyber, active.slot, active.provider_id, active.effort)
             if key != prepared_key:
-                before_seq, _ = self.failover.success_version
-                changed = await ensure_fits(slot_provider, active.slot)
-                after_seq, post_slot = self.failover.success_version
+                if active.cyber != current_cyber:
+                    current_cyber = active.cyber
+                    prompt, request_estimate = measure(payload)
+                cur_failover = (
+                    self.cyber_failover
+                    if active.cyber and self.cyber_failover is not None
+                    else self.failover
+                )
+                before_seq, _ = cur_failover.success_version
+                before_cyber_seq = (
+                    self.cyber_failover.success_version[0]
+                    if self.cyber_failover is not None
+                    else 0
+                )
+                changed = await ensure_fits(
+                    slot_provider, active.slot, is_cyber=active.cyber
+                )
+                if (
+                    not active.cyber
+                    and cyber_available
+                    and job.get("cyber_fallback")
+                    and prepare_switches < 2
+                ):
+                    after_cyber_seq, post_cyber_slot = (
+                        self.cyber_failover.success_version
+                    )
+                    target_slot = (
+                        post_cyber_slot
+                        if after_cyber_seq != before_cyber_seq
+                        and post_cyber_slot in ("primary", "backup")
+                        else None
+                    )
+                    prepare_switches += 1
+                    raise _SlotChanged(target_slot, cyber=True)
+                after_seq, post_slot = cur_failover.success_version
                 if (
                     after_seq != before_seq
                     and post_slot in ("primary", "backup")
@@ -2884,11 +3470,14 @@ class Reviewer:
                     provider=active.provider_id,
                     effort=active.effort,
                     slot=active.slot,
+                    cyber_fallback=active.cyber,
+                    cyber_prompt_applied=bool(active.cyber and cyber_prefix.strip()),
                     request=payload,
                 )
                 tasks.store.save("review", record["id"], audit)
                 prepared_key = key
             current_selected = selected
+            effective_system = system_for(active.cyber)
 
             async def send(active_provider):
                 return await self.send(
@@ -2899,7 +3488,7 @@ class Reviewer:
                     stream=kind == "openai_responses",
                     prompt=prompt,
                     contexts=[],
-                    system_prompt=system,
+                    system_prompt=effective_system,
                     func_tool=None,
                     request_max_retries=1,
                 )
@@ -2962,15 +3551,21 @@ class Reviewer:
             audit["decision"] = value
 
         async def recover_context(error, active):
-            nonlocal identity
+            nonlocal identity, prepared_key
             slot_provider = (
                 get_slot_runtime(active)[0] if active is not None else initial_provider
             )
             slot_name = active.slot if active is not None else initial.slot
-            if not await compact(slot_provider, slot_name) and not shrink():
+            slot_cyber = active.cyber if active is not None else initial.cyber
+            if (
+                not await compact(slot_provider, slot_name, is_cyber=slot_cyber)
+                and not shrink()
+            ):
                 raise capacity(
                     "审核API明确拒绝上下文容量，操作未执行；请自动收窄证据或拆分实际步骤，保留原操作状态与授权范围。"
                 ) from error
+            if not slot_cyber and cyber_available and job.get("cyber_fallback"):
+                prepared_key = None
             identity = digest({"payload": payload, "rules": rules})
             audit.update(identity=identity, request=payload)
             tasks.store.save("review", record["id"], audit)
@@ -2985,6 +3580,9 @@ class Reviewer:
             validate=validate,
             failover=self.failover,
             preferred_slot=initial.slot,
+            cyber_failover=self.cyber_failover,
+            cyber_fallback_action=cyber_action,
+            cyber_prompt_active=bool(cyber_prefix.strip()),
         )
         try:
             tasks.store.event("review:" + record["id"], audit["response"])

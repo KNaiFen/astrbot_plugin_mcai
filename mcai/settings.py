@@ -20,14 +20,17 @@ from astrbot.api.web import (
     stream_response,
 )
 
+from .agent_runtime import CYBER_FALLBACK_ACTIONS
 from .astrbot_agent import AstrBotAgent
 from .capabilities import (
     BACKUP_CAPABILITY_ITEMS,
     CAPABILITY_ITEMS,
+    CYBER_CAPABILITY_ITEMS,
     detected_settings,
     provider_identity,
     test_backup_capabilities,
     test_capabilities,
+    test_cyber_capabilities,
 )
 from .cleanup import (
     A_CATEGORIES,
@@ -98,16 +101,33 @@ def _newest_diagnostics(items):
 
 
 class Settings:
-    def __init__(self, plugin, rules_path, review_rules_path, summary_rules_path):
+    def __init__(
+        self,
+        plugin,
+        rules_path,
+        review_rules_path,
+        summary_rules_path,
+        *,
+        cyber_rules_path=None,
+    ):
         self.plugin = plugin
         self.rules_path = rules_path
         self.review_rules_path = review_rules_path
         self.summary_rules_path = summary_rules_path
+        self.cyber_rules_path = cyber_rules_path or (
+            rules_path.parent / "CYBER_AGENTS.md"
+        )
         self.worker = None
         self.running_target = None
         self.retention_worker = asyncio.create_task(self.retention_loop())
         self.result = plugin.store.get("capability_test", "latest")
         self.backup_result = plugin.store.get("capability_test", "backup_latest")
+        self.cyber_primary_result = plugin.store.get(
+            "capability_test", "cyber_primary_latest"
+        )
+        self.cyber_backup_result = plugin.store.get(
+            "capability_test", "cyber_backup_latest"
+        )
         for route, handler, methods in (
             ("settings", self.settings, ["GET", "POST"]),
             ("connection/test", self.connection_test, ["POST"]),
@@ -882,6 +902,8 @@ class Settings:
                                 "model_retry",
                                 "active_provider_id",
                                 "active_provider_slot",
+                                "active_provider_cyber",
+                                "cyber_fallback",
                                 "archive_error",
                                 "archive_state",
                                 "pause_after_operation",
@@ -1158,6 +1180,8 @@ class Settings:
                 "review_provider_id",
                 "backup_provider_id",
                 "backup_review_provider_id",
+                "cyber_provider_id",
+                "cyber_backup_provider_id",
             ):
                 if fields.get(key):
                     provider = await self.provider(fields[key])
@@ -1165,6 +1189,10 @@ class Settings:
                         "openai_chat_completion",
                         "openai_responses",
                     ):
+                        if key in ("cyber_provider_id", "cyber_backup_provider_id"):
+                            raise ValueError(
+                                "Cyber 退避模型（含备用）仅支持 OpenAI 兼容 Chat／Responses 提供商"
+                            )
                         raise ValueError(
                             "排障与审核模型（含备用）仅支持 OpenAI 兼容 Chat／Responses 提供商"
                         )
@@ -1177,6 +1205,26 @@ class Settings:
                 "backup_review_provider_id"
             ) == merged_models.get("review_provider_id"):
                 raise ValueError("备用审核模型不能与主审核模型相同")
+            if (
+                merged_models.get("cyber_fallback_action", "pause")
+                not in CYBER_FALLBACK_ACTIONS
+            ):
+                raise ValueError("cyber_fallback_action 仅支持 pause 或 fallback")
+            if merged_models.get(
+                "cyber_fallback_action", "pause"
+            ) == "fallback" and not merged_models.get("cyber_provider_id"):
+                raise ValueError(
+                    "启用 Cyber 风控切换退避策略时，必须配置 Cyber 退避主模型"
+                )
+            if merged_models.get("cyber_backup_provider_id"):
+                if not merged_models.get("cyber_provider_id"):
+                    raise ValueError(
+                        "配置 Cyber 退避备用模型前，必须先配置 Cyber 退避主模型"
+                    )
+                if merged_models.get("cyber_backup_provider_id") == merged_models.get(
+                    "cyber_provider_id"
+                ):
+                    raise ValueError("Cyber 退避备用模型不能与 Cyber 退避主模型相同")
             async with plugin.tasks.create_lock:
                 if (
                     not 1
@@ -1202,6 +1250,7 @@ class Settings:
                     rules_path=self.rules_path,
                     review_rules_path=self.review_rules_path,
                     summary_rules_path=self.summary_rules_path,
+                    cyber_rules_path=self.cyber_rules_path,
                     review_provider_id=config.get("review_provider_id", ""),
                     review_reasoning_effort=config.get("review_reasoning_effort", ""),
                     backup_provider_id=config.get("backup_provider_id", ""),
@@ -1213,6 +1262,14 @@ class Settings:
                         "backup_review_reasoning_effort", ""
                     ),
                     backup_cooldown_minutes=config.get("backup_cooldown_minutes", 10),
+                    cyber_fallback_action=config.get("cyber_fallback_action", "pause"),
+                    cyber_provider_id=config.get("cyber_provider_id", ""),
+                    cyber_reasoning_effort=config.get("cyber_reasoning_effort", ""),
+                    cyber_backup_provider_id=config.get("cyber_backup_provider_id", ""),
+                    cyber_backup_reasoning_effort=config.get(
+                        "cyber_backup_reasoning_effort", ""
+                    ),
+                    enable_cyber_prompt=config.get("enable_cyber_prompt", False),
                     reasoning_effort=config.get("reasoning_effort", ""),
                     forward_progress=config.get("forward_progress", False),
                     enable_web_search=config.get("enable_web_search", True),
@@ -1264,6 +1321,12 @@ class Settings:
                 "backup_review_provider_id": "",
                 "backup_review_reasoning_effort": "",
                 "backup_cooldown_minutes": 10,
+                "cyber_fallback_action": "pause",
+                "cyber_provider_id": "",
+                "cyber_reasoning_effort": "",
+                "cyber_backup_provider_id": "",
+                "cyber_backup_reasoning_effort": "",
+                "enable_cyber_prompt": False,
                 **{
                     key: value
                     for key, value in plugin.config.items()
@@ -1419,6 +1482,34 @@ class Settings:
                     if b_review is not None
                     else None
                 ) != self.backup_result.get("review_identity")
+
+            async def cyber_stale_for(saved, provider_key, effort_key):
+                if not saved:
+                    return False
+                pid = self.plugin.config.get(provider_key, "")
+                prov = (
+                    await self.plugin.context.provider_manager.get_provider_by_id(pid)
+                    if pid
+                    else None
+                )
+                c_settings = {
+                    provider_key: pid,
+                    effort_key: self.plugin.config.get(effort_key, ""),
+                }
+                return prov is None or provider_identity(prov, c_settings) != saved.get(
+                    "identity"
+                )
+
+            cyber_primary_stale = await cyber_stale_for(
+                self.cyber_primary_result,
+                "cyber_provider_id",
+                "cyber_reasoning_effort",
+            )
+            cyber_backup_stale = await cyber_stale_for(
+                self.cyber_backup_result,
+                "cyber_backup_provider_id",
+                "cyber_backup_reasoning_effort",
+            )
             running = bool(self.worker and not self.worker.done())
             return {
                 "running": running,
@@ -1427,14 +1518,22 @@ class Settings:
                 "stale": stale,
                 "backup_result": self.backup_result,
                 "backup_stale": backup_stale,
+                "cyber_primary_result": self.cyber_primary_result,
+                "cyber_primary_stale": cyber_primary_stale,
+                "cyber_backup_result": self.cyber_backup_result,
+                "cyber_backup_stale": cyber_backup_stale,
             }
         body = await request.json() if request.method == "POST" else {}
         target = body.get("target", "primary") if isinstance(body, dict) else "primary"
-        if target not in ("primary", "backup"):
+        if target not in ("primary", "backup", "cyber_primary", "cyber_backup"):
             raise ValueError("未知的能力测试目标")
         only = body.get("only") if isinstance(body, dict) else None
         allowed_items = (
-            BACKUP_CAPABILITY_ITEMS if target == "backup" else CAPABILITY_ITEMS
+            CYBER_CAPABILITY_ITEMS
+            if target in ("cyber_primary", "cyber_backup")
+            else BACKUP_CAPABILITY_ITEMS
+            if target == "backup"
+            else CAPABILITY_ITEMS
         )
         if only is not None and (
             not isinstance(only, str) or only not in allowed_items
@@ -1444,6 +1543,86 @@ class Settings:
             raise ValueError("能力测试已在运行")
         if self.plugin.tasks.workers:
             raise ValueError("请先暂停排障任务，再测试模型能力")
+        if target in ("cyber_primary", "cyber_backup"):
+            is_cyber_backup = target == "cyber_backup"
+            provider_key = (
+                "cyber_backup_provider_id" if is_cyber_backup else "cyber_provider_id"
+            )
+            effort_key = (
+                "cyber_backup_reasoning_effort"
+                if is_cyber_backup
+                else "cyber_reasoning_effort"
+            )
+            store_key = (
+                "cyber_backup_latest" if is_cyber_backup else "cyber_primary_latest"
+            )
+            attr_name = (
+                "cyber_backup_result" if is_cyber_backup else "cyber_primary_result"
+            )
+            label = "Cyber 退避备用模型" if is_cyber_backup else "Cyber 退避主模型"
+            c_settings = {
+                provider_key: self.plugin.config.get(provider_key, ""),
+                effort_key: self.plugin.config.get(effort_key, ""),
+            }
+            if not c_settings[provider_key]:
+                raise ValueError(f"请先选择{label}")
+            cyber_provider = await self.provider(c_settings[provider_key])
+            if cyber_provider.provider_config.get("type") not in (
+                "openai_chat_completion",
+                "openai_responses",
+            ):
+                raise ValueError(f"{label}仅支持 OpenAI 兼容 Chat／Responses 提供商")
+            previous = getattr(self, attr_name)
+
+            def cyber_progress(result):
+                if (
+                    only
+                    and previous
+                    and result.get("identity") == previous.get("identity")
+                    and "items" in result
+                ):
+                    items = (
+                        {only: result["items"][only]} if only in result["items"] else {}
+                    )
+                    result = {**result, "items": {**previous["items"], **items}}
+                setattr(self, attr_name, result)
+                self.plugin.store.save("capability_test", store_key, result)
+
+            async def run_cyber():
+                try:
+                    result = await test_cyber_capabilities(
+                        cyber_provider,
+                        c_settings,
+                        cyber_progress,
+                        target=target,
+                        effort_key=effort_key,
+                        store=self.plugin.store,
+                        only=only,
+                    )
+                    cyber_progress(result)
+                except asyncio.CancelledError:
+                    current = getattr(self, attr_name)
+                    if current:
+                        current["cancelled"] = True
+                        cyber_progress(current)
+                    raise
+                except Exception as exc:
+                    self.plugin.store.log("capability_test_error", error=str(exc))
+                    current = getattr(self, attr_name) or {}
+                    cyber_progress(
+                        {
+                            **current,
+                            "error": str(exc),
+                            "complete": True,
+                        }
+                    )
+                finally:
+                    self.running_target = None
+
+            setattr(self, attr_name, None)
+            self.running_target = target
+            self.worker = asyncio.create_task(run_cyber())
+            return {"started": True, "target": target}
         if target == "backup":
             b_settings = {
                 key: self.plugin.config.get(key, "")

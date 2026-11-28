@@ -26,6 +26,12 @@
 | `backup_review_provider_id` | 空 | 备用独立审核模型提供商（OpenAI 兼容 Chat／Responses，不能与主审核模型相同）；留空不启用审核故障切换 |
 | `backup_review_reasoning_effort` | 空 | 备用审核思考强度，留空继承备用审核提供商 |
 | `backup_cooldown_minutes` | `10` | 切到备用 API 成功后的冷却驻留分钟数；期间直接走备用，到期后优先探测主 API；`0` 表示每次优先试主 API |
+| `cyber_fallback_action` | `pause` | 触发上游 Cyber 安全风控时的策略：`pause` 立即暂停并通知管理员，`fallback` 通知并切换至 Cyber 退避模型继续 |
+| `cyber_provider_id` | 空 | Cyber 退避主模型提供商（OpenAI 兼容 Chat／Responses）；`cyber_fallback_action=fallback` 时必填 |
+| `cyber_reasoning_effort` | 空 | Cyber 退避主模型思考强度，留空继承提供商配置 |
+| `cyber_backup_provider_id` | 空 | Cyber 退避备用模型提供商（OpenAI 兼容 Chat／Responses，不能与 Cyber 退避主模型相同，须先配置 Cyber 退避主模型） |
+| `cyber_backup_reasoning_effort` | 空 | Cyber 退避备用模型思考强度，留空继承提供商配置 |
+| `enable_cyber_prompt` | `false` | 使用 Cyber 退避模型时，是否在全部系统提示词最前方附加 `CYBER_AGENTS.md`（正常主／备模型绝不注入） |
 | `model_prices` | `[]` | 模型提供商单价，每行 `提供商ID=货币:输入:输出:缓存`；费率单位为每百万 token |
 | `task_token_limit` | `0` | 单任务输入＋输出 token 累计上限；`0` 不限 |
 | `model_failure_pause_minutes` | `0` | 单次模型请求连续 API 失败（含主备轮流重试）达到此分钟数后暂停；`0` 关闭 |
@@ -65,7 +71,9 @@ QQ 和群号建议填字符串。多位管理员权限相同，可以交叉创�
 
 “保存并测试、自动配置”执行短对话、图片识别、流式响应、无副作用回显函数及续接、各一次搜索、来源打开／查找、commentary 执行进度汇报、审核 JSON。不会操作 MC 或发送群消息。结果区分验证通过、明确不支持、本次未观察到和请求失败。图片能力测试只使用内置色块；群截图使用同一个排障提供商，运行时只复用匹配当前提供商的明确不支持结果。搜索验证通过后开启对应搜索功能，进度转发保留用户选择；托管搜索明确不支持再尝试 preview；临时失败保留此前配置，未观察到汇报不直接判定不支持。修改提供商、模型或思考强度后需重测。测试会产生少量模型及搜索费用。
 
-全量能力测试也会验证远程压缩能否把一次性暗号带到下一条请求。Responses 先测流式触发，明确不支持才测独立接口；回放验证通过后开启对应模式，明确不支持时关闭。临时失败或本次未验证通过时保留原设置，单项重测只更新该项结果。若配置了备用排障或备用审核模型，可使用「保存并测试备用模型」单独验证备用模型的基础对话、图片识别、流式响应、工具调用与续接、思考强度及备用审核 JSON，结果独立保存且不改动主模型的自动配置开关。
+全量能力测试也会验证远程压缩能否把一次性暗号带到下一条请求。Responses 先测流式触发，明确不支持才测独立接口；回放验证通过后开启对应模式，明确不支持时关闭。临时失败或本次未验证通过时保留原设置，单项重测只更新该项结果。若配置了备用排障或备用审核模型，可使用「保存并测试备用模型」单独验证备用模型的基础对话、图片识别、流式响应、工具调用与续接、思考强度及备用审核 JSON，结果独立保存且不改动主模型的自动配置开关。若配置了 Cyber 退避主／备模型，可分别使用「保存并测试 Cyber 主模型」与「保存并测试 Cyber 备用模型」各自独立测试上述 6 项能力，测试结果分别保存且不改动主模型开关。
+
+当上游误报网络安全或安全策略风控（含 `cyber_policy`、`cybersecurity_risk`、`invalid_prompt`、`content_policy_violation`、`ResponsibleAIPolicyViolation`、官方 Cyber／Daybreak 拦截文案，以及 HTTP 200 响应体内的 `content_filter`／`refusal`／屏蔽提示；不含 429 限流、5xx 过载及常规认证错误）时，`cyber_fallback_action` 控制后续策略：默认 `pause` 会零重试直接暂停（有界场景如验收归档、`/mcaiask`、群图片识别则停止重试）并通知群内；选择 `fallback` 且配置了 `cyber_provider_id` 时，会发群通知并切换至独立的 Cyber 退避主／备通道继续（按任务粘性持续沿用，Cyber 主再撞风控可切 Cyber 备，主备均撞风控则停止／暂停并通知），且不会先回退到正常备用模型。开启 `enable_cyber_prompt` 后，仅在实际走 Cyber 退避模型时将 `CYBER_AGENTS.md` 拼在全部系统提示词最前方，正常主／备模型不受影响。
 
 执行进度汇报默认不转发到群。主模型按运行时AGENTS.md中的通道约定交流：工作前先对齐边界，推进中分享假设、发现、决策和方向变化，说清已知、未知与下一步；不设固定时间或工具调用次数。手动开启 `forward_progress` 后，程序转发 Responses 明确标记 `phase: commentary` 的助手消息，去掉标题、加粗和行内代码标记以及内部检索引用标记（不向群里插入未解析引用标签）；关闭时commentary只保留本地，不影响必要提问和最终答复。消息完成后即可入群发件箱，不必等整轮模型响应结束，汇报后任务继续。
 
@@ -121,13 +129,14 @@ Responses 开启远程压缩后，达到 85%、超过输入额度或服务商报
 
 ### 运行时规则
 
-首次启用时，A 在 `AstrBot/data/plugin_data/astrbot_plugin_mcai/` 生成三份规则：
+首次启用时，A 在 `AstrBot/data/plugin_data/astrbot_plugin_mcai/` 生成四份规则：
 
 | 数据目录文件 | 包内模板 | 作用 |
 |---|---|---|
 | `AGENTS.md` | `mcai/agent_rules.md` | 执行模型：识别目标、使用工具、推进任务、核对结果和回复用户 |
 | `REVIEW_AGENTS.md` | `mcai/review_rules.md` | 独立审核模型：检查实际动作、范围、证据、备份和验证 |
 | `SUMMARY_AGENTS.md` | `mcai/summary_rules.md` | 整理模型：压缩历史、验收归档和保留事实来源 |
+| `CYBER_AGENTS.md` | `mcai/cyber_rules.md` | Cyber 退避前置说明：仅在启用 `enable_cyber_prompt` 且实际走 Cyber 退避模型时拼在全部系统提示词最前方 |
 
 整理规则在同一文件内分通用事实准则、任务中途历史压缩和结案经验归档。中途摘要保留待办、下一步与未同步群内的线索；结案按顶部元信息和六个三级小节输出，先给结论及适用条件。归档优先流式接收（不支持时自动回退）并将高于 `low` 的思考强度降至 `low`，提供最多三条相关有效旧案例；只有明确修正或覆盖旧结论才声明替代编号。完整模板与检索分页见[经验文档](../design/storage-and-recovery.md#经验文档)。不新增配置项或规则文件，旧案例仍可读取。
 

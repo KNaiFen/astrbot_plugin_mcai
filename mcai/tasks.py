@@ -14,7 +14,12 @@ from pathlib import Path
 
 import aiohttp
 
-from .agent_runtime import RETRY_DELAYS, progress_text, retryable
+from .agent_runtime import (
+    RETRY_DELAYS,
+    cybersecurity_risk_error,
+    progress_text,
+    retryable,
+)
 from .cleanup import settled
 from .client import ReleaseDeferred, RemoteError
 from .knowledge import Knowledge
@@ -563,6 +568,7 @@ class Tasks:
                 retry["probing"] = False
                 retry["slot_failures"] = 0
                 retry["slot_exhausted"] = []
+                retry["cyber_risk_exhausted"] = []
         else:
             job.pop("model_retry", None)
             job["pending"].append(
@@ -1359,22 +1365,156 @@ class Tasks:
                             raise ValueError("验收总结返回空内容")
                         return text
 
-                    try:
-                        text, _ = await self.agent.main_failover.call_bounded(
-                            run_summarize,
-                            origin=job["origin"],
-                            preferred_primary_id=job.get("provider_id"),
-                            attempts_per_slot=attempts,
-                            delay_fn=lambda _exc, retry: RETRY_DELAYS[min(retry, 1)],
-                            on_attempt=on_attempt,
-                            on_failure=on_failure,
-                            on_switch=on_switch,
-                            require_valid=False,
+                    cyber_failover = getattr(self.agent, "cyber_failover", None)
+                    cyber_action = getattr(self.agent, "cyber_fallback_action", "pause")
+                    cyber_primary_id = cyber_backup_id = ""
+                    cyber_available = False
+                    if cyber_failover is not None and cyber_action == "fallback":
+                        (
+                            cyber_primary_id,
+                            _,
+                            cyber_backup_id,
+                            _,
+                        ) = await cyber_failover.pair_ids()
+                        cyber_available = bool(cyber_primary_id)
+                    cyber_prompt_active = bool(
+                        callable(getattr(self.agent, "cyber_prompt_prefix", None))
+                        and self.agent.cyber_prompt_prefix(
+                            store=self.store, task=job["id"]
                         )
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:
-                        return
+                    )
+
+                    def cyber_slot_label(slot_name):
+                        return (
+                            "Cyber 退避备用模型"
+                            if slot_name == "backup"
+                            else "Cyber 退避主模型"
+                        )
+
+                    def cyber_slot_id(slot_name):
+                        return (
+                            cyber_backup_id
+                            if slot_name == "backup"
+                            else cyber_primary_id
+                        )
+
+                    def on_cyber_switch(from_slot, to_slot, exc, active):
+                        next_id = cyber_slot_id(to_slot)
+                        self.log(
+                            job,
+                            "cyber_fallback_switched",
+                            stage="验收总结",
+                            from_slot=from_slot,
+                            from_provider_id=active.provider_id if active else None,
+                            to_slot=to_slot,
+                            to_provider_id=next_id,
+                            cyber_prompt_applied=cyber_prompt_active,
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
+                        prompt_note = (
+                            "（已附加 CYBER_AGENTS.md 前置说明）"
+                            if cyber_prompt_active
+                            else ""
+                        )
+                        self.message(
+                            job,
+                            f"验收总结{cyber_slot_label(from_slot)}触发上游 Cyber 安全风控，已自动切换至{cyber_slot_label(to_slot)}（{next_id}）继续归档{prompt_note}。",
+                            job["admin"],
+                            identity=f"archive-cyber-switch-{job['id']}-{to_slot}",
+                        )
+
+                    use_cyber = bool(cyber_available and job.get("cyber_fallback"))
+                    if not use_cyber:
+                        try:
+                            text, _ = await self.agent.main_failover.call_bounded(
+                                run_summarize,
+                                origin=job["origin"],
+                                preferred_primary_id=job.get("provider_id"),
+                                attempts_per_slot=attempts,
+                                delay_fn=lambda _exc, retry: RETRY_DELAYS[
+                                    min(retry, 1)
+                                ],
+                                on_attempt=on_attempt,
+                                on_failure=on_failure,
+                                on_switch=on_switch,
+                                require_valid=False,
+                            )
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            if not cybersecurity_risk_error(exc):
+                                return
+                            if not cyber_available:
+                                self.log(
+                                    job,
+                                    "archive_cyber_blocked",
+                                    action=cyber_action,
+                                    error=f"{type(exc).__name__}: {exc}",
+                                )
+                                self.message(
+                                    job,
+                                    "验收总结触发上游 Cyber 安全风控，已停止自动归档；任务本身已结案，如需归档请调整模型或 Cyber 退避配置。",
+                                    job["admin"],
+                                    identity=f"archive-cyber-blocked-{job['id']}",
+                                )
+                                return
+                            job["cyber_fallback"] = True
+                            self.save(job)
+                            start_slot, _, _ = await cyber_failover.start_slot()
+                            next_id = cyber_slot_id(start_slot)
+                            self.log(
+                                job,
+                                "cyber_fallback_activated",
+                                stage="验收总结",
+                                to_slot=start_slot,
+                                to_provider_id=next_id,
+                                cyber_prompt_applied=cyber_prompt_active,
+                                error=f"{type(exc).__name__}: {exc}",
+                            )
+                            prompt_note = (
+                                "（已附加 CYBER_AGENTS.md 前置说明）"
+                                if cyber_prompt_active
+                                else ""
+                            )
+                            self.message(
+                                job,
+                                f"验收总结触发上游 Cyber 安全风控，已自动切换至{cyber_slot_label(start_slot)}（{next_id}）继续归档{prompt_note}。",
+                                job["admin"],
+                                identity=f"archive-cyber-activate-{job['id']}",
+                            )
+                            use_cyber = True
+                    if use_cyber:
+                        try:
+                            text, _ = await cyber_failover.call_bounded(
+                                run_summarize,
+                                attempts_per_slot=attempts,
+                                delay_fn=lambda _exc, retry: RETRY_DELAYS[
+                                    min(retry, 1)
+                                ],
+                                on_attempt=on_attempt,
+                                on_failure=on_failure,
+                                on_switch=on_switch,
+                                on_cyber_switch=on_cyber_switch,
+                                require_valid=False,
+                            )
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            if cybersecurity_risk_error(exc):
+                                self.log(
+                                    job,
+                                    "archive_cyber_blocked",
+                                    action=cyber_action,
+                                    cyber=True,
+                                    error=f"{type(exc).__name__}: {exc}",
+                                )
+                                self.message(
+                                    job,
+                                    "验收总结触发上游 Cyber 安全风控，Cyber 退避模型也未能通过，已停止自动归档；任务本身已结案。",
+                                    job["admin"],
+                                    identity=f"archive-cyber-exhausted-{job['id']}",
+                                )
+                            return
                     job.update(archive_state="ready", archive_text=text)
                     self.save(job)
                 else:
@@ -1394,6 +1534,19 @@ class Tasks:
                             job["archive_error"] = f"{type(exc).__name__}: {exc}"
                             self.log(job, "archive_failed", error=job["archive_error"])
                             self.save(job)
+                            if cybersecurity_risk_error(exc):
+                                self.log(
+                                    job,
+                                    "archive_cyber_blocked",
+                                    error=job["archive_error"],
+                                )
+                                self.message(
+                                    job,
+                                    "验收总结触发上游 Cyber 安全风控，已停止自动归档；任务本身已结案。",
+                                    job["admin"],
+                                    identity=f"archive-cyber-blocked-{job['id']}",
+                                )
+                                return
                             if not retryable(exc) or attempt + 1 == attempts:
                                 return
                             await asyncio.sleep(RETRY_DELAYS[min(attempt, 1)])

@@ -80,6 +80,16 @@ BACKUP_CAPABILITY_ITEMS = frozenset(
         "review_json",
     }
 )
+CYBER_CAPABILITY_ITEMS = frozenset(
+    {
+        "conversation",
+        "image",
+        "stream",
+        "function_call",
+        "reasoning_effort",
+        "review_json",
+    }
+)
 
 
 def _prepare_selected_provider(provider, effort):
@@ -524,6 +534,44 @@ async def test_backup_capabilities(
         result["items"] = {
             only: result["items"].get(
                 only, {"status": "unsupported", "error": "当前备用模型未配置此测试"}
+            )
+        }
+    result["complete"] = True
+    progress(result)
+    return result
+
+
+async def test_cyber_capabilities(
+    provider, settings, progress, *, target, effort_key, store=None, only=None
+):
+    label = "Cyber 退避备用模型" if target == "cyber_backup" else "Cyber 退避主模型"
+    if provider is None:
+        raise ValueError(f"请先选择{label}")
+    selected_base = request_provider(provider)
+    if selected_base.provider_config.get("type") in (
+        "openai_responses",
+        "openai_chat_completion",
+    ) and hasattr(selected_base, "client"):
+        selected_base.client = selected_base.client.with_options(max_retries=0)
+    if store is not None:
+        selected_base = traced_provider(selected_base, store, None, f"{label}能力测试")
+
+    result = {
+        "created": time.time(),
+        "target": target,
+        "identity": provider_identity(selected_base, settings),
+        "items": {},
+        "settings": settings,
+    }
+    check = _make_check(result, progress, (selected_base,), only=only)
+    effort = settings.get(effort_key, "")
+    selected = _prepare_selected_provider(selected_base, effort)
+    await _run_basic_probes(selected, check, result, effort=effort, only=only)
+    await _run_review_probe(selected_base, check, effort=effort)
+    if only:
+        result["items"] = {
+            only: result["items"].get(
+                only, {"status": "unsupported", "error": f"当前{label}不支持此测试"}
             )
         }
     result["complete"] = True

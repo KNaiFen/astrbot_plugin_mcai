@@ -1,4 +1,14 @@
-# 0.22.0 发布说明
+# 0.22.1 发布说明
+
+0.22.1 继续使用 `mcai-9`。本次运行时功能变更仅涉及 A 端（AstrBot 插件），若 B 端、托管窗口与 Probe 0.5.0 已升级至 0.22.0，只需更新 A 端插件即可，无需重启 B 端、托管窗口或替换 Probe JAR；从 0.21.x 或更旧版本升级请按[升级步骤](operations.md#升级步骤)配套更新对应组件。随 B 包提供的 Probe 0.5.0 构建与 0.22.0 相同。下载及校验见 [GitHub Release v0.22.1](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.22.1)。
+
+| 模块 | 主要更新与修复（`e0c9bf3..8a78bd8`） |
+|---|---|
+| 上游 Cyber／安全策略风控三层检测 | 升级上游网络安全与内容策略风控拦截识别：在异常通道（`None`／`400`／`403`／`422`，含 Responses 流式 SSE `event: error` 与 `response.failed`）优先提取结构化错误码（`cyber_policy`、`cybersecurity_risk`、`invalid_prompt`、`content_policy_violation`、`content_filter`、`ResponsibleAIPolicyViolation`）并用官方 Cyber／Daybreak／Usage Policy 拦截文案兜底，同时在 HTTP 200 响应通道识别 `content_filter`、结构化 `refusal` 块与无工具 Cyber 屏蔽横幅（不再误作正常回复发进群），并彻底消除流式风控误判无限重试与 403 慢重试；严格排除 429 限流、5xx 过载与常规 401／403 认证权限错误 |
+| 独立 Cyber 风控退避主／备通道 | 新增 `cyber_fallback_action`（默认 `pause` 立即暂停并通知，`fallback` 通知并自动切换至独立 Cyber 退避模型继续）及独立的 Cyber 主／备提供商与思考强度配置，与正常排障／审核主备解耦且绝不误切正常备用模型；任务内（主排障、远程／本地上下文压缩、独立审核、审核历史压缩）按任务级粘性持久沿用至结案（不影响其他任务），验收归档、`/mcaiask` 只读问答与群图片识别全部纳入退避并确保触发即通知，Cyber 主再撞风控可切 Cyber 备试一次、双撞即暂停／停止，`/mcaistatus` 准确显示当前退避槽位 |
+| 可选 `CYBER_AGENTS.md` 前置说明与分开能力测试 | 新增第 4 份运行时规则模板 `mcai/cyber_rules.md`（首次自动安装为插件数据目录 `CYBER_AGENTS.md`，升级不覆盖，接入设置页差异与模板管理），开启 `enable_cyber_prompt` 且实际走 Cyber 退避模型时拼在全部系统提示词最前方，正常模型前缀零改动且不影响待批方案 `rules_hash`；设置页新增「Cyber 风控退避」配置分组与「保存并测试 Cyber 主模型」「保存并测试 Cyber 备用模型」两套独立 6 项能力测试（支持单项重测与过期提示，不改动主模型开关），同步更新[配置说明](configuration.md)与[设计文档](../design/storage-and-recovery.md) |
+
+## 0.22.0 发布说明
 
 0.22.0 继续使用 `mcai-9`。本次改动涉及 A 端（AstrBot 插件）、B 端（Windows 主机与 Java 存档辅助程序）与 Probe 0.5.0（八目标已同步重编）；请按[升级步骤](operations.md#升级步骤)配套更新 A、B 与托管窗口，已安装 Probe 的服请停服后用本版 B 包 `probe/` 中同名的 JAR 替换旧文件。下载及校验见 [GitHub Release v0.22.0](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.22.0)。
 

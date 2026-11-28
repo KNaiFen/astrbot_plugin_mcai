@@ -78,6 +78,16 @@
               <label>切备冷却驻留（分钟，0 每次先试主）<input type="number" name="backup_cooldown_minutes" min="0" step="1" value="10"></label>
             </div>
             <p class="hint">主 API 连续失败 3 次（或认证／额度错误）时自动切到备用 API 且不打扰群内；主备均失败时才发群提醒并主备轮流重试。</p>
+            <h3 class="group-title">Cyber 风控退避</h3>
+            <div class="setting-group">
+              <label>触发 Cyber 安全风控时的策略<select name="cyber_fallback_action"><option value="pause">暂停并通知管理员（默认）</option><option value="fallback">通知并切换至 Cyber 退避模型继续</option></select></label>
+              <label>Cyber 退避主模型<select name="cyber_provider_id"></select></label>
+              <label>Cyber 退避主思考强度<input name="cyber_reasoning_effort" list="efforts" placeholder="留空继承"></label>
+              <label>Cyber 退避备用模型<select name="cyber_backup_provider_id"></select></label>
+              <label>Cyber 退避备思考强度<input name="cyber_backup_reasoning_effort" list="efforts" placeholder="留空继承"></label>
+              <label class="toggle"><input type="checkbox" name="enable_cyber_prompt">使用退避模型时在全部提示词最前方附加 CYBER_AGENTS.md</label>
+            </div>
+            <p class="hint">上游误报网络安全风控（Cyber）时可立即暂停或自动切到独立的 Cyber 退避主／备模型继续，两种策略均会通知群内；Cyber 退避模型按任务粘性生效，前置说明仅对 Cyber 退避模型注入，不影响正常模型。</p>
             <datalist id="efforts"><option value="none"><option value="minimal"><option value="low"><option value="medium"><option value="high"><option value="xhigh"></datalist>
             <h3 class="group-title">搜索与进度汇报</h3>
             <div class="setting-group">
@@ -116,12 +126,16 @@
                 <button type="submit">保存 A 设置</button>
                 <button type="button" id="test-model" class="secondary">保存并测试、自动配置</button>
                 <button type="button" id="test-backup-model" class="secondary">保存并测试备用模型</button>
+                <button type="button" id="test-cyber-primary" class="secondary">保存并测试 Cyber 主模型</button>
+                <button type="button" id="test-cyber-backup" class="secondary">保存并测试 Cyber 备用模型</button>
                 <button type="button" id="cancel-test" class="secondary">取消测试</button>
               </div>
-              <p class="hint">测试会发送少量模型与搜索请求，不执行 MC 操作或发群消息。备用模型测试不改动主模型开关。执行进度汇报需 Responses commentary，默认关闭；未观察到汇报不等于不支持。</p>
+              <p class="hint">测试会发送少量模型与搜索请求，不执行 MC 操作或发群消息。备用模型及 Cyber 退避模型测试不改动主模型开关。执行进度汇报需 Responses commentary，默认关闭；未观察到汇报不等于不支持。</p>
             </div>
             <div id="capabilities" aria-live="polite"></div>
             <div id="backup-capabilities" aria-live="polite"></div>
+            <div id="cyber-primary-capabilities" aria-live="polite"></div>
+            <div id="cyber-backup-capabilities" aria-live="polite"></div>
           </div>
           <div class="panel" aria-labelledby="model-usage-title">
             <h3 id="model-usage-title">模型用量与费用保护</h3>

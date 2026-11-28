@@ -43,7 +43,8 @@ A的任务保存群、名称、发起管理员、问题、反馈、对话、方�
 | `cancel_pending`、`cancel_request` | `stop` 将 `stop_requested` 与 `cancel_pending` 同时置真；修复中提示当前步骤结束后停止。工作循环在调用 B 前保存 `cancel_request`；重载沿用原编号。B 结算本任务已提交的修复和后台工作后，A 保存终态、清空当前 `operation`、同步释放正式服占用，然后清理试服并通知。取消失败时保留占用并通知管理员。两者出现时都要求 `stop_requested`。 |
 | `cleanup.pending` | 已正式发布的任务验收时记录发布编号；含试服的任务中止或仅试服结案时，在取消结算后记下原因 `aborted` 或 `release_waived`。B 先处理试服和暂存，再由 A 清理本地工作区和制品并结算。失败保留清理编号与错误，重载或下次绑定时重试。 |
 | `pause_after_operation`、`pause_reason` | `pause_requested` 在批次执行期间设置前者；`run` 正常结算后取出并调用 `pause` 写入后者。预检拒绝或提前中止不走正常清理。`resume` 先写审计，成功后才取出原因；写入失败时任务保持暂停并报告错误。停止任务不会清除原因。 |
-| `model_retry` | `agent_runtime.model_request` 写入重试与主备切换进度（含当前槽位、槽位失败计数与轮次），在成功、部分失败结算或缩小上下文并重发时清除；审核失效、新反馈或显式续接也可能清除。暂停、停止或归档重载时可保留。 |
+| `model_retry` | `agent_runtime.model_request` 写入重试与主备切换进度（含当前槽位、是否处于 `cyber` 退避通道、Cyber 风控已耗尽槽位、槽位失败计数与轮次），在成功、部分失败结算或缩小上下文并重发时清除；审核失效、新反馈或显式续接也可能清除。暂停、停止或归档重载时可保留。 |
+| `cyber_fallback` | 任务内任一环节在 `cyber_fallback_action=fallback` 且已配置 `cyber_provider_id` 时命中上游 Cyber 安全风控后持久化置真；该任务后续所有模型请求（主排障、上下文压缩、独立审核、审核历史压缩、验收归档、`/mcaisay` 图片识别及 `/mcairesume` 与插件重载恢复）直接沿用独立 Cyber 主／备退避通道直到结案，不影响其他任务。若管理员随后切回 `pause` 或清空 `cyber_provider_id`，不再访问空退避槽。 |
 | `archive_state` | 验收任务的取消结算后有目录且能总结时，`Tasks.run` 写 `pending`；`archive` 保存有效总结后改 `ready`，经验落盘后改 `completed`，失败保留原值。 |
 | `selection_cleanup` | `select_instance` 在改绑前保存原目标的取消编号。原取消返回后，在锁内清除此检查点并重新核对目标；远端失败或中断时保留，直到按原请求结算。 |
 
@@ -113,7 +114,9 @@ Responses 启用远程压缩时，达到水位后优先压缩受保护尾部前�
 
 进行中任务在模型请求前后检查已累计的输入＋输出。80% 提醒状态和续接份数随任务保存，每次批准续接增加一份基础额度。达到上限时暂停，不让新返回的工具请求产生操作；已有远端操作沿原编号结算。验收后的归档仍记入用量，保留原归档流程和有限重试。
 
-主模型、独立审核和验收归档都在接纳结果前检查原始完成状态：Responses 须为 `completed`，函数调用项如带 `status` 也须为 `completed`；Chat 主请求允许 `stop`／`tool_calls`／`function_call`，摘要仅允许 `stop`。达到输出上限（`max_output_tokens`／`length`）或被内容过滤（`content_filter`）时，不在同一请求上反复重发，也不准备工具调用、形成审核决定或写入经验。明确拒答不能作为压缩或验收摘要。归档对这两类未完成输出及 403 等永久错误提前结束，其他临时错误沿既定退避处理。
+主模型、独立审核和验收归档都在接纳结果前检查原始完成状态：Responses 须为 `completed`，函数调用项如带 `status` 也须为 `completed`；Chat 主请求允许 `stop`／`tool_calls`／`function_call`，摘要仅允许 `stop`。达到输出上限（`max_output_tokens`／`length`）、被内容过滤（`content_filter`）、收到结构化拒答（`refusal`）或无工具纯文本命中上游 Cyber 屏蔽提示时，不在同一请求上反复重发或进入慢重试，也不准备工具调用、形成审核决定或写入经验。明确拒答不能作为压缩或验收摘要。归档对这类未完成输出及 403 等永久错误提前结束，其他临时错误（限流、过载等）仍沿既定退避处理。
+
+命中上游网络安全／内容策略风控拦截时，按 `cyber_fallback_action` 统一收口且不切往正常备用模型。检测采用“结构化错误码优先 + 文案兜底 + HTTP 200 软拦截”三层识别：在异常通道（`None`／`400`／`403`／`422`，含流式 SSE `event: error`／`response.failed`，且在 `feature_blocked`／`compaction_unsupported`／`slow_api_error` 中显式排除以防误分类）优先提取 `error.code`／`innererror.code`／`codex_error_info` 及 Responses 流式失败码，命中 `cyber_policy`、`cybersecurity_risk`、`invalid_prompt`、`content_policy_violation`、`content_filter`、`ResponsibleAIPolicyViolation` 或官方 Cyber／Daybreak／Usage Policy 拦截文案即判定触发；在 HTTP 200 响应通道命中 `content_filter`、结构化 `refusal` 块或官方 Cyber 屏蔽文案（`ModelRefusalError`）同样纳入统一收口（严格排除 429 限流、5xx 过载与常规 401／403 认证权限错误）。策略默认 `pause`（或未配置 `cyber_provider_id`）零重试立即暂停任务并 `@job["admin"]`（验收归档、`/mcaiask`、群图片识别则停止重试并发出明确中文通知）；选择 `fallback` 时，任务级路径持久化 `job["cyber_fallback"] = True`、发送去重群通知并立即切换至统一的独立 `cyber_failover`（Cyber 主／备共享 `backup_cooldown_minutes`），Cyber 通道内再次命中风控时记入 `cyber_risk_exhausted` 并切向另一未命中 Cyber 槽（再发一次去重群通知），全部可用 Cyber 槽均命中则立即暂停／停止，严禁无限重试；Cyber 通道内遇到普通 429／5xx／认证等错误则完整沿用 `cyber_failover` 内部主备容错与退避机制。跨异构切换时，所有非正常主槽（含 Cyber 主／备）的特性降级标记一律隔离写入 `backup_provider_flags[provider_id]`；子流程（`fit_history`、`compact_feedback`）期间激活 `cyber_fallback` 时外层立即感知切换并重建带前置提示词的请求。`/mcaiask` 仅在单次问答会话内粘性切入 Cyber 并在答复开头附通知，群图片识别按实际槽位校验能力缓存（`latest`／`backup_latest`／`cyber_primary_latest`／`cyber_backup_latest`）并通过回复列表直达通知；Cyber 主／备模型在设置页支持分别独立执行 6 项能力测试（`cyber_primary`／`cyber_backup`），不改动主模型开关。独立搜索 `alpha/search` 不纳入 Cyber 退避。
 
 审核响应通过协议校验后，本地审核记录在模型重试边界之外保存。记录失败会明确暂停且不执行操作；已成功的模型请求不因该本地错误重发，原始响应仍由API追踪保留。
 

@@ -3,6 +3,7 @@ import copy
 import difflib
 import hashlib
 import json
+import logging
 import shutil
 import time
 import uuid
@@ -26,6 +27,7 @@ from pydantic import Field, model_validator
 from pydantic.dataclasses import dataclass
 
 from .agent_runtime import (
+    CYBER_FALLBACK_ACTIONS,
     DEFAULT_BACKUP_COOLDOWN_MINUTES,
     REMOTE_COMPACTION_MODES,
     STREAM_IDLE_TIMEOUT,
@@ -46,6 +48,7 @@ from .agent_runtime import (
     malformed_tool_calls,
     model_request,
     plain_group_text,
+    prepend_cyber_prompt,
     progress_provider,
     prompt_cache_provider,
     provider_identity_key,
@@ -107,6 +110,8 @@ from .tool_results import (
 from .tool_schemas import BASE_TOOLS, QUERY_TOOLS, TOOLS
 from .tracing import traced_provider
 from .workspace_tools import JDK_TOOLS, jdk_executables
+
+logger = logging.getLogger(__name__)
 
 PROMPT = (
     """你是 Minecraft 服务端运维与排障助手，用中文协助管理员，目标是把问题定位清楚并推进到可核实的结果。
@@ -326,6 +331,7 @@ class AstrBotAgent:
         rules_path,
         review_rules_path=None,
         summary_rules_path=None,
+        cyber_rules_path=None,
         review_provider_id="",
         review_reasoning_effort="",
         backup_provider_id="",
@@ -333,6 +339,12 @@ class AstrBotAgent:
         backup_review_provider_id="",
         backup_review_reasoning_effort="",
         backup_cooldown_minutes=DEFAULT_BACKUP_COOLDOWN_MINUTES,
+        cyber_fallback_action="pause",
+        cyber_provider_id="",
+        cyber_reasoning_effort="",
+        cyber_backup_provider_id="",
+        cyber_backup_reasoning_effort="",
+        enable_cyber_prompt=False,
         forward_progress=False,
         enable_web_search=True,
         web_search_tool_type="web_search",
@@ -347,6 +359,7 @@ class AstrBotAgent:
         self.rules_path = rules_path
         self.review_rules_path = review_rules_path or rules_path
         self.summary_rules_path = summary_rules_path or rules_path
+        self.cyber_rules_path = cyber_rules_path
         self.attempts = 3
         self.forward_progress = forward_progress
         self.enable_web_search, self.web_search_tool_type = (
@@ -367,11 +380,19 @@ class AstrBotAgent:
             )
         if type(backup_cooldown_minutes) is not int or backup_cooldown_minutes < 0:
             raise ValueError("backup_cooldown_minutes 不能小于 0")
+        if cyber_fallback_action not in CYBER_FALLBACK_ACTIONS:
+            raise ValueError("cyber_fallback_action 仅支持 pause 或 fallback")
         self.enable_remote_compaction = enable_remote_compaction
         self.remote_compaction_mode = remote_compaction_mode
         self.backup_provider_id = backup_provider_id
         self.backup_reasoning_effort = backup_reasoning_effort
         self.backup_cooldown_minutes = backup_cooldown_minutes
+        self.cyber_fallback_action = cyber_fallback_action
+        self.cyber_provider_id = cyber_provider_id
+        self.cyber_reasoning_effort = cyber_reasoning_effort
+        self.cyber_backup_provider_id = cyber_backup_provider_id
+        self.cyber_backup_reasoning_effort = cyber_backup_reasoning_effort
+        self.enable_cyber_prompt = bool(enable_cyber_prompt)
         self.reasoning_effort = reasoning_effort
 
         async def get_main_primary(*, origin=None, preferred_id=None):
@@ -388,6 +409,21 @@ class AstrBotAgent:
             get_backup=lambda: (self.backup_provider_id, self.backup_reasoning_effort),
             get_cooldown_minutes=lambda: self.backup_cooldown_minutes,
         )
+
+        async def get_cyber_primary(*, origin=None, preferred_id=None):
+            return self.cyber_provider_id, self.cyber_reasoning_effort
+
+        self.cyber_failover = ModelFailover(
+            context,
+            role="cyber",
+            label="Cyber 退避模型",
+            get_primary=get_cyber_primary,
+            get_backup=lambda: (
+                self.cyber_backup_provider_id,
+                self.cyber_backup_reasoning_effort,
+            ),
+            get_cooldown_minutes=lambda: self.backup_cooldown_minutes,
+        )
         self.reviewer = Reviewer(
             context,
             review_provider_id,
@@ -396,10 +432,40 @@ class AstrBotAgent:
             backup_provider_id=backup_review_provider_id,
             backup_effort=backup_review_reasoning_effort,
             backup_cooldown_minutes=backup_cooldown_minutes,
+            cyber_failover=self.cyber_failover,
+            get_cyber_action=lambda: self.cyber_fallback_action,
+            get_cyber_prompt_prefix=self.cyber_prompt_prefix,
         )
         self.runners = {}
         self.requests = {}
         self.enable_alpha_search = enable_alpha_search
+
+    def cyber_fallback_enabled(self):
+        return self.cyber_fallback_action == "fallback" and bool(
+            (self.cyber_provider_id or "").strip()
+        )
+
+    def cyber_prompt_prefix(self, *, store=None, task=None):
+        if not self.enable_cyber_prompt or self.cyber_rules_path is None:
+            return ""
+        try:
+            text = self.cyber_rules_path.read_text(encoding="utf-8-sig").strip()
+        except OSError as exc:
+            logger.warning("读取 CYBER_AGENTS.md 失败，已降级为空：%s", exc)
+            if store is not None:
+                try:
+                    store.event(
+                        ("task:" + task) if task else "system",
+                        {
+                            "event": "cyber_prompt_read_failed",
+                            "path": str(self.cyber_rules_path),
+                            "error": str(exc),
+                        },
+                    )
+                except Exception:
+                    pass
+            return ""
+        return text
 
     def rules(self):
         return self.rules_path.read_text(encoding="utf-8-sig")
@@ -487,8 +553,18 @@ class AstrBotAgent:
         say_queued = False
         claimed = set()
 
-        def request_overhead():
-            return tokens([{"role": "system", "content": system}]) + tokens(
+        def effective_system_for(rt):
+            if not getattr(rt, "cyber", False):
+                return system
+            return prepend_cyber_prompt(
+                system, self.cyber_prompt_prefix(store=tasks.store, task=job["id"])
+            )
+
+        def request_overhead(rt=None):
+            active_rt = rt or provider.active_runtime or primary_runtime
+            return tokens(
+                [{"role": "system", "content": effective_system_for(active_rt)}]
+            ) + tokens(
                 [
                     {
                         "role": "system",
@@ -498,11 +574,13 @@ class AstrBotAgent:
             )
 
         def result_budget():
+            active_rt = provider.active_runtime or primary_runtime
             active_budget = (
-                provider.active_runtime.budget_provider
+                active_rt.budget_provider
                 if provider.active_runtime is not None
                 else budget_provider
             )
+            active_system = effective_system_for(active_rt)
             budget = job.get("context_budget", {})
             input_limit = budget.get("input_limit", budget.get("limit", 272000))
             factor = budget_factor(tasks.store, active_budget, "main", incremental=True)
@@ -511,7 +589,7 @@ class AstrBotAgent:
             if (
                 usage
                 and usage["identity"]
-                == context_identity(active_budget, system, tool_definitions)
+                == context_identity(active_budget, active_system, tool_definitions)
                 and digest(messages[: usage["messages"]]) == usage["prefix"]
             ):
                 tail = messages[usage["messages"] :]
@@ -522,7 +600,7 @@ class AstrBotAgent:
                 ) / factor - tokens(tail)
             else:
                 exact = sum(item.get("compaction_tokens", 0) for item in messages)
-                raw = request_overhead() + tokens(messages) - exact
+                raw = request_overhead(active_rt) + tokens(messages) - exact
                 available = (
                     input_limit
                     - exact
@@ -1768,6 +1846,9 @@ class AstrBotAgent:
             current_runtime = provider.active_runtime or primary_runtime
             job["active_provider_id"] = current_runtime.provider_id
             job["active_provider_slot"] = current_runtime.slot
+            job["active_provider_cyber"] = bool(
+                getattr(current_runtime, "cyber", False)
+            )
             if request_snapshot is not None and (
                 context_input_usage(response) is not None
                 if request_snapshot["has_compaction"]
@@ -2230,10 +2311,10 @@ class AstrBotAgent:
         slot_runtimes = {}
 
         def build_slot_runtime(active):
-            key = (active.slot, active.provider_id, active.effort)
+            key = (active.cyber, active.slot, active.provider_id, active.effort)
             if key in slot_runtimes:
                 return slot_runtimes[key]
-            is_primary = active.slot == "primary"
+            is_primary = (not active.cyber) and active.slot == "primary"
             flags = (
                 job
                 if is_primary
@@ -2277,6 +2358,7 @@ class AstrBotAgent:
             # request-time truncation on this private view, retaining the real budget.
             selected.provider_config["max_context_tokens"] = 0
             runtime = SimpleNamespace(
+                cyber=active.cyber,
                 slot=active.slot,
                 provider_id=active.provider_id,
                 effort=active.effort,
@@ -2503,6 +2585,10 @@ class AstrBotAgent:
                 tasks.log(job, "tool_error_loop_guard", **streak)
             job["messages"] = history
             tasks.save(job)
+            cyber_prefix = self.cyber_prompt_prefix(store=tasks.store, task=job["id"])
+            effective_system = (
+                prepend_cyber_prompt(system, cyber_prefix) if rt.cyber else system
+            )
             compaction_options = {
                 "tools": tool_definitions,
                 "summary_rules": summary_rules,
@@ -2515,17 +2601,31 @@ class AstrBotAgent:
                 "origin": job["origin"],
                 "active_slot": rt.slot,
                 "flags": rt.flags,
+                "cyber_failover": self.cyber_failover,
+                "cyber_fallback_action": self.cyber_fallback_action,
+                "cyber_prompt_prefix": cyber_prefix,
+                "active_cyber": rt.cyber,
             }
             fitted = await fit_history(
                 tasks,
                 job,
                 rt.budget_provider,
                 history,
-                system,
+                effective_system,
                 force=force,
                 rejected_compaction=rejected_compaction,
                 **compaction_options,
             )
+            if (
+                not rt.cyber
+                and self.cyber_fallback_enabled()
+                and job.get("cyber_fallback")
+            ):
+                wrapper.messages[:] = [
+                    Message(role="system", content=effective_system),
+                    *[load_message(item) for item in fitted],
+                ]
+                return
             # The next fit can consume older snapshots and the guides they carry.
             if append_runtime_state(fitted, restoring=True):
                 tasks.save(job)
@@ -2534,15 +2634,25 @@ class AstrBotAgent:
                     job,
                     rt.budget_provider,
                     fitted,
-                    system,
+                    effective_system,
                     **compaction_options,
                 )
+                if (
+                    not rt.cyber
+                    and self.cyber_fallback_enabled()
+                    and job.get("cyber_fallback")
+                ):
+                    wrapper.messages[:] = [
+                        Message(role="system", content=effective_system),
+                        *[load_message(item) for item in fitted],
+                    ]
+                    return
             wrapper.messages[:] = [
-                Message(role="system", content=system),
+                Message(role="system", content=effective_system),
                 *[load_message(item) for item in fitted],
             ]
             if rt.responses:
-                kwargs["system_prompt"] = system
+                kwargs["system_prompt"] = effective_system
                 kwargs["contexts"] = wrapper.messages[1:]
             else:
                 kwargs.pop("system_prompt", None)
@@ -2551,11 +2661,11 @@ class AstrBotAgent:
                 ]
             request_snapshot = {
                 "identity": context_identity(
-                    rt.budget_provider, system, tool_definitions
+                    rt.budget_provider, effective_system, tool_definitions
                 ),
                 "messages": len(fitted),
                 "prefix": digest(fitted),
-                "estimated_tokens": request_overhead() + tokens(fitted),
+                "estimated_tokens": request_overhead(rt) + tokens(fitted),
                 "has_compaction": any("compaction_items" in item for item in fitted),
             }
 
@@ -2570,6 +2680,11 @@ class AstrBotAgent:
             failover=self.main_failover,
             slot_factory=build_slot_runtime,
             preferred_primary_id=provider_id,
+            cyber_failover=self.cyber_failover,
+            get_cyber_action=lambda: self.cyber_fallback_action,
+            get_cyber_prompt_active=lambda: bool(
+                self.cyber_prompt_prefix(store=tasks.store, task=job["id"])
+            ),
         )
         report = job.get("report")
         quoted_origin = job.get("quoted_origin")
@@ -2928,6 +3043,12 @@ class AstrBotAgent:
                 directory=job["directory"],
                 error=str(exc),
             )
+        is_cyber = bool(resolved and resolved.cyber)
+        cyber_prefix = (
+            self.cyber_prompt_prefix(store=tasks.store, task=job["id"])
+            if is_cyber
+            else ""
+        )
         system = (
             "你整理已验收的 MC 运维与排障经验，不执行工具。只写事实，不臆测；日常运维无故障时不编造症状或原因，故障原因未知就写未知，不能把管理员验收当成所有推测已证实。不含审核申报或审核响应。\n"
             "严格按以下中文 Markdown 模板输出；子节一律用 ### 三级标题，禁止 # 或 ## 标题。正文精炼，典型案例建议500~1500字，不粘贴冗长日志原文。顶部每项独占一行：\n"
@@ -2943,6 +3064,8 @@ class AstrBotAgent:
             + TASK_POLICY
             + summary_rules
         )
+        if is_cyber:
+            system = prepend_cyber_prompt(system, cyber_prefix)
         identity = digest(
             {
                 "provider": context_identity(provider, system, None),
@@ -2966,6 +3089,8 @@ class AstrBotAgent:
                 force=error is not None,
                 payload=payload,
                 summary_rules=summary_rules,
+                cyber_prompt_prefix=cyber_prefix,
+                active_cyber=is_cyber,
             )
             tasks.store.save(
                 "archive_input", job["id"], {"identity": identity, "messages": history}

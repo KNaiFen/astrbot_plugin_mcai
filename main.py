@@ -260,6 +260,7 @@ class MCAI(Star):
         rules_path = self.store.directory / "AGENTS.md"
         review_rules_path = self.store.directory / "REVIEW_AGENTS.md"
         summary_rules_path = self.store.directory / "SUMMARY_AGENTS.md"
+        cyber_rules_path = self.store.directory / "CYBER_AGENTS.md"
         self.tasks = Tasks(
             self.store,
             HostClient(
@@ -274,6 +275,7 @@ class MCAI(Star):
                 rules_path=rules_path,
                 review_rules_path=review_rules_path,
                 summary_rules_path=summary_rules_path,
+                cyber_rules_path=cyber_rules_path,
                 review_provider_id=config.get("review_provider_id", ""),
                 review_reasoning_effort=config.get("review_reasoning_effort", ""),
                 backup_provider_id=config.get("backup_provider_id", ""),
@@ -283,6 +285,14 @@ class MCAI(Star):
                     "backup_review_reasoning_effort", ""
                 ),
                 backup_cooldown_minutes=config.get("backup_cooldown_minutes", 10),
+                cyber_fallback_action=config.get("cyber_fallback_action", "pause"),
+                cyber_provider_id=config.get("cyber_provider_id", ""),
+                cyber_reasoning_effort=config.get("cyber_reasoning_effort", ""),
+                cyber_backup_provider_id=config.get("cyber_backup_provider_id", ""),
+                cyber_backup_reasoning_effort=config.get(
+                    "cyber_backup_reasoning_effort", ""
+                ),
+                enable_cyber_prompt=config.get("enable_cyber_prompt", False),
                 forward_progress=config.get("forward_progress", False),
                 enable_web_search=config.get("enable_web_search", True),
                 web_search_tool_type=config.get("web_search_tool_type", "web_search"),
@@ -316,7 +326,11 @@ class MCAI(Star):
         from .mcai.settings import Settings
 
         self.settings = Settings(
-            self, rules_path, review_rules_path, summary_rules_path
+            self,
+            rules_path,
+            review_rules_path,
+            summary_rules_path,
+            cyber_rules_path=cyber_rules_path,
         )
         self.incident_worker = asyncio.create_task(self.deliver_incidents())
         self.ask_workers = {}
@@ -809,6 +823,24 @@ class MCAI(Star):
     async def collect_attachments(
         self, workspace, task, event, attachments, *, folders=None
     ):
+        agent = self.tasks.agent
+        cyber_failover = getattr(agent, "cyber_failover", None)
+        cyber_action = getattr(
+            agent,
+            "cyber_fallback_action",
+            self.config.get("cyber_fallback_action", "pause"),
+        )
+        cyber_prefix = (
+            agent.cyber_prompt_prefix(store=self.store, task=task)
+            if callable(getattr(agent, "cyber_prompt_prefix", None))
+            else ""
+        )
+        job = self.tasks.jobs.get(task)
+        initial_cyber = bool(
+            job is not None and job.get("cyber_fallback") and cyber_action == "fallback"
+        )
+        image_notices = []
+
         async def recognize(path):
             return await recognize_image(
                 self.context,
@@ -817,11 +849,21 @@ class MCAI(Star):
                 event.unified_msg_origin,
                 self.config.get("provider_id", ""),
                 path,
-                failover=getattr(self.tasks.agent, "main_failover", None),
+                failover=getattr(agent, "main_failover", None),
+                cyber_failover=cyber_failover,
+                cyber_fallback_action=cyber_action,
+                cyber_prompt_prefix=cyber_prefix,
+                initial_cyber=initial_cyber,
+                on_notice=image_notices.append,
             )
 
         return await receive_attachments(
-            workspace, task, attachments, recognize, folders=folders
+            workspace,
+            task,
+            attachments,
+            recognize,
+            folders=folders,
+            external_notices=image_notices,
         )
 
     def _group_allowed(self, event: AstrMessageEvent, group: str, trace: dict) -> bool:
@@ -1359,8 +1401,32 @@ class MCAI(Star):
                     usage_line += (
                         " 已配置单价的估算费用：" + "、".join(usage["cost"]) + "。"
                     )
-                if job.get("active_provider_slot") == "backup" and job.get(
-                    "active_provider_id"
+                cyber_active = bool(
+                    job.get("cyber_fallback")
+                    and self.config.get("cyber_fallback_action", "pause") == "fallback"
+                    and self.config.get("cyber_provider_id", "")
+                )
+                if cyber_active:
+                    active_cyber = bool(job.get("active_provider_cyber"))
+                    cyber_provider = (
+                        job.get("active_provider_id") if active_cyber else ""
+                    ) or self.config.get("cyber_provider_id", "")
+                    channel_label = (
+                        "Cyber 退避备用模型"
+                        if active_cyber and job.get("active_provider_slot") == "backup"
+                        else "Cyber 退避主模型"
+                        if active_cyber
+                        else "Cyber 退避通道"
+                    )
+                    usage_line += (
+                        f"\n当前模型通道：{channel_label}（{cyber_provider}）。"
+                        if cyber_provider
+                        else f"\n当前模型通道：{channel_label}。"
+                    )
+                elif (
+                    not job.get("active_provider_cyber")
+                    and job.get("active_provider_slot") == "backup"
+                    and job.get("active_provider_id")
                 ):
                     usage_line += (
                         f"\n当前模型通道：备用 API（{job['active_provider_id']}）。"

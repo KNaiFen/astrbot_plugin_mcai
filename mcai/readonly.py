@@ -27,11 +27,13 @@ from .agent_runtime import (
     cap_reasoning_effort,
     check_response,
     collect_stream,
+    cybersecurity_risk_error,
     effort_provider,
     extract_final_text,
     malformed_tool_calls,
     model_retry_delay,
     plain_group_text,
+    prepend_cyber_prompt,
     prompt_cache_provider,
     provider_identity_key,
     request_option_rejected,
@@ -598,7 +600,7 @@ async def run_question(
     slot_providers = {}
 
     def get_ask_provider(active):
-        key = (active.slot, active.provider_id, active.effort)
+        key = (active.cyber, active.slot, active.provider_id, active.effort)
         if key in slot_providers:
             return slot_providers[key]
         raw = active.provider
@@ -639,9 +641,23 @@ async def run_question(
             stream_enabled=stream_enabled,
             identity=provider_identity_key(raw),
             slot=active.slot,
+            cyber=active.cyber,
         )
         slot_providers[key] = runtime
         return runtime
+
+    cyber_failover = getattr(tasks.agent, "cyber_failover", None)
+    cyber_action = getattr(tasks.agent, "cyber_fallback_action", "pause")
+    cyber_primary_id = ""
+    cyber_available = False
+    if cyber_failover is not None and cyber_action == "fallback":
+        cyber_primary_id, _, _, _ = await cyber_failover.pair_ids()
+        cyber_available = bool(cyber_primary_id)
+    cyber_prefix = (
+        tasks.agent.cyber_prompt_prefix(store=tasks.store, task=identity)
+        if callable(getattr(tasks.agent, "cyber_prompt_prefix", None))
+        else ""
+    )
 
     primary_runtime = get_ask_provider(
         ResolvedProvider(
@@ -884,6 +900,44 @@ async def run_question(
     last_text = ""
     attempts = 0
     last_identity = None
+    use_cyber = False
+    cyber_used_slot = "primary"
+    cyber_used_provider_id = ""
+    cyber_switched_in_fallback = False
+    cyber_blocked_message = None
+
+    def apply_cyber_prompt(call_kwargs):
+        if not cyber_prefix:
+            return
+        if call_kwargs.get("system_prompt"):
+            call_kwargs["system_prompt"] = prepend_cyber_prompt(
+                call_kwargs["system_prompt"], cyber_prefix
+            )
+            return
+        contexts = call_kwargs.get("contexts")
+        if not contexts:
+            call_kwargs["system_prompt"] = cyber_prefix
+            return
+        updated = list(contexts)
+        for idx, item in enumerate(updated):
+            if isinstance(item, dict) and item.get("role") == "system":
+                updated[idx] = {
+                    **item,
+                    "content": prepend_cyber_prompt(
+                        item.get("content", ""), cyber_prefix
+                    ),
+                }
+                call_kwargs["contexts"] = updated
+                return
+            if getattr(item, "role", None) == "system":
+                cloned = copy.copy(item)
+                cloned.content = prepend_cyber_prompt(
+                    getattr(item, "content", "") or "", cyber_prefix
+                )
+                updated[idx] = cloned
+                call_kwargs["contexts"] = updated
+                return
+        call_kwargs["system_prompt"] = cyber_prefix
 
     def sanitize_foreign_reasoning(contexts):
         if not contexts:
@@ -933,7 +987,16 @@ async def run_question(
         return cleaned if changed else contexts
 
     async def bounded_chat(*, streaming=False, **kwargs):
-        nonlocal attempts, last_text, malformed, last_identity
+        nonlocal \
+            attempts, \
+            last_text, \
+            malformed, \
+            last_identity, \
+            use_cyber, \
+            cyber_used_slot, \
+            cyber_used_provider_id, \
+            cyber_switched_in_fallback, \
+            cyber_blocked_message
         attempts += 1
         if attempts > max_steps:
             raise ValueError("已达到问答步数上限")
@@ -945,6 +1008,8 @@ async def run_question(
                 call_kwargs["contexts"] = sanitize_foreign_reasoning(
                     call_kwargs.get("contexts")
                 )
+            if active.cyber:
+                apply_cyber_prompt(call_kwargs)
             response = None
             if streaming and rt.stream_enabled:
                 try:
@@ -966,30 +1031,104 @@ async def run_question(
             check_response(response)
             return response
 
-        response, active = await failover.call_bounded(
-            send_slot,
-            origin=event.unified_msg_origin,
-            attempts_per_slot=ASK_RETRY_ATTEMPTS,
-            delay_fn=lambda exc, retry: min(
-                ASK_RETRY_MAX_DELAY, model_retry_delay(exc, retry)
-            ),
-            on_retry=lambda _slot, slot_failures, exc, delay: trace_event(
+        def log_retry(_slot, slot_failures, exc, delay):
+            trace_event(
                 tasks.store,
                 "ask_model_retry",
                 task=identity,
                 attempt=slot_failures,
                 error=redact_ask_text(str(exc) or type(exc).__name__),
                 delay=delay,
-            ),
-            on_switch=lambda from_slot, to_slot, exc: trace_event(
+            )
+
+        def log_switch(from_slot, to_slot, exc):
+            trace_event(
                 tasks.store,
                 "ask_model_failover",
                 task=identity,
                 from_slot=from_slot,
                 to_slot=to_slot,
                 error=redact_ask_text(str(exc) or type(exc).__name__),
-            ),
-        )
+            )
+
+        def on_cyber_switch(from_slot, to_slot, exc, _active):
+            nonlocal cyber_switched_in_fallback
+            cyber_switched_in_fallback = True
+            trace_event(
+                tasks.store,
+                "ask_cyber_switched",
+                task=identity,
+                from_slot=from_slot,
+                to_slot=to_slot,
+                error=redact_ask_text(str(exc) or type(exc).__name__),
+            )
+
+        if not use_cyber:
+            try:
+                response, active = await failover.call_bounded(
+                    send_slot,
+                    origin=event.unified_msg_origin,
+                    attempts_per_slot=ASK_RETRY_ATTEMPTS,
+                    delay_fn=lambda exc, retry: min(
+                        ASK_RETRY_MAX_DELAY, model_retry_delay(exc, retry)
+                    ),
+                    on_retry=log_retry,
+                    on_switch=log_switch,
+                )
+            except Exception as exc:
+                if not cybersecurity_risk_error(exc):
+                    raise
+                if not cyber_available:
+                    trace_event(
+                        tasks.store,
+                        "ask_cyber_blocked",
+                        task=identity,
+                        action=cyber_action,
+                        error=redact_ask_text(str(exc) or type(exc).__name__),
+                    )
+                    cyber_blocked_message = (
+                        "只读问答未完成：触发上游 Cyber 安全风控，已按策略停止重试。"
+                        "请换种表述或缩小问题范围后重试，或联系管理员调整 Cyber 退避配置。"
+                    )
+                    raise
+                use_cyber = True
+                trace_event(
+                    tasks.store,
+                    "ask_cyber_fallback_activated",
+                    task=identity,
+                    cyber_provider_id=cyber_primary_id,
+                    cyber_prompt_applied=bool(cyber_prefix),
+                    error=redact_ask_text(str(exc) or type(exc).__name__),
+                )
+        if use_cyber:
+            try:
+                response, active = await cyber_failover.call_bounded(
+                    send_slot,
+                    attempts_per_slot=ASK_RETRY_ATTEMPTS,
+                    delay_fn=lambda exc, retry: min(
+                        ASK_RETRY_MAX_DELAY, model_retry_delay(exc, retry)
+                    ),
+                    on_retry=log_retry,
+                    on_switch=log_switch,
+                    on_cyber_switch=on_cyber_switch,
+                )
+            except Exception as exc:
+                if cybersecurity_risk_error(exc):
+                    trace_event(
+                        tasks.store,
+                        "ask_cyber_blocked",
+                        task=identity,
+                        action=cyber_action,
+                        cyber=True,
+                        error=redact_ask_text(str(exc) or type(exc).__name__),
+                    )
+                    cyber_blocked_message = (
+                        "只读问答未完成：触发上游 Cyber 安全风控，Cyber 退避模型也未能通过，已停止重试。"
+                        "请换种表述或缩小问题范围后重试。"
+                    )
+                raise
+            cyber_used_slot = active.slot
+            cyber_used_provider_id = active.provider_id
         last_identity = get_ask_provider(active).identity
         if final_text := extract_final_text(response).strip():
             last_text = final_text
@@ -1037,11 +1176,18 @@ async def run_question(
                         content="请根据已有工具结果直接作答，明确仍无法核实的部分。",
                     )
                 )
-        async with aclosing(runner.step()) as step:
-            async for update in step:
-                if update.type == "tool_call":
-                    # AstrBot emits the ID immediately before dispatching each call.
-                    tool_ids.append(update.data["chain"].chain[0].data["id"])
+        try:
+            async with aclosing(runner.step()) as step:
+                async for update in step:
+                    if update.type == "tool_call":
+                        # AstrBot emits the ID immediately before dispatching each call.
+                        tool_ids.append(update.data["chain"].chain[0].data["id"])
+        except Exception:
+            if cyber_blocked_message:
+                return cyber_blocked_message
+            raise
+        if cyber_blocked_message:
+            return cyber_blocked_message
         if not runner.done():
             continue
         final = runner.get_final_llm_resp()
@@ -1058,8 +1204,27 @@ async def run_question(
                 )
                 continue
         break
+    if cyber_blocked_message:
+        return cyber_blocked_message
     if final and final.role == "err":
         raise ValueError(final.completion_text)
     if selected is None:
-        return "不知道要查询哪个服务端，所以这个问题不回答。请在问题中说明对应服务端后再问。"
-    return last_text or f"在 {max_steps} 步内未得到可确认的结论，请缩小问题范围后重试。"
+        answer = "不知道要查询哪个服务端，所以这个问题不回答。请在问题中说明对应服务端后再问。"
+    else:
+        answer = (
+            last_text
+            or f"在 {max_steps} 步内未得到可确认的结论，请缩小问题范围后重试。"
+        )
+    if use_cyber:
+        slot_desc = (
+            f"Cyber 退避备用模型（{cyber_used_provider_id}）"
+            if cyber_used_slot == "backup"
+            else f"Cyber 退避主模型（{cyber_used_provider_id}）"
+        )
+        switch_note = "（Cyber 退避主备间已切换）" if cyber_switched_in_fallback else ""
+        prompt_note = "（已附加 CYBER_AGENTS.md 前置说明）" if cyber_prefix else ""
+        answer = (
+            f"【提示】本次问答触发上游 Cyber 安全风控，已自动切换至{slot_desc}完成回答"
+            f"{switch_note}{prompt_note}。\n{answer}"
+        )
+    return answer
