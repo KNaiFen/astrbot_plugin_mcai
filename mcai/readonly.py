@@ -402,7 +402,7 @@ async def server_status(client, store, identity, instance, admin):
             if not instance:
                 return (
                     "\n".join(
-                        f"{row['instance']} · {(row['description'].strip().splitlines() or ['无说明'])[0][:32]} · {state_text(row)}"
+                        f"{row['instance']}{' [测试服]' if row.get('is_test') else ''} · {(row['description'].strip().splitlines() or ['无说明'])[0][:32]} · {state_text(row)}"
                         for row in rows
                     )
                     or "B 未配置服务端。"
@@ -410,7 +410,9 @@ async def server_status(client, store, identity, instance, admin):
             row = next((row for row in rows if row["instance"] == instance), None)
             if row is None:
                 raise ValueError("实例不存在；用 “/mcaiserver” 查看实例 ID。")
-            lines = [f"{instance}：{state_text(row)}"]
+            lines = [
+                f"{instance}{' [测试服]' if row.get('is_test') else ''}：{state_text(row)}"
+            ]
             metrics = await reads.call(row, "metrics", {"view": "summary"})
             if admin:
                 lines.extend(

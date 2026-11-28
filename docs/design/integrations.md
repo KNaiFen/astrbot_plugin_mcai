@@ -133,6 +133,10 @@ A通过Modrinth v2及CurseForge官方API查询项目、说明、版本、加载�
 
 ## A工作区与测试副本
 
+独立测试服的任务工作区脚本依然独立审核，可直接运行；正式服任务必须依托已批准的多轮方案，即使已经有隔离测试副本。独立测试服安装工作区制品后就在当前实例验收，不开启面向正式服发布的试玩闭环。
+
+隔离副本准备时核对源路径与控制程序数据、B 工作区是否互相包含，拒绝符号链接和目录联接。审核与执行都按预计复制量加上 `max(1 GiB, 5%)` 检查可用空间，扣除同卷未完成的预留；复制正式服世界时同时计入正式服备份和试服目标，同卷合并计算。准备副本、打开试服窗口和启停中的启动阶段按启动脚本与 JVM 参数文件估算可用内存需求：至少 1 GiB，另比较 `-Xms + 512 MiB` 与 `-Xmx / 2 + 512 MiB`。
+
 `mc_workspace` 将任务文件放在 A 端 `workspaces/<task_id>/`。列表把 `next_cursor` 传给 `after`，文本把 `next_cursor` 传给 `cursor`；文件变化后从头读取。工作区路径与经 `Downloads.verify` 核验的本任务下载编号二选一。`jar_entries` 列签名和内包，`jar_read` 按字符偏移读文本，`jar_search` 检索字节码符号和文本资源，可扫描一层嵌套 JAR。`jar_diff` 比较未压缩条目内容的 SHA-256；`javap` 预览可按方法名缩小范围，其原始输出留在 `_javap/`（最多 2 MiB）。这些检查及 `mapping_lookup`、`decompile` 无需多轮方案或独立审核。
 
 `decompile` 选择实际 JAR 类名及其内部类，将 Vineflower 的 Java 输出存入 `_decompiled/`；带映射时用 mapping-io 和 ASM 生成 `_remapped/` 中的分析副本，并提供运行时符号表。缓存由源 JAR、内包及映射内容和命名空间参数决定。只有在映射文件包含描述符时，`mapping_lookup` 才能返回对应的 JVM 描述符；旧格式省略的描述符为 `null`。反编译和映射 Java 子进程加入 A 端共享 Job Object（默认 8 GiB），各使用最多 512 MiB Java 堆，超时结束进程树。工具从开发预置目录或 A 数据目录校验加载，缺少时 A 可从 Maven Central 下载固定版本；B 不访问外网。

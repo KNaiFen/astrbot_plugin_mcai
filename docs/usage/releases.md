@@ -1,4 +1,15 @@
-# 0.22.1 发布说明
+# 0.22.2 发布说明
+
+0.22.2 继续使用 `mcai-9`。本次改动同时涉及 A 端（AstrBot 插件）与 B 端（Windows 主机），请按[升级步骤](operations.md#升级步骤)配套更新 A 与 B（已有托管窗口若已升级至 0.22.0 无需重启，随 B 包提供的 Probe 0.5.0 与 0.22.0 相同，已安装同构建的服无需替换 Probe JAR）。升级不会自动覆盖已有运行时规则，建议升级后在「MCAI 设置 → 运行时规则」对比并按需合并新版 `AGENTS.md` 与 `REVIEW_AGENTS.md`。下载及校验见 [GitHub Release v0.22.2](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.22.2)。
+
+| 模块 | 主要更新与修复（`a52b1fd..b8d789d`） |
+|---|---|
+| 独立测试服标记与双端防越权 | `instances.json` 新增可选布尔项 `is_test`（默认 `false`，支持在线热重载），设置页实例配置与「运行概览」新增独立测试服勾选开关与 `测试服` 徽标，`/mcaiserver` 同步显示 `[测试服]` 标识；配置加载与热更新禁止独立测试服与其他实例目录父子包含，并禁止在独立测试服上套娃创建任务副本；任务绑定时 A 端持久化 `is_test` 快照并通过 `expected_is_test` 交 B 端实时复核——独立测试服中途降权为正式服后 B 端立即拒绝测试请求，原正式服任务中途热升权后仍严格执行正式服停服备份流程；独立测试服安装工作区制品不再要求正式服发布即可 `/mcaidone` 验收 |
+| 测试服分级权限与启动依赖护栏 | 统一测试目标（独立测试服与当前任务隔离副本 `environment=test`）权限分流：纯数据配置（`.properties`／`.toml`／`.yml`／`.yaml`／`.json`／`.json5`／`.cfg`／`.conf`／`.ini`／`.snbt`、`eula.txt`）、`delete_path`、NBT／区块／方块、启停验证在 A/B 双端核对启动依赖明确后免审免批自动入队（`test_direct`）；下载安装制品（`install_download`）、PowerShell 脚本（`script`／`mc_exec`）、修改 `start.bat` 及递归引用的 JVM `@args` 参数文件、启动依赖无法静态确认的操作、恢复与单独一步 `prepare_test` 免人工 `/mcaiapply` 批准但保留静态高危拦截与独立 AI 审核（按 `target_is_test` 测试服五条底线把关，通过即自动入队）；启动依赖解析兼容 `title`、`chcp`、`goto:LABEL` 及 `%SystemRoot%/System32/timeout.exe` 等常见整合包批处理写法并继续拦截本地伪造可执行文件；测试服 `mc_console_send` 强制核实 `java_running=true`，禁用 `stop`/`restart`/`end`（改走结构化步骤），常规安全单行 MC 命令免审直通、含 Shell 元字符或宿主机冲突命令名自动转独立审核；正式服所有变更、多轮提案、定时维护与 `copy_test_world` 保持原审核、审批与备份机制不变 |
+| 测试服免备份留停服、安全删除与资源预检 | 测试服文件修改取消自动 `snapshot` 备份，严格保留自动停服与原运行状态下的自动复启；新增仅限测试服使用的 `delete_path` 步骤（正式服 A/B 双端拒绝、代码硬锁实例目录、禁止根目录及符号链接／NTFS 联接点穿透、删目录须显式 `recursive=true`）；升级 `prepare_test` 与 `copy_test_world` 磁盘余量预检（至少预留 1 GiB 或 5% 余量并扣除同卷并发预留，`copy_test_world` 联合核算备份卷与副本卷，源路径防重叠控制数据与工作区）与宿主机可用内存预检（递归解析 `start.bat` 与 `@args` 中的 `-Xms`/`-Xmx`）；仅使用隔离测试副本验证配置而未构建工作区制品的任务，在 `/mcaidone` 验收时自动停服、关窗并清理副本以释放全局试服名额 |
+| 测试目标工具补齐与工作区作用域 | 为 `mc_status`、`mc_inventory`、`mc_verify`、`mc_exec` 及全部 7 个 Probe 工具（`mc_players`、`mc_metrics`、`mc_chunks`、`mc_runtime`、`mc_objects`、`mc_profile`、`mc_inspect`）补齐 `environment=test` 支持并在转发 Probe 时剥离路由字段，`/mcaiask` 仍严格禁止查询隔离副本；`mc_workspace(mode="exec")` 仅在任务绑定独立测试服时免除已批准多轮方案前置条件（仍保留静态拦截与独立审核），正式服任务即使已建隔离副本也保持原限制不变；同步更新[配置说明](configuration.md)、[运行维护](operations.md)与[设计文档](../design/agent.md) |
+
+## 0.22.1 发布说明
 
 0.22.1 继续使用 `mcai-9`。本次运行时功能变更仅涉及 A 端（AstrBot 插件），若 B 端、托管窗口与 Probe 0.5.0 已升级至 0.22.0，只需更新 A 端插件即可，无需重启 B 端、托管窗口或替换 Probe JAR；从 0.21.x 或更旧版本升级请按[升级步骤](operations.md#升级步骤)配套更新对应组件。随 B 包提供的 Probe 0.5.0 构建与 0.22.0 相同。下载及校验见 [GitHub Release v0.22.1](https://github.com/KNaiFen/astrbot_plugin_mcai/releases/tag/v0.22.1)。
 

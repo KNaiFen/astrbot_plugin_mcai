@@ -178,7 +178,9 @@ function instance(name = '', config = {}, state = {}) {
   if (state.selectable === false) status.textContent += ' · 待移除';
   status.classList.toggle('running', !!state.running && !state.state_unknown);
   remove.type = 'button'; remove.className = 'quiet'; remove.textContent = '移除配置'; remove.onclick = () => card.remove();
-  identity.append(title, status); heading.append(identity, remove); card.append(heading);
+  const testBadge = node('span', '测试服', 'badge');
+  testBadge.hidden = effective.is_test !== true;
+  identity.append(title, testBadge, status); heading.append(identity, remove); card.append(heading);
   const instanceBody = node('div', null, 'instance-body');
   const basics = node('div', null, 'setting-group');
   field(basics, '配置名', name, 'name', '英文或简短标识，如 cti');
@@ -205,7 +207,11 @@ function instance(name = '', config = {}, state = {}) {
   const list = document.createElement('textarea'); list.dataset.key = 'test_copy_paths'; list.value = (effective.test_copy_paths ?? []).join('\n'); paths.append(list);
   const watch = document.createElement('label'); watch.className = 'toggle';
   const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.dataset.key = 'incident_watch'; toggle.checked = effective.incident_watch ?? false; watch.append(toggle, '主动保留故障现场');
-  trialGroup.append(paths, watch);
+  const test = node('label', null, 'toggle');
+  const isTest = document.createElement('input'); isTest.type = 'checkbox'; isTest.dataset.key = 'is_test'; isTest.checked = effective.is_test === true;
+  isTest.addEventListener('change', () => { testBadge.hidden = !isTest.checked; });
+  test.append(isTest, '独立测试服：放宽 AI 操作权限，修改时不自动备份');
+  trialGroup.append(test, paths, watch);
   body.append(trialGroup);
   body.append(node('h4', '健康告警', 'group-title'));
   const alerts = node('div', null, 'setting-group');
@@ -254,7 +260,7 @@ document.querySelector('#save-instances').onclick = function () {
         const key = input.dataset.key;
         if (!key) continue;
         if (key === 'name') name = input.value.trim();
-        else if (key === 'incident_watch') { if (input.checked) config[key] = true; }
+        else if (key === 'incident_watch' || key === 'is_test') { if (input.checked) config[key] = true; }
         else if (key in instanceAlerts) config[key] = input.type === 'checkbox' ? input.checked : Number(input.value || (card.dataset.isNew && key in newInstanceDefaults ? newInstanceDefaults[key] : instanceAlerts[key][1]));
         else if (key === 'test_copy_paths') { if (input.value.trim()) config[key] = input.value.split(/\r?\n/).map(item => item.trim()).filter(Boolean); }
         else if (input.value.trim()) config[key] = input.type === 'number' ? Number(input.value) : input.value;

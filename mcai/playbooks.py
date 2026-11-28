@@ -1,6 +1,6 @@
 """Workflow guidance loaded only when requested by the main agent."""
 
-MOD_REPAIR_GUIDE = """MOD源码修复：先核对故障、目标和素材。用mc_workspace pull从B取素材，用只读工作区能力核对结构与字节码；修改和构建在A端完成。动手搭建试服前先与管理员对齐是否需要真人进服实测。
+MOD_REPAIR_GUIDE = """MOD源码修复：先核对故障、目标和素材。用mc_workspace pull从B取素材，用只读工作区能力核对结构与字节码；修改和构建在A端完成。独立测试服任务的工作区执行只需独立审核，安装制品后在本服验收。正式服任务的工作区执行仍须先批准多轮方案，搭建试服前与管理员对齐是否需真人实测。
 无源码时用 jar_search 和 jar_read 找类及配置，再用 decompile 阅读；遇混淆用 mapping_lookup 或带映射反编译，以 javap 和运行时符号表核对实际签名。重打包用 jar_patch，可通过 nested_jar 一次修补并回填内包；需要编译或改字节码时，经审核运行 exec，直接引用已校验的 $env:MCAI_WORKSPACE_JAVAC 和 $env:MCAI_WORKSPACE_ASM_CP。
 首次提案写清范围：隔离试服安装、启动、对比验证与后续正式服发布条件。获批后在原plan_id内继续，先打开试服托管窗口，用stage登记制品并经install_download部署验证。
 需要真人试玩时，试服就绪后用mc_say提供入口、测试目标与内部test_operation_id并等待；管理员试过通过后，用原反馈id作trial_feedback_id提交正式服发布，无需复问或固定措辞。纯服务端改动获任务管理员书面授权免真人进服并发布时，可用管理员本人/mcainew原文（trial_feedback_id=report）或原反馈ID，仍须试服就绪并说明未测客户端握手；仅验证不发布则按目标结案。
@@ -9,9 +9,9 @@ MOD_REPAIR_GUIDE = """MOD源码修复：先核对故障、目标和素材。用m
 PLAYBOOKS = {
     "mod_repair": MOD_REPAIR_GUIDE,
     "file_patch": """局部修改与文件写入：改文本先用 mc_query files stat 拿原文件 sha256，再用 preview-patch 核对唯一匹配与差异，确认后通过 mc_propose 提交 patch_text（保留原编码、BOM 与换行）或 write_text；可选 format 会在替换前预解析 JSON/TOML/YAML。
-文件修改、配置写入和脚本都会由 B 自动先停服、按声明范围建初始备份，成功后恢复原运行状态；需要指定启停顺序则在同方案显式写明 start/stop/restart 并接 verify(ready)。通用 script 必须声明全部 backup_paths。
+文件修改由 B 自动先停服，成功后按原状态复启；正式服按声明范围备份并要求脚本声明 backup_paths。测试服不自动备份，可用 delete_path 删除实例内文件，目录须显式递归。修改启动器及其依赖须独立审核；指定启停顺序时写明 start/stop/restart 并接 verify(ready)。
 验证按影响选择：语法用 file、目标键值用 text/NBT、启动就绪用本轮 start 后的 cursor/session_id 查 ready（query 默认字面量匹配，逐行正则须加 (?m) 和 regex=true）。验证失败留现场与备份，不默认重跑或自动回滚。""",
-    "world_nbt_repair": """存档 NBT 与坏区块处理：修改前必须停服备份。NBT 列表项按 UUID、方块实体坐标或 Slot 选择，先用 mc_query nbt/region-nbt 的 select 或 preview-batch 核对数量与旧值，再提交 nbt_batch/region_batch；每条变更带类型的 expected（仅原先不存在的新字段用 null），不用旧列表下标当稳定身份。
+    "world_nbt_repair": """存档 NBT 与坏区块处理：修改前必须停服，正式服还须备份。NBT 列表项按 UUID、方块实体坐标或 Slot 选择，先用 mc_query nbt/region-nbt 的 select 或 preview-batch 核对数量与旧值，再提交 nbt_batch/region_batch；每条变更带类型的 expected（仅原先不存在的新字段用 null），不用旧列表下标当稳定身份。
 坏区块先用 region-check 排查，恢复源先 region-export 并核对目录、维度、坐标及 usable，可从明确备份导出；整块删除或恢复用最新检查点指纹并注意关联 entities/poi/mcc。
 方块读改用 region-blocks 的 read/search/preview-batch，可按 dimension 与 world_path 定位；block_batch 每项给出完整 expected 或 expected_sha256 与 state。旧 Anvil 支持扩展数字 ID，MCR 只读。替换方块实体类型须明确 remove_block_entity 与旧 SNBT。
 跨文件定位用 nbt scan（playerdata/saved_data/glob）或 region-scan（entities/block_entities/blocks）；conditions 支持列表通配符与 contains，contains_item 递归查容器。扫描冻结清单后以 scan_job_id 和 target_fingerprint 作为 manifest_sha256 提交 nbt_prune/region_prune；relative_path 可只修补匹配对象内字段，执行仍先核对完整对象哈希。方块清理用 op=set 与 state，clear_block_entity=true 才自动移除对应方块实体。

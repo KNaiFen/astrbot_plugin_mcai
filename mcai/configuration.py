@@ -178,10 +178,15 @@ def host_test_settings(config):
     )
 
 
+def directories_overlap(first, second):
+    a, b = Path(canonical_directory(first)), Path(canonical_directory(second))
+    return a.is_relative_to(b) or b.is_relative_to(a)
+
+
 def normalize_instances(values, base, shell):
     if not isinstance(values, dict):
         raise ValueError("instances.json 必须是服务端名称到配置的对象")
-    result, directories = {}, set()
+    result, directories = {}, {}
     for name, value in values.items():
         if not re.fullmatch(r"[A-Za-z0-9_-]+", name) or not isinstance(value, dict):
             raise ValueError("实例名只允许字母、数字、下划线和短横线")
@@ -196,6 +201,7 @@ def normalize_instances(values, base, shell):
             *LEGACY_TEST_FIELDS,
             "test_copy_paths",
             "incident_watch",
+            "is_test",
             *ALERT_DEFAULTS,
         }
         if set(value) - allowed:
@@ -219,6 +225,8 @@ def normalize_instances(values, base, shell):
             raise ValueError("stop_timeout 必须是秒数")
         if type(value.get("incident_watch", False)) is not bool:
             raise ValueError("incident_watch 必须是布尔值")
+        if type(value.get("is_test", False)) is not bool:
+            raise ValueError(f"{name}：is_test 必须是布尔值")
         for key, default in ALERT_DEFAULTS.items():
             setting = value.get(key, default)
             if isinstance(default, bool):
@@ -240,7 +248,12 @@ def normalize_instances(values, base, shell):
         directory = canonical_directory(path)
         if directory in directories:
             raise ValueError("多个实例指向同一规范化目录，请只保留一个配置")
-        directories.add(directory)
+        for other, test in directories.items():
+            if (test or value.get("is_test", False)) and directories_overlap(
+                directory, other
+            ):
+                raise ValueError(f"{name}：独立测试服目录不能与其他实例目录互相包含")
+        directories[directory] = value.get("is_test", False)
         configured = {
             **{
                 key: item

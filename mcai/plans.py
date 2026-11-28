@@ -4,10 +4,11 @@ import copy
 import hashlib
 import re
 from pathlib import PurePosixPath
+from posixpath import normpath
 
 import nbtlib
 
-from .review import digest
+from .review import digest, is_safe_test_console_commands
 
 INITIAL_REPORT_FEEDBACK_ID = "report"
 FILE_ACTIONS = {
@@ -16,6 +17,7 @@ FILE_ACTIONS = {
     "nbt_prune",
     "write_text",
     "patch_text",
+    "delete_path",
     "nbt_set",
     "nbt_delete",
     "nbt_batch",
@@ -30,6 +32,67 @@ FILE_ACTIONS = {
     "install_download",
     "copy_test_world",
 }
+TEST_DIRECT_CONFIG_SUFFIXES = frozenset(
+    {
+        ".properties",
+        ".toml",
+        ".yml",
+        ".yaml",
+        ".json",
+        ".json5",
+        ".cfg",
+        ".conf",
+        ".ini",
+        ".snbt",
+    }
+)
+
+
+def is_test_direct_plan(steps, dependencies, target_lists=None):
+    if dependencies.get("known") is not True or not steps:
+        return False
+    launch_paths = {PurePosixPath(path.casefold()) for path in dependencies["paths"]}
+    for index, step in enumerate(steps):
+        action = step["action"]
+        path = PurePosixPath(
+            normpath(step.get("path", "").replace("\\", "/")).casefold()
+        )
+        if action in ("write_text", "patch_text"):
+            if (
+                path.suffix not in TEST_DIRECT_CONFIG_SUFFIXES
+                and path.as_posix() != "eula.txt"
+            ):
+                return False
+        elif action == "command":
+            if not is_safe_test_console_commands([step["command"]]):
+                return False
+        elif action not in (
+            FILE_ACTIONS
+            - {
+                "script",
+                "restore",
+                "install_download",
+                "copy_test_world",
+                "region_restore",
+            }
+            | {"start", "restart", "stop", "force_stop", "verify"}
+        ):
+            return False
+        paths = (
+            [PurePosixPath(name.casefold()) for name in target_lists[index]]
+            if target_lists is not None
+            else [path]
+            if "path" in step
+            else []
+        )
+        if any(
+            item.is_absolute()
+            or ".." in item.parts
+            or any(dep.is_relative_to(item) for dep in launch_paths)
+            for item in paths
+        ):
+            return False
+    return True
 
 
 def validate_checks(checks):
@@ -52,7 +115,7 @@ def validate_checks(checks):
                     ) from exc
 
 
-def effective_steps(steps, running, target_lists):
+def effective_steps(steps, running, target_lists, *, skip_backup=False):
     for step in steps:
         if step["action"] == "verify":
             validate_checks(step["checks"])
@@ -80,7 +143,7 @@ def effective_steps(steps, running, target_lists):
             if running:
                 prepared.append({"action": "stop"})
                 running = False
-            if not captured:
+            if not captured and not skip_backup:
                 prepared.append({"action": "snapshot", "paths": targets})
                 captured = True
         online = (
@@ -128,14 +191,17 @@ def execution_configuration(config, steps=(), *, diagnostic=False):
         keys.update(("powershell_path", "java_path"))
     if actions & {"start", "restart"}:
         keys.add("encoding")
-    return {key: config.get(key, defaults.get(key)) for key in sorted(keys)}
+    return {
+        **{key: config.get(key, defaults.get(key)) for key in sorted(keys)},
+        "is_test": bool(config.get("is_test", False)),
+    }
 
 
 def execution_configuration_changed(reviewed, current):
-    """Compare only reviewed Java path and stop command; directory identity is separate."""
+    """Compare the reviewed settings that must remain fixed until execution."""
     return any(
         reviewed[key] != current.get(key)
-        for key in ("java_path", "stop_command")
+        for key in ("java_path", "stop_command", "is_test")
         if key in reviewed
     )
 
@@ -151,6 +217,8 @@ def plan_identity(plan):
                 "plan_id",
                 "environment",
                 "trial_release",
+                "test_direct",
+                "auto_approved",
             )
             if key in plan
         }
@@ -186,6 +254,7 @@ ACTION_LABELS = {
     "nbt_prune": "批量清理 NBT",
     "write_text": "写入文件",
     "patch_text": "修改文件",
+    "delete_path": "删除路径",
     "nbt_set": "修改 NBT",
     "nbt_delete": "删除 NBT 字段",
     "nbt_batch": "批量修改 NBT",

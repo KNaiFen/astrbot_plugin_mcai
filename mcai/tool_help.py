@@ -109,12 +109,12 @@ GUIDANCE = {
     "mc_workspace": "无源码时用 jar_search 查常量池或文本，用 jar_read 读条目，decompile 查选定类。javap 可按 method 筛选，完整输出和反编译结果用 read 续读 output_path。"
     "映射查询用 mapping_lookup；重映射反编译仍传 JAR 中真实类名，编写补丁前用 runtime_symbols_path 核对运行时签名。"
     "jar_patch 可用 nested_jar（外层内的 .jar 条目，最多 64 MiB）单步修补并重打包；内外任一层有签名时须明确 strip_signatures=true。"
-    "exec 的文本输出见 stdout，按 next_call 续读。安装仍先 stage，再提交 install_download 走试服验证。",
+    "exec 的文本输出见 stdout，按 next_call 续读。独立测试服任务只需独立审核；其他任务仍须已批准的多轮方案。安装先 stage，再提交 install_download 验证。",
     "mc_history": "list默认status=active、limit=20（1~50），按最新在前返回目录；category按类型精确过滤。search支持中英文多词，默认limit=8（1~20）、status=active；all_servers=true跨服查已关联文档，不能同时指定directory，须核对环境差异。list/search的offset是案例下标，沿next_call续页；read/index的offset是字符偏移。优先list/search定位case_id再用mc_knowledge读详情（跨服命中可同时传directory）。只读问答仅允许所选实例的list/search/read，禁止index、all_servers=true或指定其他directory。",
     "mc_propose": "首次提交summary与具体steps；能一次性确定全部参数与路径的常规操作直接放进同一批steps，不要无故拆成多轮。summary发给群里管理员看，用一两句人话写清原因、目标与关键风险或备份状态即可（启动参数、后续规划和只读核验证据不要堆进summary）。确需按现场结果分批决策时，同时声明continuation的scope、completion与planned_stages（用管理员能直接看懂的日常中文简洁分点写出首批之后预计如何动态推进与收尾，禁止出现内部工具名、动作名、参数名或代码术语）。"
     "返回awaiting_approval后结束本轮等待程序提示批准。批准后续批仅带原plan_id、summary与steps；"
     "每批仍独立审核，原授权范围内无需再次批准。观察实际结果再续批，完成后mc_plan_finish并请求验收。"
-    "文件写入、NBT修改或恢复前停服，程序按目标备份；通用script须声明全部backup_paths。"
+    "改文件先停服；正式服自动备份，script须声明全部backup_paths。测试服受限结构化步骤免审核，脚本、安装、恢复和启动依赖改动仍独立审核，通过自动入队。测试服 delete_path 仅接受实例内相对路径，目录须明确 recursive=true。"
     "NBT批量变更提供expected或expected_sha256，null仅用于确认新字段不存在。方块批改用block_batch，可按dimension/world_path定位。"
     "region_prune/nbt_prune用scan_job_id及扫描返回的target_fingerprint作为manifest_sha256；relative_path可修补对象内字段。"
     "region_prune by_filter须限定世界/维度、bounds、对象类型或方块过滤及max_matches；超限整步拒绝。快照由程序插入。"

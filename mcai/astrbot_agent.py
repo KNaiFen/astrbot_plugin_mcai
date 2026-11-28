@@ -88,16 +88,18 @@ from .model_budget import (
     estimated_input,
     record_usage,
 )
-from .plans import approval_command, plan_identity
+from .plans import approval_command, is_test_direct_plan, plan_identity
 from .playbooks import MOD_REPAIR_GUIDE as MOD_REPAIR_GUIDE
 from .playbooks import PLAYBOOKS
 from .query_cli import QueryError, QueryHelp, parse_query, query_argv, query_operation
 from .review import (
     REVIEW_VERSION,
     digest,
-    is_test_readonly_console_commands,
+    is_safe_test_console_commands,
     review_material,
+    test_console_running,
     validate_diagnostic_console_commands,
+    validate_test_console_commands,
 )
 from .tool_arguments import argument_error, arguments_for, model_continuations
 from .tool_help import resolved_query, tool_catalog, tool_help
@@ -120,7 +122,8 @@ PROMPT = (
 排障始终盯紧初始主目标和核心症状：把直接致因和旁路热点分开，指标或现象变化时跟着实际证据走，不死守预设猜测。
 - 区分“当前窗口未触发”与“问题不存在”；做对比或下结论时保持前提一致，不把推算或截断上限当成实测数字。
 - 排查内存泄漏或 GC 爬坡优先用只读低开销的 `memory_trend` 和 `memory_jfr`；仍定位不到持引用对象再建议 `heap_dump`，调用前先说明停顿时长和数 GB 磁盘占用，拿到管理员同意的 `admin_feedback_id` 再送审执行。
-- 已确认的隔离试服上，`mc_console_send` 仅执行白名单只读命令（如 `list`/`tps`/`tick query`/`datapack list` 及安全 `data get`/`scoreboard players get`）可免审直发；其余试服与正式服命令仍独立审核。
+- 测试目标包括独立测试服（仍用 environment=production 指任务绑定实例）和当前任务隔离副本（environment=test）。已核实 Java 在线可直接发送安全单行 MC 命令；其余命令仍独立审核。启停使用结构化步骤。
+- 测试服纯结构化白名单和已核实的启动依赖允许直通，其余测试服修改及单独一步 `prepare_test`（勿与 `start`/`verify` 混在同一正式服提案，建好后用 `mc_test_server` 开窗并以 `environment=test` 启停操作）在独立审核通过后自动入队。定时、复制正式服世界、多轮与正式服变更按原流程；测试服改文件先停服，不自动备份。以工具返回 queued 或 awaiting_approval 判断下一步。
 - 在授权范围内自主判断并继续推进，不频繁停下来请示或说教；有风险提醒清楚后果一次即可，管理员拍板继续或豁免测试时记录并执行。管理员中途追问时先按边界答清，能继续主线就做完再收口；普通成员插话仅作待核实线索，不打断主线反问。
 
 【群内沟通与通道纪律】
@@ -205,6 +208,17 @@ def clean_arguments(arguments):
 
 def javap_java_executable(configured_path=""):
     return str(jdk_executables(configured_path, required=("java", "javap"))["java"])
+
+
+def confirmed_test_target(status, environment, directory):
+    actual = status.get("canonical_directory")
+    if environment == "test":
+        return (
+            status.get("status") in ("prepared", "ready")
+            and bool(actual)
+            and actual != directory
+        )
+    return status.get("is_test") is True and bool(actual) and actual == directory
 
 
 def clean_tool_arguments(raw):
@@ -510,6 +524,30 @@ class AstrBotAgent:
             if not str(exc).startswith("HTTP 404:"):
                 raise
         plan = job["applied_plan"]
+        direct = plan.get("test_direct") is True
+        if direct:
+            environment = plan["environment"]
+            status = await tasks.client.call(
+                job["instance"],
+                "status",
+                {"environment": environment, "expected_directory": job["directory"]},
+                task_id=job["id"],
+                stopped=lambda: job["stop_requested"],
+            )
+            if (
+                plan.get("auto_approved") is True
+                and not plan.get("prepared")
+                and not plan.get("continuation")
+                and not plan.get("plan_id")
+                and not plan.get("trial_release")
+                and (environment == "test" or job.get("instance_is_test") is True)
+                and plan.get("expected_directory") == job["directory"]
+                and confirmed_test_target(status, environment, job["directory"])
+                and is_test_direct_plan(
+                    plan["steps"], status.get("launcher_dependencies", {})
+                )
+            ):
+                return True
         reviewed = plan.get("reviewed")
         approved_hash = None
         if plan.get("plan_id") or plan.get("continuation"):
@@ -519,7 +557,8 @@ class AstrBotAgent:
             except ValueError:
                 approved_hash = "invalid"
         if (
-            not reviewed
+            direct
+            or not reviewed
             or reviewed.get("protocol_version") != REVIEW_VERSION
             or not plan.get("prepared")
             or reviewed["arguments_hash"] != plan_identity(plan)
@@ -530,21 +569,42 @@ class AstrBotAgent:
             )
             or approved_hash == "invalid"
             or (
+                plan.get("auto_approved")
+                and (
+                    (source := tasks.store.get("tool_call", reviewed["call_id"]))
+                    is None
+                    or plan.get("script_hashes") != source.get("checks")
+                    or plan.get("review_configuration")
+                    != source.get("review_configuration")
+                )
+            )
+            or (
                 job.get("directory") is not None
                 and plan.get("expected_directory") != job["directory"]
             )
         ):
-            tasks.end_plan(job, "invalidated", "方案、审核或运行规则已变化")
+            if not plan.get("auto_approved"):
+                tasks.end_plan(job, "invalidated", "方案、审核或运行规则已变化")
             job["pending"].append(
                 {
                     "sender": "system",
-                    "text": "原修复方案尚未审核或规则已变化，尚未执行。请补齐用途和外部脚本材料，重新提交方案等待批准。",
+                    "text": (
+                        "测试服目标、启动依赖或审核材料无法重新确认，原批次未执行。请核对目标后重新提案。"
+                        if plan.get("auto_approved")
+                        else "原修复方案尚未审核或规则已变化，尚未执行。请补齐用途和外部脚本材料，重新提交方案等待批准。"
+                    ),
                 }
             )
             job["operation"] = None
             job["state"] = "running"
             tasks.save(job)
             return False
+        if (
+            plan.get("environment", "production") == "production"
+            and "expected_is_test" not in plan
+        ):
+            plan["expected_is_test"] = bool(job.get("instance_is_test", False))
+            tasks.save(job)
         return True
 
     async def run(self, tasks, job):
@@ -709,6 +769,15 @@ class AstrBotAgent:
         async def remote(record, action, arguments):
             if job.get("directory") and "operation" not in record:
                 arguments = {**arguments, "expected_directory": job["directory"]}
+            if (
+                action in ("diagnostic_command", "exec")
+                and arguments.get("environment", "production") == "production"
+                and "operation" not in record
+            ):
+                arguments = {
+                    **arguments,
+                    "expected_is_test": bool(job.get("instance_is_test")),
+                }
             record.setdefault("operation", uuid.uuid4().hex)
             record["remote"] = {"action": action, "arguments": arguments}
             record["state"] = "submitted"
@@ -1130,6 +1199,13 @@ class AstrBotAgent:
                     raise ValueError(
                         "尚未确定服务端，请 mc_instances 查看并 mc_select_instance 绑定；不确定时向群里追问"
                     )
+            environment = arguments.get("environment", "production")
+            instance_is_test = job.get("instance_is_test") is True
+            is_test_target = environment == "test" or instance_is_test
+            if instance_is_test and (environment == "test" or name == "mc_test_server"):
+                raise ValueError(
+                    "独立测试服不能再创建或使用任务隔离测试副本，请直接操作当前实例"
+                )
             if name == "mc_test_server":
                 if arguments["mode"] == "open":
                     job["has_test_server"] = True
@@ -1180,21 +1256,65 @@ class AstrBotAgent:
                 raise ValueError("定时计划只能作为单独的正式服提案，不能沿用多轮批准")
             approved = None
             workspace_exec = name == "mc_workspace" and arguments.get("mode") == "exec"
-            if name == "mc_propose" and arguments.get("plan_id"):
-                # A crash after queueing must recover this batch, not queue it again.
+            test_direct = auto_approve = False
+            if name == "mc_propose":
+                steps = arguments["steps"]
+                kinds = {step["action"] for step in steps}
+                if kinds & {"prepare_test", "copy_test_world"} and is_test_target:
+                    raise ValueError("独立测试服或隔离测试副本不能再创建或复制测试副本")
+                if "delete_path" in kinds and not is_test_target:
+                    raise ValueError("delete_path 只允许用于测试服")
                 if (
-                    record.get("batch_operation")
-                    and job.get("applied_plan", {}).get("id") == record["id"]
+                    "script" in kinds
+                    and not is_test_target
+                    and any(
+                        step["action"] == "script" and not step.get("backup_paths")
+                        for step in steps
+                    )
                 ):
+                    raise ValueError("正式服修复脚本必须声明 backup_paths")
+                already_queued = (
+                    record.get("batch_operation")
+                    and (job.get("applied_plan") or {}).get("id") == record["id"]
+                )
+                if already_queued:
                     return {
                         "status": "queued",
-                        "plan_id": arguments["plan_id"],
                         "operation_id": record["batch_operation"],
+                        **(
+                            {"plan_id": arguments["plan_id"]}
+                            if arguments.get("plan_id")
+                            else {"auto_approved": True}
+                        ),
                     }
+                if not arguments.get("continuation") and not arguments.get("plan_id"):
+                    auto_approve = (
+                        is_test_target
+                        and not kinds & {"schedule", "copy_test_world"}
+                        or len(steps) == 1
+                        and kinds == {"prepare_test"}
+                    )
+                    if is_test_target and auto_approve:
+                        status = await tasks.client.call(
+                            job["instance"],
+                            "status",
+                            {
+                                "environment": environment,
+                                "expected_directory": job["directory"],
+                            },
+                            task_id=job["id"],
+                            stopped=lambda: job["stop_requested"],
+                        )
+                        test_direct = confirmed_test_target(
+                            status, environment, job["directory"]
+                        ) and is_test_direct_plan(
+                            steps, status.get("launcher_dependencies", {})
+                        )
+            if name == "mc_propose" and arguments.get("plan_id"):
                 approved = tasks.require_plan(job, arguments["plan_id"])
                 if job.get("operation") or job["state"] == "applying":
                     raise ValueError("当前批次尚未结算，请先读取结果")
-            elif workspace_exec:
+            elif workspace_exec and not instance_is_test:
                 scope = tasks.active_plan(job)
                 if scope is None:
                     raise ValueError("工作区脚本需要先批准当前多轮方案")
@@ -1206,10 +1326,7 @@ class AstrBotAgent:
                 tasks.end_plan(job, "invalidated", "运行规则已变化")
                 raise ValueError("运行规则已变化，请重新提案等待批准")
             trial_release = None
-            if (
-                name == "mc_propose"
-                and arguments.get("environment", "production") == "production"
-            ):
+            if name == "mc_propose" and not is_test_target:
                 staged = [
                     download
                     for step in arguments["steps"]
@@ -1223,10 +1340,8 @@ class AstrBotAgent:
                     feedback = tasks.admin_feedback(
                         job, arguments.get("trial_feedback_id"), allow_report=waived
                     )
-                    if not approved or len(staged) != 1:
-                        raise ValueError(
-                            "发布须沿原多轮方案执行，并且每批只发布一份工作区制品"
-                        )
+                    if len(staged) != 1:
+                        raise ValueError("每批只发布一份工作区制品")
                     if not feedback:
                         raise ValueError(
                             "trial_feedback_id 须引用任务管理员 /mcaisay 的原始反馈 ID；"
@@ -1234,6 +1349,8 @@ class AstrBotAgent:
                             "若尚未取得明确授权，请先用 mc_say 向管理员确认。"
                         )
                     test_operation_id = arguments.get("test_operation_id")
+                    if not approved and not test_operation_id and not waived:
+                        raise ValueError("新的正式服发布提案须指定 test_operation_id")
                     if waived:
                         if not test_operation_id:
                             raise ValueError("免真人进服测试须指定 test_operation_id")
@@ -1284,29 +1401,40 @@ class AstrBotAgent:
                     record["trial_release"] = trial_release
             approved_hash = approved["identity"] if approved else None
             if name == "mc_console_send":
-                validate_diagnostic_console_commands(arguments["commands"])
+                if is_test_target:
+                    validate_test_console_commands(arguments["commands"])
+                else:
+                    validate_diagnostic_console_commands(arguments["commands"])
             needs_review = (
                 name in ("mc_exec", "mc_propose", "mc_console_send")
                 or workspace_exec
                 or heap_dump
-            )
+            ) and not test_direct
             test_status = None
-            if name == "mc_console_send" and arguments.get("environment") == "test":
+            if name == "mc_console_send" and is_test_target:
                 test_status = await tasks.client.call(
                     job["instance"],
-                    "test_server",
-                    {"mode": "status"},
+                    "status",
+                    {
+                        "environment": environment,
+                        "expected_directory": job["directory"],
+                    },
                     task_id=job["id"],
                 )
-                needs_review = not (
-                    test_status["status"] in ("prepared", "ready")
-                    and test_status["console_available"]
-                    and test_status["running"]
-                    and not test_status["state_unknown"]
-                    and not test_status.get("target_mismatch")
-                    and test_status["canonical_directory"] != job["directory"]
-                    and is_test_readonly_console_commands(arguments["commands"])
-                )
+                if test_status.get("status") != "not_created":
+                    if not confirmed_test_target(
+                        test_status, environment, job["directory"]
+                    ) or not test_console_running(test_status):
+                        raise ValueError(
+                            "未确认测试服 Java 服务端正在运行且控制台可用，未发送命令"
+                        )
+                    needs_review = not is_safe_test_console_commands(
+                        arguments["commands"]
+                    )
+            if test_direct or test_status is not None and not needs_review:
+                check_review_feedback(job, record)
+                if job["stop_requested"] or job["state"] == "paused":
+                    raise ReviewInvalidated("任务已停止或暂停，原调用未执行。")
             decision = record.get("decision")
             if (
                 needs_review
@@ -1343,12 +1471,16 @@ class AstrBotAgent:
                         "admin_feedback": feedback,
                         "evidence_ids": record["arguments"].get("evidence_ids", []),
                     }
-                elif test_status is not None and test_status["status"] == "not_created":
+                elif (
+                    test_status is not None
+                    and test_status.get("status") == "not_created"
+                ):
                     material = {
                         "status": {**test_status, "environment": "test"},
                         "configuration": {},
                         "scripts": [],
                         "unresolved_references": metadata["script_files"],
+                        "target_is_test": False,
                     }
                 elif name == "mc_workspace":
                     directory = tasks.workspace.directory(job["id"])
@@ -1374,6 +1506,7 @@ class AstrBotAgent:
                         injected_env=injected_env,
                     )
                     material["status"] = {"environment": "A 工作区"}
+                    material["target_is_test"] = instance_is_test
                     material["configuration"] = {
                         "workspace": str(directory),
                         "powershell_path": tasks.workspace.powershell_path,
@@ -1395,6 +1528,11 @@ class AstrBotAgent:
                             "encoding": metadata.get("encoding", "utf-8-sig"),
                             "commands": commands,
                             "diagnostic": name == "mc_exec",
+                            **(
+                                {"expected_is_test": instance_is_test}
+                                if environment == "production"
+                                else {}
+                            ),
                             **(
                                 {"trial_release": trial_release}
                                 if trial_release
@@ -1425,6 +1563,8 @@ class AstrBotAgent:
                         operation_id=record["id"],
                         stopped=lambda: job["stop_requested"],
                     )
+                    if auto_approve and material.get("target_is_test") is not True:
+                        raise ValueError("B 未确认测试目标或副本准备预检，原批次未入队")
                 rules_snapshot = self.rules_snapshot()
                 rules_hash = digest(rules_snapshot)
                 if approved and (
@@ -1495,32 +1635,45 @@ class AstrBotAgent:
                     return await remote(record, "diagnostics", arguments)
                 arguments["script_hashes"] = record["checks"]
                 arguments["review_configuration"] = record["review_configuration"]
+            if test_status is not None and test_status.get("status") == "not_created":
+                raise ValueError("当前任务没有可用的隔离测试服，未发送命令")
             if name == "mc_propose":
                 arguments.pop("trial_feedback_id", None)
                 arguments.pop("test_operation_id", None)
                 arguments.pop("client_login_waived", None)
-                checks = arguments.pop("script_hashes")
-                configuration = arguments.pop("review_configuration")
+                checks = arguments.pop("script_hashes", None)
+                configuration = arguments.pop("review_configuration", None)
                 if approved:
                     tasks.require_plan(job, arguments["plan_id"])
+                if approved or auto_approve:
                     record.setdefault("batch_operation", uuid.uuid4().hex)
                     tasks.store.save("tool_call", record["id"], record)
                 tasks.propose(
                     job,
                     **arguments,
                     script_hashes=checks,
-                    effective_steps=record["effective_steps"],
+                    effective_steps=None if test_direct else record["effective_steps"],
                     review_configuration=configuration,
                     proposal_id=record["id"],
                     operation_id=record.get("batch_operation"),
                     trial_release=trial_release,
-                    reviewed={
+                    auto_approve=auto_approve,
+                    test_direct=test_direct,
+                    reviewed=None
+                    if test_direct
+                    else {
                         "call_id": record["id"],
                         "protocol_version": REVIEW_VERSION,
                         "rules_hash": record["decision"]["rules_hash"],
                         "approved_plan_hash": approved_hash,
                     },
                 )
+                if auto_approve:
+                    return {
+                        "status": "queued",
+                        "operation_id": record["batch_operation"],
+                        "auto_approved": True,
+                    }
                 if approved:
                     return {
                         "status": "queued",
@@ -1534,8 +1687,6 @@ class AstrBotAgent:
                 }
             if name == "mc_say":
                 if operation_id := arguments.get("test_operation_id"):
-                    if not tasks.active_plan(job):
-                        raise ValueError("试玩邀请需要有效的已批准多轮方案")
                     trial = await tasks.client.call(
                         job["instance"],
                         "test_server",
@@ -1671,7 +1822,8 @@ class AstrBotAgent:
                         "path": arguments["destination"],
                         "bytes": target.stat().st_size,
                     }
-                tasks.require_plan(job, approved["snapshot"]["plan"]["id"])
+                if not instance_is_test:
+                    tasks.require_plan(job, approved["snapshot"]["plan"]["id"])
                 return await local(record, arguments)
             if name in ("mc_mods", "mc_download"):
                 if name == "mc_mods" and arguments["mode"] != "download":

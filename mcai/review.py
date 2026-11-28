@@ -135,17 +135,6 @@ CONSOLE_READONLY_SUBCOMMANDS = {
     "datapack": frozenset({"list"}),
     "worldborder": frozenset({"get"}),
 }
-TEST_READONLY_CONSOLE_COMMAND = re.compile(
-    r"/?(?:list|tps|(?:forge|neoforge) tps|tick query|datapack list|"
-    r"scoreboard objectives list|time query (?:daytime|gametime|day)|"
-    r"forceload query(?: -?\d+ -?\d+)?|"
-    r"scoreboard players (?:list(?: [A-Za-z0-9_.#+-]{1,64})?|"
-    r"get [A-Za-z0-9_.#+-]{1,64} [A-Za-z0-9_.#+-]{1,64})|"
-    r"data get (?:block -?\d+ -?\d+ -?\d+|"
-    r"entity (?:[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}|[A-Za-z0-9_]{1,16}))"
-    r"(?: [A-Za-z0-9_.]{1,128})?)",
-    re.IGNORECASE | re.ASCII,
-)
 
 
 def shell_invocation(words):
@@ -304,16 +293,63 @@ def validate_diagnostic_console_commands(commands):
         _check_console_command_tokens(command.strip().split(), command)
 
 
-def is_test_readonly_console_commands(commands) -> bool:
-    return (
-        isinstance(commands, (list, tuple))
-        and bool(commands)
-        and all(
-            isinstance(command, str)
-            and TEST_READONLY_CONSOLE_COMMAND.fullmatch(command)
-            and not {"execute", "function"}.intersection(command.lower().split(" "))
+TEST_CONSOLE_CONFLICTS = (
+    frozenset(
+        """
+    pwsh powershell cmd kill spps stop-process rm ri del erase rd rmdir remove-item
+    clc clear-content sc set-content ac add-content mv mi move move-item cp copy
+    copy-item ni new-item start saps start-process curl wget iwr irm invoke-webrequest
+    invoke-restmethod reg net taskkill schtasks certutil bitsadmin wmic python py
+    node mshta rundll32 cscript wscript
+    """.split()
+    )
+    | DESTRUCTIVE_COMMANDS
+    | DYNAMIC_EXECUTION_COMMANDS
+    | DIAGNOSTIC_DISALLOWED_COMMANDS
+)
+
+
+def validate_test_console_commands(commands):
+    if (
+        not isinstance(commands, list)
+        or not commands
+        or any(
+            not isinstance(command, str)
+            or not command.strip()
+            or any(char in command for char in "\r\n\x00")
             for command in commands
         )
+    ):
+        raise ValueError("commands 须为非空的单行命令字符串列表")
+    for command in commands:
+        verb = command.split()[0].lstrip("/").rsplit(":", 1)[-1].lower()
+        if verb in {"stop", "restart", "end"}:
+            raise ValueError("请用 mc_propose 的 stop/restart 结构化步骤启停服务端")
+
+
+def is_safe_test_console_commands(commands):
+    validate_test_console_commands(commands)
+    for command in commands:
+        if re.search(r"[;|&`<>]|\$\(", command):
+            return False
+        token = command.split()[0].lower()
+        if not token.startswith("/") and (
+            token in TEST_CONSOLE_CONFLICTS
+            or "/" in token
+            or "\\" in token
+            or re.search(r"^[a-z]:|\.(exe|bat|cmd|ps1|vbs|js)$", token)
+        ):
+            return False
+    return True
+
+
+def test_console_running(status):
+    return (
+        status.get("java_running") is True
+        and status.get("running") is True
+        and status.get("console_available") is True
+        and not status.get("state_unknown")
+        and not status.get("target_mismatch")
     )
 
 
@@ -394,7 +430,7 @@ def bound_review_material(material):
 
 
 @contextmanager
-def powershell_parser(executable):
+def powershell_parser(executable, *, launcher=False):
     process = None
     reader = ThreadPoolExecutor(max_workers=1)
 
@@ -429,6 +465,7 @@ def powershell_parser(executable):
                     "script_root": str(script_root)
                     if script_root is not None
                     else None,
+                    "launcher": launcher,
                 },
                 ensure_ascii=False,
             )
@@ -558,6 +595,198 @@ def script_commands(source, language, parse, root):
     return cmd_commands(source)
 
 
+def inspect_launcher_dependencies(
+    directory, encoding="auto", *, powershell_path=None, read=None
+):
+    from .configuration import bat_codepage
+    from .text_files import decode_text
+
+    directory = Path(directory).resolve()
+    pending = deque([("start.bat", directory, False)])
+    paths, argfiles, memory_args, errors = set(), set(), [], []
+    seen = set()
+
+    def reference(word, parent):
+        word = re.sub(r"%~dp0", lambda _: str(parent) + "/", word, flags=re.I)
+        if re.search(r"[%!$*?]", word):
+            raise ValueError(f"无法确定动态启动引用：{word}")
+        return word
+
+    def java_args(words, parent):
+        for word in words:
+            if word is None:
+                errors.append("无法确定动态 Java 参数")
+            elif word.startswith("@"):
+                pending.append((word[1:], parent, True))
+            elif re.fullmatch(r"-xm[sx]\d+[kmg]?", word, re.I):
+                memory_args.append(word)
+            elif word not in ("%*", "@") and re.search(r"[%!$]", word):
+                errors.append(f"无法确定动态 Java 参数：{word}")
+
+    with powershell_parser(
+        powershell_path or shutil.which("pwsh"), launcher=True
+    ) as parse:
+        while pending:
+            relative, parent, argfile = pending.popleft()
+            try:
+                path = resolve_file(directory, reference(relative, parent))
+                if (path, argfile) in seen:
+                    continue
+                seen.add((path, argfile))
+                name = path.relative_to(directory).as_posix()
+                paths.add(name)
+                if argfile:
+                    argfiles.add(name)
+                data = read(path) if read is not None else path.read_bytes()
+                if data is None:
+                    raise FileNotFoundError(name)
+                suffix = path.suffix.lower()
+                if not argfile and suffix in (".bat", ".cmd"):
+                    page = bat_codepage(path, encoding, data)
+                    text = decode_text(
+                        data, "utf-8-sig" if page == 65001 else f"cp{page}"
+                    )[0]
+                else:
+                    text = decode_text(data)[0]
+                if argfile:
+                    for line in text.splitlines():
+                        if re.search(r"""\\["']""", line):
+                            errors.append(f"无法确定 JVM 参数文件的引号：{name}")
+                        tokens = re.findall(
+                            r"""(?:[^\s"'#]+|"[^"]*"|'[^']*')+|#.*|["']""", line
+                        )
+                        words = []
+                        for token in tokens:
+                            if token.startswith("#"):
+                                break
+                            if token in ('"', "'"):
+                                errors.append(f"无法确定 JVM 参数文件的引号：{name}")
+                            words.append(re.sub(r"""(["'])(.*?)\1""", r"\2", token))
+                        java_args(words, path.parent)
+                    continue
+                language = {
+                    ".bat": "bat",
+                    ".cmd": "bat",
+                    ".ps1": "powershell",
+                    ".py": "python",
+                }[suffix]
+                if language == "python":
+                    for node in ast.parse(text).body:
+                        if isinstance(node, ast.Import) and all(
+                            item.name in {"subprocess", "runpy"} and item.asname is None
+                            for item in node.names
+                        ):
+                            continue
+                        if isinstance(node, ast.Expr):
+                            if isinstance(node.value, ast.Constant):
+                                continue
+                            if (
+                                isinstance(node.value, ast.Call)
+                                and re.fullmatch(
+                                    r"(?:subprocess\.(?:run|Popen|call|check_call|check_output)|runpy\.run_path)",
+                                    ast.unparse(node.value.func),
+                                )
+                                and not node.value.keywords
+                                and len(node.value.args) == 1
+                            ):
+                                continue
+                        errors.append(f"无法确认 Python 启动脚本的动态行为：{name}")
+                commands = script_commands(text, language, parse, path.parent)
+                for row in commands:
+                    words = row["words"]
+                    if not words or not words[0] or words[0] == "__unsafe_ast__":
+                        errors.append(row["source"])
+                        continue
+                    command = words[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+                    executable = command.removesuffix(".exe")
+                    if executable in ("java", "javaw") or command == "%mcai_java%":
+                        java_args(words[1:], path.parent)
+                        reference(words[0], path.parent)
+                    elif Path(command).suffix in SCRIPT_SUFFIXES:
+                        pending.append((words[0], path.parent, False))
+                    elif executable in ("pwsh", "powershell"):
+                        kind, target = shell_invocation(words)
+                        if (
+                            kind == "file"
+                            and Path(target).suffix.lower() in SCRIPT_SUFFIXES
+                        ):
+                            pending.append((target, path.parent, False))
+                        else:
+                            errors.append(row["source"])
+                    elif executable in ("py", "python"):
+                        target = next(
+                            (
+                                word
+                                for word in words[1:]
+                                if word not in ("-u", "-B", "-I", "-E", "-s", "-3")
+                            ),
+                            None,
+                        )
+                        if target and Path(target).suffix.lower() == ".py":
+                            pending.append((target, path.parent, False))
+                        else:
+                            errors.append(row["source"])
+                    elif (
+                        executable == "cmd"
+                        and len(words) == 3
+                        and words[1].lower() in ("/c", "/k")
+                        and Path(words[2]).suffix.lower() in (".bat", ".cmd")
+                    ):
+                        pending.append((words[2], path.parent, False))
+                    elif (
+                        command
+                        in (
+                            "echo",
+                            "echo.",
+                            "title",
+                            "chcp",
+                            "cls",
+                            "color",
+                            "setlocal",
+                            "endlocal",
+                            "pause",
+                            "timeout",
+                            "goto",
+                            "exit",
+                            "rem",
+                        )
+                        or command.startswith((":", "goto:"))
+                        or (
+                            executable == "timeout"
+                            and re.fullmatch(
+                                r"(?:%(?:systemroot|windir)%[\\/]+system32[\\/]+)?timeout(?:\.exe)?",
+                                words[0].strip(),
+                                re.I,
+                            )
+                        )
+                    ):
+                        continue
+                    elif command == "set" and not re.search(
+                        r"(?:JAVA.*OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS)|[@!%$]",
+                        " ".join(words[1:]),
+                        re.I,
+                    ):
+                        continue
+                    elif (
+                        command in ("cd", "chdir")
+                        and path.parent == directory
+                        and [w.lower() for w in words[1:] if w.lower() != "/d"]
+                        == ["%~dp0"]
+                    ):
+                        continue
+                    else:
+                        errors.append(row["source"])
+            except (OSError, ValueError, SyntaxError, LookupError) as exc:
+                errors.append(f"{relative}：{exc}")
+    return {
+        "known": not errors,
+        "paths": sorted(paths),
+        "argfiles": sorted(argfiles),
+        "memory_args": memory_args,
+        **({"reason": errors[0]} if errors else {}),
+    }
+
+
 def review_material(
     directory,
     args,
@@ -599,6 +828,7 @@ def review_material(
         fingerprint,
         args.get("encoding", "utf-8-sig"),
         args.get("launcher_encoding", "auto"),
+        args.get("powershell_path"),
     )
     declared = {}
     for raw in args.get("script_files", []):
@@ -697,6 +927,24 @@ def review_material(
             (content, path.suffix.lower(), path.parent, False, context, step)
         )
 
+    def launcher_args(context, step):
+        dependencies = inspect_launcher_dependencies(
+            directory,
+            args.get("launcher_encoding", "auto"),
+            powershell_path=args.get("powershell_path"),
+            read=lambda path: context(path)[0],
+        )
+        if not dependencies["known"]:
+            unresolved.append(dependencies["reason"])
+        for relative in dependencies["argfiles"]:
+            path = resolve_file(directory, relative)
+            if not path.is_dir():
+                data, origin, staged, expected = context(path)
+                if data is not None:
+                    if expected is not None and fingerprint(data) != expected:
+                        raise ValueError(f"备份启动参数与记录指纹不一致：{path}")
+                    record_script(path, data, staged, origin, step=step, launcher=True)
+
     if not steps:
         contexts = [
             ("inline", command, final_view, 0) for command in args.get("commands", [])
@@ -707,6 +955,9 @@ def review_material(
         if kind == "file":
             path = resolve_file(directory, value)
             read_script(path, context=context, step=step, launcher=True)
+            launcher_args(context, step)
+        elif kind == "launcher_edit":
+            launcher_args(context, step)
         else:
             pending.append((value, ".ps1", None, True, context, step))
     with powershell_parser(
@@ -853,12 +1104,24 @@ def file_material(
     fingerprint,
     script_encoding="utf-8-sig",
     launcher_encoding="auto",
+    powershell_path=None,
 ):
     from .configuration import bat_codepage
     from .text_files import decode_text, patch_data
 
     directory = Path(directory)
     files, planned, contexts, contents, restored = [], {}, [], {}, []
+    launcher_paths = set(
+        inspect_launcher_dependencies(
+            directory, launcher_encoding, powershell_path=powershell_path
+        )["paths"]
+        if any(
+            step.get("targets")
+            or step["action"] in ("write_text", "patch_text", "delete_path")
+            for step in steps
+        )
+        else ()
+    )
 
     def view():
         memory, roots = dict(contents), list(restored)
@@ -918,8 +1181,34 @@ def file_material(
     )
     for index, step in enumerate(steps):
         kind = step["action"]
-        if kind in ("write_text", "patch_text"):
+        targets = step.get("targets", [])
+        if not targets and kind in ("write_text", "patch_text", "delete_path"):
+            targets = [step["path"]]
+        if launcher_paths and any(
+            any(Path(name).is_relative_to(relative) for name in launcher_paths)
+            for relative in (
+                resolve_file(directory, target).relative_to(directory)
+                for target in targets
+            )
+        ):
+            contexts.append(("launcher_edit", None, view(), index))
+        if kind in ("write_text", "patch_text", "delete_path"):
             path = resolve_file(directory, step["path"])
+            relative = path.relative_to(directory)
+        if kind == "delete_path":
+            files.append(
+                {
+                    "path": relative.as_posix(),
+                    "action": kind,
+                    "step": index,
+                    "recursive": step.get("recursive", False),
+                }
+            )
+            for cached in list(contents):
+                if cached.is_relative_to(path):
+                    del contents[cached]
+            restored.append((path, path, {"existed": False}))
+        elif kind in ("write_text", "patch_text"):
             old = view()(path)[0]
             item = describe(path, old, step.get("encoding"))
             item["step"] = index

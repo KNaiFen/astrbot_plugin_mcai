@@ -225,6 +225,16 @@ while ($null -ne ($line = $inputStream.ReadLine())) {
             $commands.Add(@{ words = @('__unsafe_ast__', $method); source = $member.Extent.Text })
         }
     }
+    if ($request.launcher) {
+        foreach ($node in $ast.FindAll({
+            param($node)
+            $node -is [InvokeMemberExpressionAst] -or $node -is [FunctionDefinitionAst] -or
+            $node -is [RedirectionAst] -or
+            ($node -is [AssignmentStatementAst] -and $node.Left.Extent.Text -match '^\$env:')
+        }, $true)) {
+            $commands.Add(@{ words = @($null); source = $node.Extent.Text })
+        }
+    }
     $response = @{ commands = $commands.ToArray(); errors = @($parseErrors | ForEach-Object { $_.Message }) }
     $outputStream.WriteLine(($response | ConvertTo-Json -Depth 8 -Compress))
 }

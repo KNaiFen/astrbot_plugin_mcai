@@ -6,6 +6,7 @@ from .playbooks import PLAYBOOKS
 from .tool_arguments import CHECK, describe_arguments, field_names, model_schema
 
 STRING = {"type": "string"}
+ENVIRONMENT = {"type": "string", "enum": ["production", "test"]}
 INTEGER = {"type": "integer", "minimum": 0}
 NBT_PATH = {"$ref": "#/$defs/nbt_path"}
 PAGE = {"after": INTEGER, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}
@@ -424,6 +425,13 @@ STEP_SCHEMA = variants(
             ("path", "content"),
         ),
         "patch_text": (TEXT_PATCH, ("path", "sha256", "edits")),
+        "delete_path": (
+            {
+                "path": {"type": "string", "minLength": 1},
+                "recursive": {"type": "boolean"},
+            },
+            ("path",),
+        ),
         "verify": ({"checks": CHECKS}, ("checks",)),
         "nbt_batch": ({"path": STRING, "changes": CHANGES}, ("path", "changes")),
         "block_batch": ({**WORLD_LOCATION, "changes": BLOCK_CHANGES}, ("changes",)),
@@ -503,7 +511,7 @@ STEP_SCHEMA = variants(
                 "backup_paths": {"type": "array", "items": STRING, "minItems": 1},
                 "timeout": {"type": "integer", "minimum": 1, "maximum": 600},
             },
-            ("script", "backup_paths"),
+            ("script",),
         ),
         "restore": ({"backup": STRING}, ("backup",)),
         "install_download": (
@@ -533,6 +541,7 @@ PROBE_POSITION = {key: {"type": "integer"} for key in ("x", "y", "z")}
 
 
 def probe_range(fields):
+    fields = {"environment": ENVIRONMENT, **fields}
     return variants(
         "scope",
         {
@@ -568,6 +577,7 @@ TOOLS = [
         contract(
             {
                 "baseline": STRING,
+                "environment": ENVIRONMENT,
                 "query": {
                     **STRING,
                     "description": "可选，按组件id/name/path/source做大小写不敏感的子串过滤；与baseline互斥。",
@@ -579,7 +589,10 @@ TOOLS = [
         "mc_verify",
         "验证文件/文本/NBT、启动就绪或TCP。ready须after，可固定session_id；方案内可继承start/restart游标。已装Probe时还须本次主线程响应，未装仅日志就绪；端口不证明登录成功。后台沿next_call读取。",
         contract(
-            {"checks": {**CHECKS, "items": {"$ref": "#/$defs/standalone_check"}}},
+            {
+                "checks": {**CHECKS, "items": {"$ref": "#/$defs/standalone_check"}},
+                "environment": ENVIRONMENT,
+            },
             ("checks",),
         ),
     ),
@@ -731,7 +744,13 @@ TOOLS = [
     (
         "mc_players",
         "探针查询在线玩家或近五分钟现场；query 为游戏名或 UUID，省略列出全部。QQ 账号不能自动匹配。",
-        contract({"query": STRING, "history": {"type": "boolean"}}),
+        contract(
+            {
+                "query": STRING,
+                "history": {"type": "boolean"},
+                "environment": ENVIRONMENT,
+            }
+        ),
     ),
     (
         "mc_metrics",
@@ -740,6 +759,7 @@ TOOLS = [
         contract(
             {
                 "window_seconds": {"type": "integer", "enum": [10, 60, 300]},
+                "environment": ENVIRONMENT,
                 "history": {"type": "boolean"},
                 "include_idle_dimensions": {"type": "boolean"},
                 "history_step_seconds": {"enum": [1, 5]},
@@ -766,6 +786,7 @@ TOOLS = [
                 "section": {
                     "enum": ["summary", "mods", "datapacks", "dimensions", "settings"]
                 },
+                "environment": ENVIRONMENT,
                 "dimension": STRING,
                 "inventory_job_id": STRING,
                 "query": {"type": "string", "minLength": 1, "maxLength": 256},
@@ -821,6 +842,7 @@ TOOLS = [
                 contract(
                     {
                         "engine": {"enum": ["spark"]},
+                        "environment": ENVIRONMENT,
                         "mode": {"enum": ["execution", "allocation"]},
                         "alloc_live_only": {"type": "boolean"},
                         "seconds": {
@@ -856,6 +878,7 @@ TOOLS = [
                 "entity": (
                     {
                         "uuid": STRING,
+                        "environment": ENVIRONMENT,
                         "dimension": STRING,
                         "nbt_path": NBT_PATH,
                         "offset": INTEGER,
@@ -867,6 +890,7 @@ TOOLS = [
                     {
                         "dimension": STRING,
                         **PROBE_POSITION,
+                        "environment": ENVIRONMENT,
                         "nbt_path": NBT_PATH,
                         "offset": INTEGER,
                         "limit": {"type": "integer", "minimum": 1, "maximum": 100},
@@ -954,7 +978,7 @@ TOOLS = [
     ),
     (
         "mc_workspace",
-        "A 端 MOD 排查与修补工作区。pull 从绑定服取文件，use_download 取用任务下载。list 将 next_cursor 作为 after 续页，read 将 next_cursor 作为 cursor 续读。jar_entries、jar_read、jar_search、jar_diff、javap、decompile 检查 JAR；每份 JAR 指定工作区路径或任务 download_id，二选一。mapping_lookup 查询映射；jar_patch 在工作区重打包。exec 在已批准的多轮方案内经独立审核执行 PowerShell 7.3+。stage 登记工作区制品，提交 install_download 才传到 B 暂存。",
+        "A 端 MOD 排查与修补工作区。pull 从绑定服取文件，use_download 取用任务下载。list 将 next_cursor 作为 after 续页，read 将 next_cursor 作为 cursor 续读。jar_entries、jar_read、jar_search、jar_diff、javap、decompile 检查 JAR；每份 JAR 指定工作区路径或任务 download_id，二选一。mapping_lookup 查询映射；jar_patch 在工作区重打包。exec 经独立审核执行 PowerShell 7.3+；仅正式服任务需要已批准的多轮方案。stage 登记工作区制品，提交 install_download 才传到 B 暂存。",
         variants(
             "mode",
             {
@@ -1098,13 +1122,13 @@ TOOLS = [
     ),
     (
         "mc_test_server",
-        "查询当前任务测试副本状态及玩家入口，打开独立托管终端，或用 close 关闭已停服的测试窗口并释放全局名额。先用 mc_propose 提交 prepare_test，从绑定服复制启动文件、MOD 和配置（不填 environment 或填 production）；需要一致世界时追加 copy_test_world。建好后用 environment=test 启停、操作和查询副本。",
+        "查询当前任务测试副本状态及玩家入口，打开独立托管终端，或用 close 关闭已停服的测试窗口并释放全局名额。先用 mc_propose 单独一步提交 prepare_test，从绑定服复制启动文件、MOD 和配置（不填 environment 或填 production，勿与 start/verify 混批）；需要一致世界时追加 copy_test_world。建好后先 open 开窗，再用 environment=test 启停、操作和查询副本。",
         contract({"mode": {"enum": ["status", "open", "close"]}}, ("mode",)),
     ),
     (
         "mc_status",
         "实例状态、主机指标、实际进程与 Java 路径、世界/维度列表、探针能力与最近更新时间。世界列表缓存60秒，refresh_worlds=true立即刷新；world_path用于存档查询，probe.stale表示快照过时。",
-        contract({"refresh_worlds": {"type": "boolean"}}),
+        contract({"refresh_worlds": {"type": "boolean"}, "environment": ENVIRONMENT}),
     ),
     (
         "mc_files",
@@ -1197,7 +1221,7 @@ TOOLS = [
     ),
     (
         "mc_console_send",
-        "向运行中的服务端按序发送诊断命令；environment=test选择本任务试服，整批符合试服只读白名单可免审。commands用数组，sent只确认发送；沿next_call核对实际输出。",
+        "向运行中的服务端按序发送命令；正式服限受审诊断。已核实 Java 在线的测试服可直发安全单行 MC 命令，其余命令仍审核，启停用结构化步骤。sent只确认发送；沿next_call核对实际输出。",
         contract(
             {
                 "commands": {
@@ -1218,6 +1242,7 @@ TOOLS = [
             {
                 "script": STRING,
                 "cwd": STRING,
+                "environment": ENVIRONMENT,
                 "timeout": {"type": "number", "exclusiveMinimum": 0, "maximum": 600},
                 **SCRIPT_FILES,
             },
@@ -1483,7 +1508,7 @@ TOOLS = [
     ),
     (
         "mc_propose",
-        "提交方案或已批准方案的下一批具体步骤。能一次性确定参数和路径的常规操作直接放进同一批steps；确须按现场结果动态推进时，首次用continuation声明允许范围、完成条件与后续阶段规划（planned_stages），审核后返回awaiting_approval、plan_id和批准命令；管理员批准一次后，续批填写plan_id，审核通过即queued，无需重复批准。续批不能修改continuation。文件修改仍停服备份；snapshot由程序自动插入，不可作为公开action提交。command可在线执行，无恢复备份须一并简短说明；script声明全部备份路径。",
+        "提交方案或已批准方案的下一批具体步骤。能一次性确定参数和路径的常规操作直接放进同一批steps；确须按现场结果动态推进时，首次用continuation声明允许范围、完成条件与后续阶段规划（planned_stages），审核后返回awaiting_approval、plan_id和批准命令；管理员批准一次后，续批填写plan_id，审核通过即queued，无需重复批准。续批不能修改continuation。正式服改文件先停服备份，script 声明备份路径。测试服改文件只自动停服，不自动备份；安全结构化步骤或审核通过的普通测试提案直接 queued。定时、复制正式服世界及多轮提案沿用原批准。snapshot 由程序插入；delete_path 仅测试服可用。",
         {
             **contract(
                 {
@@ -1818,7 +1843,7 @@ FIELD_HELP = {
     "commands": "按顺序发送的非空诊断命令数组；一条也用数组，不含换行。",
     "script": "PowerShell 7.3+脚本正文。",
     "cwd": "实例内工作子目录，默认实例根目录。",
-    "backup_paths": "脚本写入的全部目标；在线命令可省略。",
+    "backup_paths": "正式服修复脚本写入的全部目标；测试服脚本与在线命令可省略。",
     "command": "单条MC命令，不含换行。",
     "content": "整份新文本；局部用patch_text。",
     "pid": "mc_status的Java PID。",

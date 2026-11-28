@@ -172,6 +172,12 @@ def task_violations(job) -> list[str]:
         and cleanup.get("pending")
         and not job.get("trial_published")
         and cleanup.get("reason") not in ("aborted", "release_waived")
+        and not (
+            cleanup.get("reason") == "completed"
+            and state == "done"
+            and not job.get("trial")
+            and not job.get("trial_required")
+        )
     ):
         violations.append("cleanup.pending 缺少 trial_published")
     archive = job.get("archive_state")
@@ -858,6 +864,7 @@ class Tasks:
             job["admin_report"] = admin_report
         if entry:
             job["directory"] = entry["canonical_directory"]
+            job["instance_is_test"] = bool(entry.get("is_test", False))
         if workspace_root is not None:
             job["workspace_root"] = workspace_root
         for author, admin, text in attachments:
@@ -944,6 +951,8 @@ class Tasks:
                         )
                 if cleanup is not None or not old or old == directory:
                     job.update(instance=instance, directory=directory)
+                    if not old or changing:
+                        job["instance_is_test"] = bool(entry.get("is_test", False))
                     self.save(job)
                     break
                 cleanup = job.get("selection_cleanup")
@@ -1694,6 +1703,8 @@ class Tasks:
         operation_id=None,
         environment="production",
         trial_release=None,
+        auto_approve=False,
+        test_direct=False,
     ):
         if job["state"] == "applying":
             raise ValueError("修复正在执行")
@@ -1706,8 +1717,14 @@ class Tasks:
             "offline": True,
             "environment": environment,
         }
+        if environment == "production":
+            plan["expected_is_test"] = bool(job.get("instance_is_test", False))
         if trial_release:
             plan["trial_release"] = trial_release
+        if auto_approve:
+            plan["auto_approved"] = True
+            if test_direct:
+                plan["test_direct"] = True
         if effective_steps is not None:
             plan.update(steps=effective_steps, prepared=True)
         if review_configuration is not None:
@@ -1722,7 +1739,7 @@ class Tasks:
             reviewed["arguments_hash"] = plan_identity(plan)
         if job.get("directory"):
             plan["expected_directory"] = job["directory"]
-        if plan_id is not None:
+        if plan_id is not None or auto_approve:
             self.queue_apply(job, plan, operation_id=operation_id)
             self.log(
                 job,
@@ -1860,7 +1877,14 @@ class Tasks:
         ] != (job.get("trial") or {}).get("id"):
             raise ReleaseDeferred("管理员补充或试服邀请已变化，正式服批次未发送")
         plan = job["applied_plan"]
-        self.require_plan(job, plan.get("plan_id", plan["id"]))
+        if plan.get("plan_id") or plan.get("continuation"):
+            self.require_plan(job, plan.get("plan_id", plan["id"]))
+        else:
+            approval = job.get("approval", {})
+            if approval.get("plan_id") != plan["id"] or approval.get(
+                "code"
+            ) != plan.get("approval_code"):
+                raise ReleaseDeferred("未核实本批管理员批准，正式服批次未发送")
         if plan.get("reviewed", {}).get("rules_hash") != self.agent.rules_hash():
             raise ReleaseDeferred("审核规则已变化，正式服批次未发送")
 
@@ -2148,7 +2172,11 @@ class Tasks:
                             job["has_test_server"] = True
                         self.save(job)
                         release = job["applied_plan"].get("trial_release")
-                        approved_by = job.get("approval", {}).get("by")
+                        approved_by = (
+                            None
+                            if job["applied_plan"].get("auto_approved")
+                            else job.get("approval", {}).get("by")
+                        )
                         scheduled = (
                             job["applied_plan"]["steps"][0]["action"] == "schedule"
                         )
@@ -2167,6 +2195,7 @@ class Tasks:
                                             "continuation",
                                             "reviewed",
                                             "approval_code",
+                                            "auto_approved",
                                         )
                                     },
                                     **(
@@ -2201,9 +2230,11 @@ class Tasks:
                             )
                             if release and result.get("trial_published"):
                                 job["trial_published"] = key
-                            if job["applied_plan"].get(
-                                "environment"
-                            ) == "test" and not result.get("cancelled"):
+                            if (
+                                not job.get("instance_is_test")
+                                and job["applied_plan"].get("environment") == "test"
+                                and not result.get("cancelled")
+                            ):
                                 for step in result.get("steps", []):
                                     if download_id := step.get("download_id"):
                                         download = self.store.get(
@@ -2271,7 +2302,11 @@ class Tasks:
                             )
                             not_executed = execution_state == "not_executed"
                             unknown = execution_state == "unknown"
-                            test_only = applied.get("environment") == "test" or all(
+                            test_only = (
+                                applied.get("environment") == "test"
+                                or bool(job.get("instance_is_test"))
+                                or bool(applied.get("auto_approved"))
+                            ) or all(
                                 step["action"] in ("prepare_test", "snapshot")
                                 for step in applied["steps"]
                             )
@@ -2467,14 +2502,18 @@ class Tasks:
                         )
                         and (
                             job["state"] == "stopped"
-                            or job.get("trial_release_waived")
+                            or job["state"] == "done"
                             and not job.get("trial_published")
                         )
                     ):
                         job["cleanup"] = {
                             "operation": uuid.uuid4().hex,
                             "pending": True,
-                            "reason": "release_waived"
+                            "reason": (
+                                "release_waived"
+                                if job.get("trial_release_waived")
+                                else "completed"
+                            )
                             if job["state"] == "done"
                             else "aborted",
                         }
@@ -2510,7 +2549,11 @@ class Tasks:
                     else:
                         finish_text = "任务已中止。"
                     cleanup = job.get("cleanup", {})
-                    if cleanup.get("reason") in ("aborted", "release_waived"):
+                    if cleanup.get("reason") in (
+                        "aborted",
+                        "release_waived",
+                        "completed",
+                    ):
                         if cleanup.get("pending"):
                             finish_text += f"试服清理失败：{cleanup['error']}。请到设置页「运行概览」强制停止或删除试服。"
                         else:

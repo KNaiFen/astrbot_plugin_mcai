@@ -58,6 +58,8 @@ $env:PYTHONPATH = "$PWD/runtime/astrbot-4.29.4"
 
 `--require-astrbot`强制核对v4.29.4，并在出现任何跳过时返回失败。未提供AstrBot时可以执行不依赖runner的专项；含跳过的结果不能作为完整回归或发行通过的证据。需要分析覆盖率时，再给上述命令追加`--cov=mcai --cov-branch --cov-report=html:runtime/coverage-html`；覆盖率采集不作为每轮默认步骤。
 
+调整测试服权限时回归 A/B 绑定快照与热重载、测试服直通与独立审核分流、Java 停止后的控制台拦截，以及副本磁盘/内存预检。继续核对正式服的原批准、自动停服和文件备份，不能用测试服分支代替正式服断言。
+
 `verify.py --mode package` 与 `--mode release` 已自带解压链接校验、A 导入、B 离线构建安装 wheel 与 `mcai --help` 冒烟。仅当改动涉及打包结构、导入边界或安装运行时，再用解压 A 插件和独立安装的 B 执行以下代表性集成节点（多轮用例包含 Chat／Responses 两种适配器，共 4 项）：
 
 ```text

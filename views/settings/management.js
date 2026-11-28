@@ -157,6 +157,7 @@ export function createManagement({ api, hostApi, bridge, action, show, loadHost,
         const pids = (row.java_processes || []).map(process => process.pid).join('、');
         const pending = pendingConfiguration(row);
         const card = item(row.instance, `${row.directory}\n托管窗口：${row.window_online ? '在线' : '离线'} · 会话 ${row.session_id || '—'} · Java PID ${pids || '—'}\n实例：${row.selectable ? '可选' : '待移除'}${pending ? ` · ${pending}` : ''}`, state);
+        if (row.is_test) card.querySelector('h3').append(' ', node('span', '测试服', 'badge'));
         if (row.occupant) {
           const owner = node('p', `活动任务：${row.occupant.name}（${row.occupant.id}） · `);
           const link = node('a', '打开任务看板'); link.href = '#tasks'; owner.append(link); card.append(owner);
